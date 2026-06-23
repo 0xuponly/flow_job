@@ -1,0 +1,88 @@
+import type {
+  Application,
+  CreateJobInput,
+  DashboardStats,
+  Document,
+  FollowUp,
+  Interview,
+  Job,
+  JobStatus,
+  Settings,
+  TailorRequest,
+  TailorResult
+} from './types'
+
+export interface Api {
+  getDashboardStats: () => Promise<DashboardStats>
+  listJobs: (status?: JobStatus) => Promise<Job[]>
+  getJob: (id: number) => Promise<Job | undefined>
+  createJob: (input: CreateJobInput) => Promise<Job>
+  updateJob: (id: number, fields: Partial<CreateJobInput & { status: JobStatus }>) => Promise<Job>
+  deleteJob: (id: number) => Promise<void>
+  searchJobs: (query: string) => Promise<Job[]>
+  importJobFromUrl: (url: string) => Promise<Job>
+  listDocuments: (jobId?: number) => Promise<Document[]>
+  createDocument: (type: 'cv' | 'cover_letter', title: string, content: string, jobId?: number) => Promise<Document>
+  updateDocument: (id: number, title: string, content: string) => Promise<Document>
+  listApplications: () => Promise<(Application & { job_title: string; company: string })[]>
+  getOrCreateApplication: (jobId: number) => Promise<Application>
+  updateApplication: (id: number, fields: Partial<Application>) => Promise<Application>
+  markApplied: (id: number, method: string, email?: string, name?: string) => Promise<Application>
+  listFollowUps: (includeCompleted?: boolean) => Promise<(FollowUp & { job_title: string; company: string })[]>
+  createFollowUp: (appId: number, dueDate: string, type: FollowUp['type'], message?: string) => Promise<FollowUp>
+  completeFollowUp: (id: number) => Promise<FollowUp>
+  generateFollowUpMessage: (company: string, title: string, days: number) => Promise<string>
+  listInterviews: (upcomingOnly?: boolean) => Promise<(Interview & { job_title: string; company: string })[]>
+  createInterview: (
+    appId: number,
+    scheduledAt: string,
+    type: Interview['type'],
+    duration?: number,
+    location?: string,
+    interviewer?: string,
+    notes?: string
+  ) => Promise<Interview>
+  updateInterview: (id: number, fields: Partial<Interview>) => Promise<Interview>
+  getSettings: () => Promise<Settings>
+  updateSettings: (partial: Partial<Settings>) => Promise<Settings>
+  resetSettings: () => Promise<Settings>
+  tailorDocument: (request: TailorRequest) => Promise<TailorResult>
+  openExternal: (url: string) => Promise<void>
+}
+
+declare global {
+  interface Window {
+    api: Api
+  }
+}
+
+export interface TailorRequest {
+  job_id: number
+  document_type: 'cv' | 'cover_letter'
+  base_content?: string
+}
+
+export interface TailorResult {
+  content: string
+  document_id: number
+}
+
+function getBridge(): Api {
+  if (!window.api) {
+    throw new Error('Desktop API unavailable. Run the app with npm run dev, not in a browser.')
+  }
+  return window.api
+}
+
+export const api: Api = new Proxy({} as Api, {
+  get(_target, prop) {
+    const bridge = getBridge()
+    const value = bridge[prop as keyof Api]
+    if (typeof value !== 'function') {
+      throw new Error(
+        `API method "${String(prop)}" is unavailable. Quit and restart the app (npm run dev).`
+      )
+    }
+    return value.bind(bridge)
+  }
+})
