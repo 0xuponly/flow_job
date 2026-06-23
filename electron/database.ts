@@ -2,6 +2,7 @@ import { app, safeStorage } from 'electron'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import type {
+  ApiModelConfig,
   Application,
   CreateJobInput,
   DashboardStats,
@@ -44,6 +45,7 @@ interface Store {
   follow_ups: FollowUp[]
   interviews: Interview[]
   settings: Record<string, string>
+  api_models: ApiModelConfig[]
   nextId: number
 }
 
@@ -66,8 +68,8 @@ function defaultStore(): Store {
     interviews: [],
     settings: {
       openai_api_key: '',
-      openai_base_url: 'https://api.openai.com/v1',
-      openai_model: 'gpt-4o-mini',
+      openai_base_url: 'https://api.deepseek.com',
+      openai_model: 'deepseek-chat',
       user_name: '',
       user_email: '',
       user_phone: '',
@@ -75,6 +77,7 @@ function defaultStore(): Store {
       job_search_keywords: '',
       job_search_location: ''
     },
+    api_models: [],
     nextId: 1
   }
 }
@@ -92,6 +95,26 @@ function loadStore(): Store {
         store.settings[key] = decryptField(store.settings[key])
       }
     }
+    if (store.api_models) {
+      store.api_models = store.api_models.map((m) => ({
+        ...m,
+        api_key: decryptField(m.api_key)
+      }))
+    }
+    if (!store.api_models || store.api_models.length === 0) {
+      const oldKey = store.settings.openai_api_key || ''
+      const oldUrl = store.settings.openai_base_url || 'https://api.deepseek.com'
+      const oldModel = store.settings.openai_model || 'deepseek-chat'
+      if (oldUrl !== 'https://api.deepseek.com' || oldKey) {
+        store.api_models = [{
+          id: 'model-1',
+          name: 'Primary',
+          base_url: oldUrl,
+          api_key: oldKey,
+          model: oldModel
+        }]
+      }
+    }
   } else {
     store = defaultStore()
     persistStore()
@@ -107,7 +130,11 @@ function persistStore(): void {
       settings[key] = encryptField(settings[key])
     }
   }
-  const data = { ...store, settings }
+  const api_models = store.api_models.map((m) => ({
+    ...m,
+    api_key: encryptField(m.api_key)
+  }))
+  const data = { ...store, settings, api_models }
   writeFileSync(getStorePath(), JSON.stringify(data, null, 2))
 }
 
@@ -205,7 +232,8 @@ export function createDocument(
   title: string,
   content: string,
   jobId?: number,
-  isBase = false
+  isBase = false,
+  modelUsed?: string | null
 ): Document {
   const s = loadStore()
   const doc: Document = {
@@ -215,12 +243,19 @@ export function createDocument(
     title,
     content,
     is_base: isBase ? 1 : 0,
+    model_used: modelUsed ?? null,
     created_at: now(),
     updated_at: now()
   }
   s.documents.push(doc)
   persistStore()
   return doc
+}
+
+export function deleteDocument(id: number): void {
+  const s = loadStore()
+  s.documents = s.documents.filter((d) => d.id !== id)
+  persistStore()
 }
 
 export function updateDocument(id: number, title: string, content: string): Document {
@@ -453,8 +488,8 @@ export function getSettings(): Settings {
 export function updateSettings(partial: Partial<Settings>): Settings {
   if (partial.openai_base_url !== undefined) {
     const url = partial.openai_base_url.trim()
-    if (url && !/^https:\/\/.+/.test(url)) {
-      throw new Error('OpenAI base URL must use HTTPS.')
+    if (url && !/^https:\/\//.test(url) && !/^http:\/\/(localhost|127\.0\.0\.1)/.test(url)) {
+      throw new Error('OpenAI base URL must use HTTPS (or http://localhost for local models).')
     }
   }
   const s = loadStore()
@@ -472,6 +507,40 @@ export function resetSettings(): Settings {
   s.settings = defaultStore().settings
   persistStore()
   return getSettings()
+}
+
+// API Models
+
+function nextModelId(): string {
+  return 'model-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6)
+}
+
+export function listApiModels(): ApiModelConfig[] {
+  return loadStore().api_models
+}
+
+export function saveApiModels(models: ApiModelConfig[]): ApiModelConfig[] {
+  const s = loadStore()
+  s.api_models = models.map((m) => ({
+    ...m,
+    id: m.id || nextModelId()
+  }))
+  persistStore()
+  return s.api_models
+}
+
+export function addApiModel(model: Omit<ApiModelConfig, 'id'>): ApiModelConfig[] {
+  const s = loadStore()
+  s.api_models.push({ ...model, id: nextModelId() })
+  persistStore()
+  return s.api_models
+}
+
+export function deleteApiModel(id: string): ApiModelConfig[] {
+  const s = loadStore()
+  s.api_models = s.api_models.filter((m) => m.id !== id)
+  persistStore()
+  return s.api_models
 }
 
 // Dashboard

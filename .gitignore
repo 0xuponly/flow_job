@@ -3,3 +3,4 @@ out/
 dist/
 *.db
 .DS_Store
+docs/

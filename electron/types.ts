@@ -34,6 +34,7 @@ export interface Document {
   title: string
   content: string
   is_base: number
+  model_used: string | null
   created_at: string
   updated_at: string
 }
@@ -75,6 +76,14 @@ export interface Interview {
   notes: string | null
   outcome: 'scheduled' | 'completed' | 'cancelled' | 'no_show' | null
   created_at: string
+}
+
+export interface ApiModelConfig {
+  id: string
+  name: string
+  base_url: string
+  api_key: string
+  model: string
 }
 
 export interface Settings {

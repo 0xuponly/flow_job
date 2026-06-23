@@ -21,6 +21,11 @@ export default function JobDetail({ job, onBack, onUpdate }: Props) {
   const [editing, setEditing] = useState(false)
   const [editDesc, setEditDesc] = useState(job.description ?? '')
   const [editNotes, setEditNotes] = useState(job.notes ?? '')
+  const [viewDoc, setViewDoc] = useState<Document | null>(null)
+  const [docTitle, setDocTitle] = useState('')
+  const [docContent, setDocContent] = useState('')
+  const [savingDoc, setSavingDoc] = useState(false)
+  const [exportingDoc, setExportingDoc] = useState(false)
 
   useEffect(() => {
     load()
@@ -59,6 +64,24 @@ export default function JobDetail({ job, onBack, onUpdate }: Props) {
     onUpdate(updated)
     setShowApply(false)
     await load()
+  }
+
+  function handleViewDoc(doc: Document) {
+    setViewDoc(doc)
+    setDocTitle(doc.title)
+    setDocContent(doc.content)
+  }
+
+  async function handleSaveDoc() {
+    if (!viewDoc) return
+    setSavingDoc(true)
+    try {
+      const updated = await api.updateDocument(viewDoc.id, docTitle, docContent)
+      setDocuments((prev) => prev.map((d) => (d.id === updated.id ? updated : d)))
+      setViewDoc(updated)
+    } finally {
+      setSavingDoc(false)
+    }
   }
 
   async function handleSaveEdits() {
@@ -158,8 +181,17 @@ export default function JobDetail({ job, onBack, onUpdate }: Props) {
               </button>
             </div>
             {(cv || coverLetter) && (
-              <div style={{ marginTop: 12, fontSize: 12, color: 'var(--success)' }}>
-                {cv && '✓ CV ready'}{cv && coverLetter && ' · '}{coverLetter && '✓ Cover letter ready'}
+              <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {cv && (
+                  <button className="btn btn-secondary btn-sm" onClick={() => handleViewDoc(cv)}>
+                    View CV{cv.model_used ? ` (${cv.model_used})` : ''}
+                  </button>
+                )}
+                {coverLetter && (
+                  <button className="btn btn-secondary btn-sm" onClick={() => handleViewDoc(coverLetter)}>
+                    View cover letter{coverLetter.model_used ? ` (${coverLetter.model_used})` : ''}
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -219,6 +251,61 @@ export default function JobDetail({ job, onBack, onUpdate }: Props) {
         <div className="form-group">
           <label>Contact name</label>
           <input value={contactName} onChange={(e) => setContactName(e.target.value)} />
+        </div>
+      </Modal>
+
+      <Modal
+        open={!!viewDoc}
+        title={viewDoc?.type === 'cv' ? 'CV' : 'Cover Letter'}
+        onClose={() => setViewDoc(null)}
+        actions={
+          viewDoc && (
+            <>
+              <button className="btn btn-secondary" onClick={() => setViewDoc(null)}>Close</button>
+              <button className="btn btn-danger" onClick={async () => {
+                if (!viewDoc || !confirm('Delete this document?')) return
+                await api.deleteDocument(viewDoc.id)
+                setDocuments((prev) => prev.filter((d) => d.id !== viewDoc.id))
+                setViewDoc(null)
+              }}>Delete</button>
+              <button className="btn btn-secondary" onClick={async () => {
+                if (!viewDoc) return
+                setExportingDoc(true)
+                try {
+                  const typeLabel = viewDoc?.type === 'cv' ? 'CV' : 'Cover Letter'
+                  const path = await api.exportDocumentPdf(docTitle, docContent, typeLabel, job.company, job.title)
+                  if (path) alert(`PDF saved to: ${path}`)
+                } finally {
+                  setExportingDoc(false)
+                }
+              }} disabled={exportingDoc}>
+                {exportingDoc ? 'Exporting...' : 'Download PDF'}
+              </button>
+              <button className="btn btn-primary" onClick={handleSaveDoc} disabled={savingDoc}>
+                {savingDoc ? 'Saving...' : 'Save changes'}
+              </button>
+            </>
+          )
+        }
+      >
+        <div className="form-group">
+          <label>Title</label>
+          <input value={docTitle} onChange={(e) => setDocTitle(e.target.value)} />
+        </div>
+        {viewDoc && (
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+            Generated {new Date(viewDoc.created_at).toLocaleString()}
+            {viewDoc.model_used && ` by ${viewDoc.model_used}`}
+          </div>
+        )}
+        <div className="form-group">
+          <label>Content</label>
+          <textarea
+            rows={20}
+            value={docContent}
+            onChange={(e) => setDocContent(e.target.value)}
+            style={{ width: '100%', fontFamily: 'monospace', fontSize: 13, lineHeight: 1.6 }}
+          />
         </div>
       </Modal>
     </div>

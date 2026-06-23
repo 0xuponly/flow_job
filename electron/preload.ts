@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
+  ApiModelConfig,
   Application,
   CreateJobInput,
   DashboardStats,
@@ -25,6 +26,8 @@ export interface Api {
   listDocuments: (jobId?: number) => Promise<Document[]>
   createDocument: (type: 'cv' | 'cover_letter', title: string, content: string, jobId?: number) => Promise<Document>
   updateDocument: (id: number, title: string, content: string) => Promise<Document>
+  deleteDocument: (id: number) => Promise<void>
+  exportDocumentPdf: (title: string, content: string, docType?: string, company?: string, position?: string) => Promise<string | null>
   listApplications: () => Promise<(Application & { job_title: string; company: string })[]>
   getOrCreateApplication: (jobId: number) => Promise<Application>
   updateApplication: (id: number, fields: Partial<Application>) => Promise<Application>
@@ -47,6 +50,11 @@ export interface Api {
   getSettings: () => Promise<Settings>
   updateSettings: (partial: Partial<Settings>) => Promise<Settings>
   resetSettings: () => Promise<Settings>
+  importResume: () => Promise<string | null>
+  listApiModels: () => Promise<ApiModelConfig[]>
+  saveApiModels: (models: ApiModelConfig[]) => Promise<ApiModelConfig[]>
+  addApiModel: (model: Omit<ApiModelConfig, 'id'>) => Promise<ApiModelConfig[]>
+  deleteApiModel: (id: string) => Promise<ApiModelConfig[]>
   tailorDocument: (request: TailorRequest) => Promise<TailorResult>
   openExternal: (url: string) => Promise<void>
 }
@@ -64,6 +72,8 @@ const api: Api = {
   createDocument: (type, title, content, jobId) =>
     ipcRenderer.invoke('documents:create', type, title, content, jobId),
   updateDocument: (id, title, content) => ipcRenderer.invoke('documents:update', id, title, content),
+  deleteDocument: (id) => ipcRenderer.invoke('documents:delete', id),
+  exportDocumentPdf: (title, content, docType, company, position) => ipcRenderer.invoke('documents:exportPdf', title, content, docType, company, position),
   listApplications: () => ipcRenderer.invoke('applications:list'),
   getOrCreateApplication: (jobId) => ipcRenderer.invoke('applications:getOrCreate', jobId),
   updateApplication: (id, fields) => ipcRenderer.invoke('applications:update', id, fields),
@@ -82,6 +92,11 @@ const api: Api = {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateSettings: (partial) => ipcRenderer.invoke('settings:update', partial),
   resetSettings: () => ipcRenderer.invoke('settings:reset'),
+  importResume: () => ipcRenderer.invoke('settings:importResume'),
+  listApiModels: () => ipcRenderer.invoke('models:list'),
+  saveApiModels: (models) => ipcRenderer.invoke('models:save', models),
+  addApiModel: (model) => ipcRenderer.invoke('models:add', model),
+  deleteApiModel: (id) => ipcRenderer.invoke('models:delete', id),
   tailorDocument: (request) => ipcRenderer.invoke('ai:tailor', request),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url)
 }

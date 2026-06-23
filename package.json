@@ -10,8 +10,11 @@
     "start": "electron-vite preview"
   },
   "dependencies": {
+    "mammoth": "^1.12.0",
+    "pdf-parse": "^2.4.5"
   },
   "devDependencies": {
+    "@types/pdf-parse": "^1.1.5",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",

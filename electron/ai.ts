@@ -1,5 +1,5 @@
-import { getSettings } from './database'
-import type { Job, TailorRequest, TailorResult } from './types'
+import { getSettings, listApiModels } from './database'
+import type { ApiModelConfig, Job, TailorRequest, TailorResult } from './types'
 import { createDocument, getJob, updateJob } from './database'
 
 export async function tailorDocument(request: TailorRequest): Promise<TailorResult> {
@@ -12,22 +12,26 @@ export async function tailorDocument(request: TailorRequest): Promise<TailorResu
     settings.base_cv ||
     'No base CV provided. Add your base CV in Settings.'
 
-  if (!settings.openai_api_key) {
-    const fallback = generateFallbackDocument(job, request.document_type, baseContent, settings)
-    const doc = createDocument(
-      request.document_type,
-      `${request.document_type === 'cv' ? 'CV' : 'Cover Letter'} — ${job.company}`,
-      fallback,
-      job.id
-    )
-    updateJob(job.id, { status: 'tailoring' })
-    return { content: fallback, document_id: doc.id }
-  }
-
   const systemPrompt =
     request.document_type === 'cv'
-      ? `You are an expert career coach. Tailor the candidate's CV for the specific job posting. 
-Keep factual accuracy — only reorganize and emphasize relevant experience. Output plain text formatted as a CV.`
+      ? `You are an expert career coach. Tailor the candidate's CV for the specific job posting using the EXACT Harvard template format below.
+
+SECTIONS IN ORDER:
+1. Contact Info — name, email, phone, address
+2. Education — School name (tab) Location, Degree (tab) Dates, Relevant Coursework, Study Abroad, High School
+3. Experience — Organization (tab) Location, Position Title (tab) Dates, then bullet points
+4. Leadership & Activities — Organization (tab) Location, Role (tab) Dates, then bullet points
+5. Skills & Interests — Technical:, Language:, Laboratory:, Interests:
+
+FORMATTING RULES:
+- Section headers on their own line, centered, bold
+- Use a TAB character between bold left text (school/org/title) and right-aligned location/dates
+- Each bullet point on its own line, starting with an action verb
+- Write experience bullet points in the XYZ format:
+  "Accomplished [X] as measured by [Y], by doing [Z]."
+- Do NOT use asterisks or markdown formatting
+- Keep factual accuracy — only reorganize and emphasize relevant experience
+- Output plain text only`
       : `You are an expert career coach. Write a compelling, personalized cover letter for this job.
 Keep it concise (3-4 paragraphs), professional, and specific to the role. Output plain text only.`
 
@@ -46,37 +50,59 @@ ${baseContent}
 
 ${request.document_type === 'cover_letter' ? 'Write a tailored cover letter.' : 'Tailor this CV for the role.'}`
 
-  const response = await fetch(`${settings.openai_base_url}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${settings.openai_api_key}`
-    },
-    body: JSON.stringify({
-      model: settings.openai_model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt }
-      ],
-      temperature: 0.7
-    })
-  })
-
-  if (!response.ok) {
-    const err = await response.text()
-    throw new Error(`AI request failed: ${response.status} ${err}`)
+  async function callModel(model: ApiModelConfig, signal?: AbortSignal): Promise<string | null> {
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (model.api_key) headers['Authorization'] = `Bearer ${model.api_key}`
+      const response = await fetch(`${model.base_url}/chat/completions`, {
+        method: 'POST',
+        headers,
+        signal,
+        body: JSON.stringify({
+          model: model.model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          temperature: 0.7
+        })
+      })
+      if (!response.ok) return null
+      const data = (await response.json()) as {
+        choices: { message: { content: string } }[]
+      }
+      return data.choices[0]?.message?.content ?? null
+    } catch {
+      return null
+    }
   }
 
-  const data = (await response.json()) as {
-    choices: { message: { content: string } }[]
+  let content: string | null = null
+  let modelUsed: string | null = null
+
+  const models = listApiModels()
+  for (const model of models) {
+    const abort = new AbortController()
+    const timer = setTimeout(() => abort.abort(), 20000)
+    content = await callModel(model, abort.signal)
+    clearTimeout(timer)
+    if (content) {
+      modelUsed = model.name || model.model
+      break
+    }
   }
-  const content = data.choices[0]?.message?.content ?? ''
+
+  if (!content) {
+    content = generateFallbackDocument(job, request.document_type, baseContent, settings)
+  }
 
   const doc = createDocument(
     request.document_type,
     `${request.document_type === 'cv' ? 'CV' : 'Cover Letter'} — ${job.company}`,
     content,
-    job.id
+    job.id,
+    false,
+    modelUsed
   )
   updateJob(job.id, { status: 'ready' })
 

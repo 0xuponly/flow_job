@@ -1,4 +1,5 @@
 import type {
+  ApiModelConfig,
   Application,
   CreateJobInput,
   DashboardStats,
@@ -24,6 +25,8 @@ export interface Api {
   listDocuments: (jobId?: number) => Promise<Document[]>
   createDocument: (type: 'cv' | 'cover_letter', title: string, content: string, jobId?: number) => Promise<Document>
   updateDocument: (id: number, title: string, content: string) => Promise<Document>
+  deleteDocument: (id: number) => Promise<void>
+  exportDocumentPdf: (title: string, content: string, docType?: string, company?: string, position?: string) => Promise<string | null>
   listApplications: () => Promise<(Application & { job_title: string; company: string })[]>
   getOrCreateApplication: (jobId: number) => Promise<Application>
   updateApplication: (id: number, fields: Partial<Application>) => Promise<Application>
@@ -46,6 +49,11 @@ export interface Api {
   getSettings: () => Promise<Settings>
   updateSettings: (partial: Partial<Settings>) => Promise<Settings>
   resetSettings: () => Promise<Settings>
+  importResume: () => Promise<string | null>
+  listApiModels: () => Promise<ApiModelConfig[]>
+  saveApiModels: (models: ApiModelConfig[]) => Promise<ApiModelConfig[]>
+  addApiModel: (model: Omit<ApiModelConfig, 'id'>) => Promise<ApiModelConfig[]>
+  deleteApiModel: (id: string) => Promise<ApiModelConfig[]>
   tailorDocument: (request: TailorRequest) => Promise<TailorResult>
   openExternal: (url: string) => Promise<void>
 }
