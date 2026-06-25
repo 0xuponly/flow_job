@@ -41,8 +41,16 @@ export interface Document {
   content: string
   is_base: number
   model_used: string | null
+  verification_score: number | null
+  verification_feedback: string | null
   created_at: string
   updated_at: string
+}
+
+export interface VerificationResult {
+  score: number
+  passed: boolean
+  feedback: string
 }
 
 export interface Application {

@@ -13,7 +13,8 @@ import type {
   ScanStatus,
   Settings,
   TailorRequest,
-  TailorResult
+  TailorResult,
+  VerificationResult
 } from './types'
 
 export interface Api {
@@ -60,6 +61,7 @@ export interface Api {
   addApiModel: (model: Omit<ApiModelConfig, 'id'>) => Promise<ApiModelConfig[]>
   deleteApiModel: (id: string) => Promise<ApiModelConfig[]>
   tailorDocument: (request: TailorRequest) => Promise<TailorResult>
+  verifyDocument: (jobId: number, documentId: number, docType: 'cv' | 'cover_letter') => Promise<VerificationResult>
   regenerateSection: (documentId: number, sectionName: string, jobId: number) => Promise<string>
   getScanStatus: () => Promise<ScanStatus>
   clearScanResult: () => Promise<void>

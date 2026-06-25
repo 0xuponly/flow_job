@@ -356,6 +356,24 @@ export function updateDocument(id: number, title: string, content: string): Docu
   return s.documents[idx]
 }
 
+export function updateDocumentVerification(
+  id: number,
+  score: number | null,
+  feedback: string | null
+): Document {
+  const s = loadStore()
+  const idx = s.documents.findIndex((d) => d.id === id)
+  if (idx === -1) throw new Error('Document not found')
+  s.documents[idx] = {
+    ...s.documents[idx],
+    verification_score: score,
+    verification_feedback: feedback,
+    updated_at: now()
+  }
+  persistStore()
+  return s.documents[idx]
+}
+
 // Applications
 
 export function listApplications(): (Application & { job_title: string; company: string })[] {

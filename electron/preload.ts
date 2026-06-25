@@ -14,7 +14,8 @@ import type {
   ScanStatus,
   Settings,
   TailorRequest,
-  TailorResult
+  TailorResult,
+  VerificationResult
 } from './types'
 
 export interface Api {
@@ -61,6 +62,7 @@ export interface Api {
   addApiModel: (model: Omit<ApiModelConfig, 'id'>) => Promise<ApiModelConfig[]>
   deleteApiModel: (id: string) => Promise<ApiModelConfig[]>
   tailorDocument: (request: TailorRequest) => Promise<TailorResult>
+  verifyDocument: (jobId: number, documentId: number, docType: 'cv' | 'cover_letter') => Promise<VerificationResult>
   regenerateSection: (documentId: number, sectionName: string, jobId: number) => Promise<string>
   getScanStatus: () => Promise<ScanStatus>
   clearScanResult: () => Promise<void>
@@ -118,6 +120,7 @@ const api: Api = {
   addApiModel: (model) => ipcRenderer.invoke('models:add', model),
   deleteApiModel: (id) => ipcRenderer.invoke('models:delete', id),
   tailorDocument: (request) => ipcRenderer.invoke('ai:tailor', request),
+  verifyDocument: (jobId, documentId, docType) => ipcRenderer.invoke('documents:verify', jobId, documentId, docType),
   regenerateSection: (documentId, sectionName, jobId) =>
     ipcRenderer.invoke('documents:regenerateSection', documentId, sectionName, jobId),
   clearSeenUrls: () => ipcRenderer.invoke('db:clearSeenUrls'),

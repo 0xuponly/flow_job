@@ -1,5 +1,5 @@
-import { getSettings, listApiModels, getDocument, updateDocument } from './database'
-import type { ApiModelConfig, Job, TailorRequest, TailorResult } from './types'
+import { getSettings, listApiModels, getDocument, updateDocument, updateDocumentVerification } from './database'
+import type { ApiModelConfig, Job, TailorRequest, TailorResult, VerificationResult } from './types'
 import { createDocument, getJob } from './database'
 
 export async function tailorDocument(request: TailorRequest): Promise<TailorResult> {
@@ -253,6 +253,84 @@ function parseSections(content: string): Section[] {
   }
 
   return sections
+}
+
+export async function verifyDocumentContent(
+  jobId: number,
+  documentId: number,
+  docType: 'cv' | 'cover_letter'
+): Promise<VerificationResult> {
+  const job = getJob(jobId)
+  if (!job) throw new Error('Job not found')
+  const doc = getDocument(documentId)
+  if (!doc) throw new Error('Document not found')
+
+  const systemPrompt = `You are a strict career-document reviewer. Evaluate the ${docType === 'cv' ? 'CV/resume' : 'cover letter'} against the target job posting.
+
+Rate the document 0-100 on these criteria:
+- Relevance: Does the content directly address the job requirements?
+- Keywords: Are key terms from the job description present?
+- Specificity: Is it tailored to this specific role (not generic)?
+- Formatting: Is the structure clean and professional?
+- Accuracy: Are there any hallucinations or claims not supported by the base CV?
+
+Output ONLY a JSON object with no markdown:
+{"score": <0-100>, "passed": <true if score >= 70>, "feedback": "<2-3 sentence critique listing specific issues and the most important improvement>"}`
+
+  const userPrompt = `Job Title: ${job.title}
+Company: ${job.company}
+
+Job Description:
+${job.description || 'No description provided.'}
+
+${docType === 'cv' ? 'CV' : 'Cover Letter'} Content:
+${doc.content}
+
+Evaluate how well this document is tailored for this specific job.`
+
+  let result: VerificationResult = { score: 0, passed: false, feedback: 'Verification failed — no AI model responded.' }
+
+  const models = listApiModels()
+  for (const model of models) {
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (model.api_key) headers['Authorization'] = `Bearer ${model.api_key}`
+      const abort = new AbortController()
+      const timer = setTimeout(() => abort.abort(), 20000)
+      const response = await fetch(`${model.base_url}/chat/completions`, {
+        method: 'POST',
+        headers,
+        signal: abort.signal,
+        body: JSON.stringify({
+          model: model.model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          temperature: 0.3
+        })
+      })
+      clearTimeout(timer)
+      if (response.ok) {
+        const data = (await response.json()) as { choices: { message: { content: string } }[] }
+        const text = data.choices[0]?.message?.content
+        if (text) {
+          const parsed = JSON.parse(text.replace(/```json|```/g, '').trim()) as VerificationResult
+          result = {
+            score: Math.max(0, Math.min(100, parsed.score)),
+            passed: !!parsed.passed,
+            feedback: parsed.feedback || ''
+          }
+          break
+        }
+      }
+    } catch {
+      // try next model
+    }
+  }
+
+  updateDocumentVerification(documentId, result.score, result.feedback)
+  return result
 }
 
 export async function regenerateSection(

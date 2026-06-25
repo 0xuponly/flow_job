@@ -43,12 +43,48 @@ export default function JobDetail({ job, onBack, onUpdate }: Props) {
   }, [job.id])
 
   async function load() {
-    const [app, docs] = await Promise.all([
+    let [app, docs] = await Promise.all([
       api.getOrCreateApplication(job.id),
       api.listDocuments(job.id)
     ])
+    docs = docs.filter((d) => d.job_id === job.id)
     setApplication(app)
-    setDocuments(docs.filter((d) => d.job_id === job.id))
+    setDocuments(docs)
+
+    // Step 1: auto-generate missing documents
+    const cv = docs.find((d) => d.type === 'cv')
+    const coverLetter = docs.find((d) => d.type === 'cover_letter')
+    if (!cv || !coverLetter) {
+      if (!cv) {
+        const r = await api.tailorDocument({ job_id: job.id, document_type: 'cv' })
+        app = await api.getOrCreateApplication(job.id)
+        await api.updateApplication(app.id, { cv_document_id: r.document_id })
+      }
+      if (!coverLetter) {
+        const r = await api.tailorDocument({ job_id: job.id, document_type: 'cover_letter' })
+        app = await api.getOrCreateApplication(job.id)
+        await api.updateApplication(app.id, { cover_letter_document_id: r.document_id })
+      }
+      ;[app, docs] = await Promise.all([
+        api.getOrCreateApplication(job.id),
+        api.listDocuments(job.id)
+      ])
+      docs = docs.filter((d) => d.job_id === job.id)
+      setApplication(app)
+      setDocuments(docs)
+    }
+
+    // Step 2: auto-set status to ready when both docs exist
+    let status = job.status
+    const hasCv = docs.find((d) => d.type === 'cv')
+    const hasCl = docs.find((d) => d.type === 'cover_letter')
+    if (hasCv && hasCl && status !== 'ready' && status !== 'applied') {
+      await api.updateJob(job.id, { status: 'ready' })
+      status = 'ready'
+      onUpdate({ ...job, status: 'ready' })
+    }
+
+
   }
 
   async function handleTailor(type: 'cv' | 'cover_letter') {
@@ -300,23 +336,55 @@ export default function JobDetail({ job, onBack, onUpdate }: Props) {
           </div>
 
           <div className="card">
-            <h4 style={{ marginBottom: 8 }}>2. Review &amp; verify</h4>
+            <h4 style={{ marginBottom: 8 }}>2. AI content verification</h4>
             <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
-              Review both documents and mark as ready when they pass your quality check for AI screening systems.
+              Documents are automatically reviewed against the job description for quality and relevance.
             </p>
-            {job.status === 'ready' ? (
-              <p style={{ fontSize: 13, color: '#22c55e' }}>✓ Verified and ready to apply</p>
-            ) : cv && coverLetter ? (
-              <button className="btn btn-primary btn-sm" onClick={async () => {
-                const updated = await api.updateJob(job.id, { status: 'ready' })
-                onUpdate(updated)
-              }}>
-                Mark as verified &amp; ready
-              </button>
-            ) : (
+            {cv && (
+              <div style={{ marginBottom: 8, padding: 8, background: 'var(--bg)', borderRadius: 6, fontSize: 13 }}>
+                <strong>CV</strong>
+                {cv.verification_score != null ? (
+                  <div style={{ marginTop: 4 }}>
+                    <span style={{ color: cv.verification_score >= 70 ? '#22c55e' : '#f59e0b', fontWeight: 600 }}>
+                      {cv.verification_score}/100 {cv.verification_score >= 70 ? '✓' : '⚠'}
+                    </span>
+                    {cv.verification_feedback && (
+                      <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, whiteSpace: 'pre-wrap' }}>
+                        {cv.verification_feedback}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Pending review…</span>
+                )}
+              </div>
+            )}
+            {coverLetter && (
+              <div style={{ marginBottom: 8, padding: 8, background: 'var(--bg)', borderRadius: 6, fontSize: 13 }}>
+                <strong>Cover letter</strong>
+                {coverLetter.verification_score != null ? (
+                  <div style={{ marginTop: 4 }}>
+                    <span style={{ color: coverLetter.verification_score >= 70 ? '#22c55e' : '#f59e0b', fontWeight: 600 }}>
+                      {coverLetter.verification_score}/100 {coverLetter.verification_score >= 70 ? '✓' : '⚠'}
+                    </span>
+                    {coverLetter.verification_feedback && (
+                      <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, whiteSpace: 'pre-wrap' }}>
+                        {coverLetter.verification_feedback}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Pending review…</span>
+                )}
+              </div>
+            )}
+            {(!cv && !coverLetter) && (
               <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                Generate both a CV and cover letter above first.
+                Generate a CV and cover letter above first.
               </p>
+            )}
+            {job.status === 'ready' && (
+              <p style={{ fontSize: 13, color: '#22c55e', marginTop: 8 }}>✓ Verified and ready to apply</p>
             )}
           </div>
 
