@@ -24,6 +24,12 @@ export default function JobDetail({ job, onBack, onUpdate }: Props) {
   const [editLocation, setEditLocation] = useState(job.location ?? '')
   const [editDesc, setEditDesc] = useState(job.description ?? '')
   const [editNotes, setEditNotes] = useState(job.notes ?? '')
+  const [editSalaryRange, setEditSalaryRange] = useState(job.salary_range ?? '')
+  const [editRequirements, setEditRequirements] = useState(job.requirements ?? '')
+  const [editApplicationRequirements, setEditApplicationRequirements] = useState(job.application_requirements ?? '')
+  const [editHiringManager, setEditHiringManager] = useState(job.hiring_manager ?? '')
+  const [editEmploymentType, setEditEmploymentType] = useState(job.employment_type ?? '')
+  const [editWorkMode, setEditWorkMode] = useState(job.work_mode ?? '')
   const [viewDoc, setViewDoc] = useState<Document | null>(null)
   const [docTitle, setDocTitle] = useState('')
   const [docContent, setDocContent] = useState('')
@@ -131,7 +137,13 @@ export default function JobDetail({ job, onBack, onUpdate }: Props) {
       company: editCompany,
       location: editLocation || null,
       description: editDesc,
-      notes: editNotes
+      notes: editNotes,
+      salary_range: editSalaryRange || null,
+      requirements: editRequirements || null,
+      application_requirements: editApplicationRequirements || null,
+      hiring_manager: editHiringManager || null,
+      employment_type: editEmploymentType || null,
+      work_mode: editWorkMode || null
     })
     onUpdate(updated)
     setEditing(false)
@@ -191,6 +203,16 @@ export default function JobDetail({ job, onBack, onUpdate }: Props) {
             <>
               <textarea rows={12} value={editDesc} onChange={(e) => setEditDesc(e.target.value)} style={{ width: '100%' }} />
               <textarea rows={3} value={editNotes} onChange={(e) => setEditNotes(e.target.value)} placeholder="Notes..." style={{ width: '100%', marginTop: 8 }} />
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <input value={editSalaryRange} onChange={(e) => setEditSalaryRange(e.target.value)} placeholder="Salary" style={{ flex: 1 }} />
+                <input value={editEmploymentType} onChange={(e) => setEditEmploymentType(e.target.value)} placeholder="Full-time / Part-time / Contract" style={{ flex: 1 }} />
+                <input value={editWorkMode} onChange={(e) => setEditWorkMode(e.target.value)} placeholder="On-site / Hybrid / Remote" style={{ flex: 1 }} />
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <input value={editHiringManager} onChange={(e) => setEditHiringManager(e.target.value)} placeholder="Hiring manager" style={{ flex: 1 }} />
+                <input value={editApplicationRequirements} onChange={(e) => setEditApplicationRequirements(e.target.value)} placeholder="Resume only / Resume + cover letter / etc." style={{ flex: 2 }} />
+              </div>
+              <textarea rows={4} value={editRequirements} onChange={(e) => setEditRequirements(e.target.value)} placeholder="Requirements (skills, experience, education needed)..." style={{ width: '100%', marginTop: 8 }} />
               <div className="actions-row">
                 <button className="btn btn-primary btn-sm" onClick={handleSaveEdits}>Save</button>
                 <button className="btn btn-secondary btn-sm" onClick={() => setEditing(false)}>Cancel</button>
@@ -207,12 +229,34 @@ export default function JobDetail({ job, onBack, onUpdate }: Props) {
             </div>
           )}
 
-          {job.salary_range && (
-            <>
-              <div className="section-title">Salary</div>
-              <div className="card">{job.salary_range}</div>
-            </>
-          )}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 16 }}>
+            <div className="card" style={{ flex: '1 0 160px', padding: '8px 12px' }}>
+              <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', marginBottom: 2 }}>Salary</div>
+              <div style={{ fontSize: 13 }}>{job.salary_range || '—'}</div>
+            </div>
+            <div className="card" style={{ flex: '1 0 120px', padding: '8px 12px' }}>
+              <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', marginBottom: 2 }}>Type</div>
+              <div style={{ fontSize: 13 }}>{job.employment_type || '—'}</div>
+            </div>
+            <div className="card" style={{ flex: '1 0 120px', padding: '8px 12px' }}>
+              <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', marginBottom: 2 }}>Work mode</div>
+              <div style={{ fontSize: 13 }}>{job.work_mode || '—'}</div>
+            </div>
+            <div className="card" style={{ flex: '1 0 200px', padding: '8px 12px' }}>
+              <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', marginBottom: 2 }}>Hiring manager</div>
+              <div style={{ fontSize: 13 }}>{job.hiring_manager || '—'}</div>
+            </div>
+          </div>
+
+          <div className="section-title">Requirements</div>
+          <div className="card" style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.6 }}>
+            {job.requirements || 'No requirements specified.'}
+          </div>
+
+          <div className="section-title">Application requirements</div>
+          <div className="card" style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.6 }}>
+            {job.application_requirements || 'Not specified.'}
+          </div>
         </div>
 
         <div>

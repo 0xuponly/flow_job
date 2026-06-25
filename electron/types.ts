@@ -20,6 +20,11 @@ export interface Job {
   url: string | null
   description: string | null
   salary_range: string | null
+  requirements: string | null
+  application_requirements: string | null
+  hiring_manager: string | null
+  employment_type: string | null
+  work_mode: string | null
   source: string | null
   status: JobStatus
   score: number | null
@@ -115,6 +120,11 @@ export interface CreateJobInput {
   url?: string
   description?: string
   salary_range?: string
+  requirements?: string
+  application_requirements?: string
+  hiring_manager?: string
+  employment_type?: string
+  work_mode?: string
   source?: string
   score?: number | null
   notes?: string
