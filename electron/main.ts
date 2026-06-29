@@ -101,6 +101,8 @@ function registerIpc(): void {
     }
   })
 
+  ipcMain.handle('jobs:backfillDates', () => db.backfillJobPostingDates())
+
   ipcMain.handle('jobs:scanBoards', async (e, filters?: ScanFilters) => {
     _scanState.scanning = true
     _scanState.progress = []

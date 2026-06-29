@@ -27,6 +27,8 @@ export interface Job {
   status: JobStatus
   score: number | null
   notes: string | null
+  date_posted: string | null
+  last_updated: string | null
   created_at: string
   updated_at: string
 }
@@ -99,6 +101,7 @@ export interface Settings {
   user_name: string
   user_email: string
   user_phone: string
+  user_country: string
   base_cv: string
   job_search_keywords: string
   job_search_location: string
@@ -128,6 +131,7 @@ export interface CreateJobInput {
   source?: string
   score?: number | null
   notes?: string
+  date_posted?: string | null
 }
 
 export type Page =

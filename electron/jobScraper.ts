@@ -16,6 +16,7 @@ interface ScrapedJob {
   hiring_manager?: string
   employment_type?: string
   work_mode?: string
+  date_posted?: string
 }
 
 export async function scrapeJobFromUrl(rawUrl: string): Promise<CreateJobInput> {
@@ -49,7 +50,8 @@ export async function scrapeJobFromUrl(rawUrl: string): Promise<CreateJobInput> 
     application_requirements: scraped.application_requirements,
     hiring_manager: scraped.hiring_manager,
     employment_type: scraped.employment_type,
-    work_mode: scraped.work_mode
+    work_mode: scraped.work_mode,
+    date_posted: scraped.date_posted
   }
 }
 
@@ -238,6 +240,7 @@ function extractFromHtml(html: string, hostname: string, pageUrl: string, source
 
   // Always run post-processing to extract salary + metadata from raw HTML
   extractSalaryAndMetadata(result, html)
+  extractPostingDateFromHtml(result, html)
 
   if (result.title) {
     result.title = cleanTitle(result.title, result.company, result.source)
@@ -386,6 +389,10 @@ function applyJobPosting(result: ScrapedJob, jp: any): void {
   if (jp.hiringManager?.name && !result.hiring_manager) {
     result.hiring_manager = jp.hiringManager.name
   }
+
+  if (jp.datePosted && !result.date_posted) {
+    result.date_posted = parsePostingDate(jp.datePosted) ?? undefined
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -446,6 +453,12 @@ function applyLinkedIn(result: ScrapedJob, html: string): void {
     else if (/remote/i.test(wt)) result.work_mode = 'Remote'
   }
 
+  const datePostedMatch = html.match(/"datePosted"\s*:\s*"([^"]+)"/i)
+    || html.match(/"listDate"\s*:\s*"([^"]+)"/i)
+  if (datePostedMatch && !result.date_posted) {
+    result.date_posted = parsePostingDate(unescapeJson(datePostedMatch[1])) ?? undefined
+  }
+
   const ogTitle = extractMeta(html, 'og:title')
   if (ogTitle) {
     const parsed = parseLinkedInOgTitle(ogTitle)
@@ -481,6 +494,13 @@ function applyIndeed(result: ScrapedJob, html: string): void {
 
   const salaryMatch = html.match(/salarySnippet[^>]*>[\s\S]*?>([^<]+)/i)
   if (salaryMatch) result.salary_range = decodeHtmlEntities(salaryMatch[1].trim())
+
+  const dateMatch = html.match(/dateRecency[^>]*>([^<]+)/i)
+    || html.match(/"datePublished"\s*:\s*"([^"]+)"/i)
+    || html.match(/"datePosted"\s*:\s*"([^"]+)"/i)
+  if (dateMatch && !result.date_posted) {
+    result.date_posted = parsePostingDate(dateMatch[1]) ?? undefined
+  }
 }
 
 function applyGreenhouse(result: ScrapedJob, html: string): void {
@@ -922,6 +942,58 @@ function extractSalaryAndMetadata(result: ScrapedJob, html: string): void {
   if (!result.work_mode) {
     result.work_mode = extractWorkModeFromText(html)
   }
+}
+
+function extractPostingDateFromHtml(result: ScrapedJob, html: string): void {
+  if (result.date_posted) return
+
+  const metaPublished = extractMeta(html, 'article:published_time')
+    || extractMeta(html, 'og:published_time')
+  if (metaPublished) {
+    result.date_posted = parsePostingDate(metaPublished) ?? undefined
+    if (result.date_posted) return
+  }
+
+  const itempropMatch = html.match(/itemprop=["']datePosted["'][^>]+(?:content=["']([^"']+)["']|datetime=["']([^"']+)["'])/i)
+    || html.match(/(?:content=["']([^"']+)["']|datetime=["']([^"']+)["'])[^>]+itemprop=["']datePosted["']/i)
+  if (itempropMatch) {
+    result.date_posted = parsePostingDate(itempropMatch[1] || itempropMatch[2]) ?? undefined
+    if (result.date_posted) return
+  }
+
+  const jsonDateMatch = html.match(/"datePosted"\s*:\s*"([^"]+)"/i)
+    || html.match(/"datePublished"\s*:\s*"([^"]+)"/i)
+    || html.match(/"publishedAt"\s*:\s*"([^"]+)"/i)
+  if (jsonDateMatch) {
+    result.date_posted = parsePostingDate(unescapeJson(jsonDateMatch[1])) ?? undefined
+  }
+}
+
+export function parsePostingDate(value: unknown): string | null {
+  if (value == null) return null
+  const str = String(value).trim()
+  if (!str) return null
+  const parsed = new Date(str)
+  if (Number.isNaN(parsed.getTime())) return null
+  return parsed.toISOString()
+}
+
+export async function scrapePostingDateFromUrl(rawUrl: string): Promise<string | null> {
+  const url = normalizeUrl(rawUrl)
+  const hostname = new URL(url).hostname.replace(/^www\./, '')
+  const html = await fetchPageHtml(url, hostname)
+  const result: ScrapedJob = {}
+  const jobPosting = selectJobPosting(collectJobPostings(extractJsonLd(html)), html, url)
+  if (jobPosting) {
+    applyJobPosting(result, jobPosting)
+  }
+  extractPostingDateFromHtml(result, html)
+  if (hostname.includes('linkedin.com')) {
+    applyLinkedIn(result, html)
+  } else if (hostname.includes('indeed.com')) {
+    applyIndeed(result, html)
+  }
+  return result.date_posted ?? null
 }
 
 function applyGeneric(result: ScrapedJob, html: string, pageUrl: string): void {

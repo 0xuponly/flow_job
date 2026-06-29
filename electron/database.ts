@@ -1,7 +1,7 @@
 import { app, safeStorage } from 'electron'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import { cleanDescription } from './jobScraper'
+import { cleanDescription, scrapePostingDateFromUrl } from './jobScraper'
 import type {
   ApiModelConfig,
   Application,
@@ -87,6 +87,7 @@ function defaultStore(): Store {
       user_name: '',
       user_email: '',
       user_phone: '',
+      user_country: '',
       base_cv: '',
       job_search_keywords: '',
       job_search_location: ''
@@ -135,6 +136,7 @@ function loadStore(): Store {
     if (!store.seen_urls) {
       store.seen_urls = []
     }
+    let jobsMigrated = false
     for (const j of store.jobs) {
       if (j.url) {
         const dk = dedupKey(j.url)
@@ -142,6 +144,17 @@ function loadStore(): Store {
           store.seen_urls.push(j.url)
         }
       }
+      if (j.date_posted === undefined) {
+        j.date_posted = null
+        jobsMigrated = true
+      }
+      if (j.last_updated === undefined || j.last_updated === null) {
+        j.last_updated = j.created_at
+        jobsMigrated = true
+      }
+    }
+    if (jobsMigrated) {
+      persistStore()
     }
   } else {
     store = defaultStore()
@@ -189,7 +202,9 @@ function applyCleanDescription(jobs: Job[]): Job[] {
 
 export function listJobs(status?: JobStatus): Job[] {
   const s = loadStore()
-  const jobs = applyCleanDescription([...s.jobs]).sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+  const jobs = applyCleanDescription([...s.jobs]).sort((a, b) =>
+    (b.last_updated || b.updated_at).localeCompare(a.last_updated || a.updated_at)
+  )
   return status ? jobs.filter((j) => j.status === status) : jobs
 }
 
@@ -237,6 +252,8 @@ export function createJob(input: CreateJobInput): Job {
     status: 'sourced',
     score: input.score !== undefined ? (input.score ?? null) : 0.5,
     notes: input.notes ?? null,
+    date_posted: input.date_posted ?? null,
+    last_updated: now(),
     created_at: now(),
     updated_at: now()
   }
@@ -253,7 +270,7 @@ export function createJob(input: CreateJobInput): Job {
 
 export function updateJob(
   id: number,
-  fields: Partial<CreateJobInput & { status: JobStatus }>
+  fields: Partial<CreateJobInput & { status: JobStatus; last_updated?: string | null }>
 ): Job {
   const s = loadStore()
   const idx = s.jobs.findIndex((j) => j.id === id)
@@ -276,6 +293,8 @@ export function updateJob(
     status: fields.status ?? existing.status,
     score: fields.score !== undefined ? (fields.score ?? null) : existing.score,
     notes: fields.notes !== undefined ? (fields.notes ?? null) : existing.notes,
+    date_posted: fields.date_posted !== undefined ? (fields.date_posted ?? null) : existing.date_posted,
+    last_updated: fields.last_updated !== undefined ? (fields.last_updated ?? null) : existing.last_updated,
     updated_at: now()
   }
   // Track new URL for dedup if it changed
@@ -683,6 +702,31 @@ export function clearSeenUrls(): void {
   persistStore()
 }
 
+export async function backfillJobPostingDates(): Promise<number> {
+  const s = loadStore()
+  if (s.settings.job_dates_backfilled === '1') return 0
+
+  const targets = s.jobs.filter((j) => j.url && !j.date_posted)
+  let updated = 0
+  for (const job of targets) {
+    try {
+      const datePosted = await scrapePostingDateFromUrl(job.url!)
+      updateJob(job.id, {
+        ...(datePosted ? { date_posted: datePosted } : {}),
+        last_updated: now()
+      })
+      updated++
+      await new Promise((r) => setTimeout(r, 500 + Math.random() * 1000))
+    } catch {
+      updateJob(job.id, { last_updated: now() })
+    }
+  }
+
+  s.settings.job_dates_backfilled = '1'
+  persistStore()
+  return updated
+}
+
 export function clearAllData(): void {
   const s = loadStore()
   s.jobs = []
@@ -692,5 +736,6 @@ export function clearAllData(): void {
   s.interviews = []
   s.seen_urls = []
   s.nextId = 1
+  delete s.settings.job_dates_backfilled
   persistStore()
 }

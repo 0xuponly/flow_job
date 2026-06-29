@@ -70,6 +70,11 @@ const EMPTY_FORM: CreateJobInput = {
   notes: ''
 }
 
+function formatJobDate(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+}
+
 export default function JobsPage() {
   const [jobs, setJobs] = useState<Job[]>([])
   const [search, setSearch] = useState('')
@@ -182,6 +187,9 @@ export default function JobsPage() {
 
   useEffect(() => {
     loadJobs()
+    api.backfillJobDates().then((count) => {
+      if (count > 0) loadJobs()
+    })
   }, [])
 
   useEffect(() => {
@@ -379,7 +387,7 @@ export default function JobsPage() {
         </div>
 
       <div className="alert alert-info">
-        Paste a job posting URL from supported crypto job boards (LinkedIn, Indeed, Greenhouse, Lever, Glassdoor, Cryptocurrency Jobs, CryptoJobsList, cryptojobs.com, Crypto.jobs, Web3.career, and more). We'll only add the job if we can source the title, company, and description.
+        Paste a job posting URL. We'll only add the job if we can source the title, company, and description.
       </div>
 
       {jobs.length === 0 ? (
@@ -394,15 +402,14 @@ export default function JobsPage() {
         <table className="table">
           <thead>
             <tr>
-              <th style={{ width: 40 }}>
+              <th className="col-check">
                 <input
                   type="checkbox"
                   checked={allFilteredSelected}
                   onChange={toggleSelectAll}
-                  style={{ cursor: 'pointer' }}
                 />
               </th>
-              <th style={{ width: 48 }}>
+              <th className="col-fit">
                 <div className="filter-header">
                   <span>Fit</span>
                   <FilterSelect options={filterOptions.fits} selected={filterFit} onChange={setFilterFit} />
@@ -438,27 +445,27 @@ export default function JobsPage() {
                   <FilterSelect options={filterOptions.sources} selected={filterSource} onChange={setFilterSource} />
                 </div>
               </th>
+              <th>Date Posted</th>
+              <th>Last Updated</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
             {filteredJobs.map((job) => (
               <tr key={job.id} style={{ cursor: 'pointer' }} onClick={() => setSelectedJob(job)}>
-                <td style={{ width: 40 }} onClick={(e) => e.stopPropagation()}>
+                <td className="col-check" onClick={(e) => e.stopPropagation()}>
                   <input
                     type="checkbox"
                     checked={selectedIds.has(job.id)}
                     onChange={() => toggleSelect(job.id)}
-                    style={{ cursor: 'pointer' }}
                   />
                 </td>
-                <td style={{ width: 32, textAlign: 'center' }}>
+                <td className="col-fit">
                   {job.score != null && (
                     <span
+                      className="fit-dot"
                       style={{
                         display: 'inline-block',
-                        width: 10,
-                        height: 10,
                         borderRadius: '50%',
                         background: job.score >= 0.6 ? '#22c55e' : job.score >= 0.3 ? '#eab308' : '#ef4444'
                       }}
@@ -477,6 +484,8 @@ export default function JobsPage() {
                   </span>
                 </td>
                 <td>{job.source ?? '—'}</td>
+                <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{formatJobDate(job.date_posted)}</td>
+                <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{formatJobDate(job.last_updated)}</td>
                 <td>
                   <button
                     className="btn btn-danger btn-sm"

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { ApiModelConfig, Settings } from '../types'
+import { COUNTRIES, isRecognizedCountry } from '../countries'
 
 const PRESETS: { name: string; desc: string; model: Omit<ApiModelConfig, 'id'> }[] = [
   { name: 'Big Pickle', desc: 'Free, no API key needed', model: { name: 'Big Pickle', base_url: 'https://opencode.ai/zen/v1', api_key: '', model: 'big-pickle' } },
@@ -83,6 +84,24 @@ export default function SettingsPage() {
         <div className="form-group">
           <label>Phone</label>
           <input value={settings.user_phone} onChange={(e) => update('user_phone', e.target.value)} />
+        </div>
+        <div className="form-group">
+          <label>Country</label>
+          <input
+            list="countries"
+            value={settings.user_country}
+            onChange={(e) => update('user_country', e.target.value)}
+            placeholder="Start typing your country..."
+            style={settings.user_country && !isRecognizedCountry(settings.user_country) ? { borderColor: 'var(--danger)' } : undefined}
+          />
+          <datalist id="countries">
+            {COUNTRIES.map((c) => <option key={c} value={c} />)}
+          </datalist>
+          {settings.user_country && !isRecognizedCountry(settings.user_country) && (
+            <p style={{ fontSize: 11, color: 'var(--danger)', marginTop: 4 }}>
+              Country not recognized — scan jobs location won't default to it.
+            </p>
+          )}
         </div>
       </div>
 

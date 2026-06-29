@@ -1,4 +1,5 @@
 import { createJob, findDuplicateJob, getSeenUrls, getSettings, listJobs } from './database'
+import { decodeEntities } from './utils'
 import { scrapeJobFromUrl } from './jobScraper'
 import { fetchHtmlViaBrowser, isChallengePage } from './browserScraper'
 import type { Job, ScanFilters, WorkType } from './types'
@@ -20,12 +21,12 @@ const BOARDS: BoardConfig[] = [
   {
     name: 'Indeed',
     searchUrl: (k, l) => `https://www.indeed.com/q-${encodeURIComponent(k)}-l-${encodeURIComponent(l || '')}-jobs.html`,
-    useBrowser: false
+    useBrowser: true
   },
   {
     name: 'Indeed Canada',
     searchUrl: (k, l) => `https://ca.indeed.com/jobs?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
-    useBrowser: false
+    useBrowser: true
   },
   {
     name: 'Monster',
@@ -35,7 +36,7 @@ const BOARDS: BoardConfig[] = [
   {
     name: 'ZipRecruiter',
     searchUrl: (k, l) => `https://www.ziprecruiter.com/jobs?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
-    useBrowser: false
+    useBrowser: true
   },
   {
     name: 'SimplyHired',
@@ -45,7 +46,7 @@ const BOARDS: BoardConfig[] = [
   {
     name: 'Adzuna',
     searchUrl: (k, l) => `https://www.adzuna.com/search?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
-    useBrowser: false
+    useBrowser: true
   },
   {
     name: 'Talent.com',
@@ -55,7 +56,7 @@ const BOARDS: BoardConfig[] = [
   {
     name: 'Jora',
     searchUrl: (k, l) => `https://jora.com/jobs?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
-    useBrowser: false
+    useBrowser: true
   },
   {
     name: 'Remote OK',
@@ -65,7 +66,7 @@ const BOARDS: BoardConfig[] = [
   {
     name: 'We Work Remotely',
     searchUrl: (k) => `https://weworkremotely.com/categories/remote-${encodeURIComponent(k)}-jobs`,
-    useBrowser: false
+    useBrowser: true
   },
   {
     name: 'Remotive',
@@ -75,7 +76,7 @@ const BOARDS: BoardConfig[] = [
   {
     name: 'Remote.co',
     searchUrl: (k) => `https://remote.co/remote-jobs/search/?q=${encodeURIComponent(k)}`,
-    useBrowser: false
+    useBrowser: true
   },
   {
     name: 'Working Nomads',
@@ -100,7 +101,7 @@ const BOARDS: BoardConfig[] = [
   {
     name: 'Workopolis',
     searchUrl: (k, l) => `https://www.workopolis.com/search?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
-    useBrowser: false
+    useBrowser: true
   },
   {
     name: 'Jobboom',
@@ -115,7 +116,7 @@ const BOARDS: BoardConfig[] = [
   {
     name: 'CareerBeacon',
     searchUrl: (k, l) => `https://www.careerbeacon.com/en/search?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
-    useBrowser: false
+    useBrowser: true
   },
   {
     name: 'CharityVillage',
@@ -125,17 +126,17 @@ const BOARDS: BoardConfig[] = [
   {
     name: 'Crypto Careers',
     searchUrl: (k) => `https://www.crypto-careers.com/jobs?q=${encodeURIComponent(k)}`,
-    useBrowser: false
+    useBrowser: true
   },
   {
     name: 'Cryptorecruit',
     searchUrl: (k) => `https://www.cryptorecruit.com/jobs?q=${encodeURIComponent(k)}`,
-    useBrowser: false
+    useBrowser: true
   },
   {
     name: 'Remote3',
     searchUrl: (k) => `https://remote3.co/jobs?q=${encodeURIComponent(k)}`,
-    useBrowser: false
+    useBrowser: true
   },
   {
     name: 'Cryptocurrency Jobs',
@@ -145,7 +146,7 @@ const BOARDS: BoardConfig[] = [
   {
     name: 'CryptoJobsList',
     searchUrl: (k) => `https://cryptojobslist.com/jobs?q=${encodeURIComponent(k)}`,
-    useBrowser: false
+    useBrowser: true
   },
   {
     name: 'cryptojobs.com',
@@ -155,7 +156,7 @@ const BOARDS: BoardConfig[] = [
   {
     name: 'Crypto.jobs',
     searchUrl: (k) => `https://crypto.jobs/jobs?search=${encodeURIComponent(k)}`,
-    useBrowser: false
+    useBrowser: true
   },
   {
     name: 'Web3.career',
@@ -165,7 +166,7 @@ const BOARDS: BoardConfig[] = [
   {
     name: 'Startup.jobs',
     searchUrl: (k) => `https://startup.jobs/${encodeURIComponent(k)}-jobs`,
-    useBrowser: false
+    useBrowser: true
   },
   {
     name: 'Selby Jennings',
@@ -180,12 +181,47 @@ const BOARDS: BoardConfig[] = [
   {
     name: 'Built In',
     searchUrl: (k, l) => `https://builtin.com/jobs?search=${encodeURIComponent(k)}${l ? `&city=${encodeURIComponent(l)}` : ''}`,
-    useBrowser: false
+    useBrowser: true
   },
   {
     name: 'Vancouver Jobs',
     searchUrl: (k) => `https://jobs.vancouver.ca/search/?q=${encodeURIComponent(k)}`,
     useBrowser: false
+  },
+  {
+    name: 'Built In Toronto',
+    searchUrl: (k) => `https://builtintoronto.com/jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Wellfound',
+    searchUrl: (k) => `https://wellfound.com/search/jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'UToronto',
+    searchUrl: (k) => `https://jobs.entrepreneurs.utoronto.ca/jobs?search=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Y Combinator',
+    searchUrl: (k) => `https://www.ycombinator.com/jobs?search=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'CVCA',
+    searchUrl: (k) => `https://www.cvca.ca/professional-development/job-board/?search=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Top Startups',
+    searchUrl: (k) => `https://topstartups.io/jobs?search=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Rocketships',
+    searchUrl: (k) => `https://rocketships.io/jobs?search=${encodeURIComponent(k)}`,
+    useBrowser: true
   }
 ]
 
@@ -553,7 +589,7 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
   const dk = dedupKey(url)
   if (seenUrlsSet.has(dk)) return { action: 'skipped', reason: 'Already in database' }
 
-  await new Promise(r => setTimeout(r, 1000 + Math.random() * 2000))
+  await new Promise(r => setTimeout(r, 200 + Math.random() * 300))
 
   let input: { title: string; company: string; location?: string; url?: string; description?: string; salary_range?: string; source?: string; notes?: string; requirements?: string; application_requirements?: string; hiring_manager?: string; employment_type?: string; work_mode?: string }
   try {
@@ -628,9 +664,16 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
   const scanSeenUrls = new Set<string>()
 
   const result: ScanResult = { totalFound: 0, totalAdded: 0, totalSkipped: 0, boards: [], errors: [] }
-  const progress = onProgress || ((_: string) => {})
+  const _seenProgress = new Set<string>()
+  const progress = (msg: string) => {
+    if (_seenProgress.has(msg)) return
+    _seenProgress.add(msg)
+    ;(onProgress || ((_: string) => {}))(msg)
+  }
 
-  for (const board of BOARDS) {
+  const LISTING_CONCURRENCY = 6
+
+  async function processBoard(board: BoardConfig): Promise<ScanBoardResult> {
     const br: ScanBoardResult = { board: board.name, found: 0, added: 0, skipped: 0 }
     try {
       progress(`Scanning ${board.name}...`)
@@ -660,16 +703,15 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
         return true
       })
 
-      const CONCURRENCY = 3
       const batches: typeof listings[] = []
-      for (let i = 0; i < listings.length; i += CONCURRENCY) {
-        batches.push(listings.slice(i, i + CONCURRENCY))
+      for (let i = 0; i < listings.length; i += LISTING_CONCURRENCY) {
+        batches.push(listings.slice(i, i + LISTING_CONCURRENCY))
       }
 
       for (const batch of batches) {
         const results = await Promise.allSettled(
             batch.map(async (l) => {
-              progress(`Scraping ${board.name} — ${l.company || l.title || l.url}`)
+                progress(`Scraping ${board.name} — ${decodeEntities(l.company || l.title || l.url)}`)
               return fetchAndScore(l.url, baseCv, seenUrls, scanSeenUrls, workType, location, onJobAdded)
           })
         )
@@ -679,7 +721,7 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
               br.added++
               result.totalAdded++
               if (r.value.job) {
-                progress(`✓ Added ${r.value.job.company} — ${r.value.job.title}`)
+                progress(`✓ Added ${decodeEntities(r.value.job.company)} — ${decodeEntities(r.value.job.title)}`)
               }
             } else if (r.value.action === 'skipped' || r.value.action === 'incompatible') {
               br.skipped++
@@ -697,6 +739,14 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
       result.errors.push(`${board.name}: ${br.error}`)
     }
     result.boards.push(br)
+    return br
+  }
+
+  // Process boards with limited concurrency (2 at a time)
+  const BOARD_CONCURRENCY = 2
+  for (let i = 0; i < BOARDS.length; i += BOARD_CONCURRENCY) {
+    const chunk = BOARDS.slice(i, i + BOARD_CONCURRENCY)
+    await Promise.allSettled(chunk.map(board => processBoard(board)))
   }
 
   return result

@@ -1,6 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import type { ScanResult, WorkType } from '../types'
+import { isRecognizedCountry } from '../countries'
+
+function formatDuration(s: number): string {
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const sec = s % 60
+  const parts: string[] = []
+  if (h) parts.push(`${h}h`)
+  if (m) parts.push(`${m}m`)
+  parts.push(`${sec}s`)
+  return parts.join(' ')
+}
 
 interface ProgressEntry {
   id: number
@@ -22,12 +34,15 @@ export default function ScanJobsPage() {
   const entriesRef = useRef<ProgressEntry[]>([])
   const unsubRef = useRef<(() => void) | null>(null)
   const mountedRef = useRef(true)
+  const scanActiveRef = useRef(false)
 
   // On mount, re-attach to an in-progress or completed scan
   useEffect(() => {
     mountedRef.current = true
     api.getScanStatus().then((status) => {
       if (!mountedRef.current) return
+      // If handleScan already started, skip re-attach to avoid double listener
+      if (scanActiveRef.current) return
       if (status.scanning) {
         setScanning(true)
         const initialEntries = status.progress.map((msg) => ({ id: _nextId++, msg, timestamp: Date.now() }))
@@ -39,8 +54,11 @@ export default function ScanJobsPage() {
             setElapsed(Math.floor((Date.now() - status.startedAt!) / 1000))
           }, 1000)
         }
+        const seenAtMount = new Set<string>()
         const unsub = api.onScanProgress((msg: string) => {
           if (!mountedRef.current) return
+          if (seenAtMount.has(msg)) return
+          seenAtMount.add(msg)
           const entry = { id: _nextId++, msg, timestamp: Date.now() }
           entriesRef.current = [...entriesRef.current, entry]
           setEntries(entriesRef.current)
@@ -58,11 +76,22 @@ export default function ScanJobsPage() {
     })
     return () => {
       mountedRef.current = false
+      scanActiveRef.current = false
       unsubRef.current?.()
       unsubRef.current = null
       if (timerRef.current) clearInterval(timerRef.current)
       timerRef.current = null
     }
+  }, [])
+
+  // Default the location to the user's country (if recognized) from settings
+  useEffect(() => {
+    api.getSettings().then((s) => {
+      if (!mountedRef.current) return
+      if (s.user_country && isRecognizedCountry(s.user_country) && !location) {
+        setLocation(s.user_country)
+      }
+    })
   }, [])
 
   // Periodic cleanup: remove faded entries (grey + outdated blue) after 5s
@@ -89,6 +118,7 @@ export default function ScanJobsPage() {
   }, [])
 
   async function handleScan() {
+    scanActiveRef.current = true
     setScanning(true)
     setResult(null)
     setEntries([])
@@ -104,8 +134,11 @@ export default function ScanJobsPage() {
       setElapsed(Math.floor((Date.now() - start) / 1000))
     }, 1000)
 
+    const seenMsgs = new Set<string>()
     const unsub = api.onScanProgress((msg: string) => {
       if (!mountedRef.current) return
+      if (seenMsgs.has(msg)) return
+      seenMsgs.add(msg)
       const entry = { id: _nextId++, msg, timestamp: Date.now() }
       entriesRef.current = [...entriesRef.current, entry]
       setEntries(entriesRef.current)
@@ -128,6 +161,7 @@ export default function ScanJobsPage() {
       timerRef.current = null
       unsubRef.current?.()
       unsubRef.current = null
+      scanActiveRef.current = false
       if (mountedRef.current) setScanning(false)
     }
   }
@@ -189,7 +223,7 @@ export default function ScanJobsPage() {
       {(scanning || entries.length > 0) && (
         <div className="card" style={{ maxWidth: 800, marginTop: 16 }}>
           <p style={{ marginBottom: 8 }}>
-            {scanning ? `Fetching job listings from job boards... ${elapsed}s elapsed` : `Scan completed in ${elapsed}s`}
+            {scanning ? `Fetching job listings from job boards... ${formatDuration(elapsed)} elapsed` : `Scan completed in ${formatDuration(elapsed)}`}
           </p>
           <div style={{ fontSize: 12, lineHeight: 1.7, maxHeight: 320, overflowY: 'auto' }}>
             {(() => {

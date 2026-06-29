@@ -83,11 +83,11 @@ export default function JobDetail({ job, onBack, onUpdate }: Props) {
       }
     }
 
-    // Auto-set status to ready when both docs exist
+    // Auto-set status to ready when both docs score >= 70
     let status = job.status
-    const hasCv = docs.find((d) => d.type === 'cv')
-    const hasCl = docs.find((d) => d.type === 'cover_letter')
-    if (hasCv && hasCl && status !== 'ready' && status !== 'applied') {
+    const cv2 = docs.find((d) => d.type === 'cv')
+    const cl2 = docs.find((d) => d.type === 'cover_letter')
+    if (cv2 && cl2 && (cv2.verification_score ?? 0) >= 70 && (cl2.verification_score ?? 0) >= 70 && status !== 'ready' && status !== 'applied') {
       await api.updateJob(job.id, { status: 'ready' })
       status = 'ready'
       onUpdate({ ...job, status: 'ready' })
@@ -280,7 +280,16 @@ export default function JobDetail({ job, onBack, onUpdate }: Props) {
         ) : (
           <>
             <h1>{job.title}</h1>
-            <p>{job.company}{job.location ? ` · ${job.location}` : ''}</p>
+            <p>
+              {job.company}{job.location ? ` · ${job.location}` : ''}
+              {(job.date_posted || job.last_updated) && (
+                <span style={{ display: 'block', fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>
+                  {job.date_posted && <>Posted {new Date(job.date_posted).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</>}
+                  {job.date_posted && job.last_updated && ' · '}
+                  {job.last_updated && <>Last updated {new Date(job.last_updated).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</>}
+                </span>
+              )}
+            </p>
           </>
         )}
       </div>
@@ -331,6 +340,14 @@ export default function JobDetail({ job, onBack, onUpdate }: Props) {
           )}
 
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 16 }}>
+            <div className="card" style={{ flex: '1 0 140px', padding: '8px 12px' }}>
+              <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', marginBottom: 2 }}>Date posted</div>
+              <div style={{ fontSize: 13 }}>{job.date_posted ? new Date(job.date_posted).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—'}</div>
+            </div>
+            <div className="card" style={{ flex: '1 0 140px', padding: '8px 12px' }}>
+              <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', marginBottom: 2 }}>Last updated</div>
+              <div style={{ fontSize: 13 }}>{job.last_updated ? new Date(job.last_updated).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—'}</div>
+            </div>
             <div className="card" style={{ flex: '1 0 160px', padding: '8px 12px' }}>
               <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', marginBottom: 2 }}>Salary</div>
               <div style={{ fontSize: 13 }}>{job.salary_range || '—'}</div>
@@ -452,7 +469,7 @@ export default function JobDetail({ job, onBack, onUpdate }: Props) {
                 Generate a CV and cover letter above first.
               </p>
             )}
-            {job.status === 'ready' && (
+            {(cv?.verification_score ?? 0) >= 70 && (coverLetter?.verification_score ?? 0) >= 70 && (
               <p style={{ fontSize: 13, color: '#22c55e', marginTop: 8 }}>✓ Verified and ready to apply</p>
             )}
           </div>

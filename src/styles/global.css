@@ -239,6 +239,15 @@ textarea {
   border-bottom: 1px solid var(--border);
 }
 
+.table th.col-check,
+.table th.col-fit {
+  padding: 6px 4px;
+}
+
+.table th.col-check {
+  text-align: center;
+}
+
 .filter-header {
   display: flex;
   flex-direction: column;
@@ -323,6 +332,44 @@ textarea {
 .table td {
   padding: 12px;
   border-bottom: 1px solid var(--border);
+}
+
+.table .col-check,
+.table .col-fit {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.table .col-check {
+  padding: 6px 4px;
+  text-align: center;
+}
+
+.table .col-check input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  cursor: pointer;
+}
+
+.table .col-fit {
+  padding: 6px 4px;
+  text-align: center;
+}
+
+.table .col-fit .filter-header span {
+  font-size: 10px;
+}
+
+.table .col-fit .filter-dropdown-btn {
+  font-size: 9px;
+  padding: 1px 3px;
+  gap: 2px;
+}
+
+.table .col-fit .fit-dot {
+  width: 8px;
+  height: 8px;
 }
 
 .table tr:hover td {
