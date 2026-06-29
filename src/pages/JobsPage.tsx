@@ -139,7 +139,7 @@ export default function JobsPage() {
       if (filterSource.length && !filterSource.includes(j.source || '—')) return false
       if (filterFit.length && !filterFit.includes(fitLabel(j.score))) return false
       return true
-    })
+    }).sort((a, b) => (b.score ?? -1) - (a.score ?? -1))
   }, [jobs, filterCompany, filterTitle, filterLocation, filterStatus, filterSource, filterFit])
 
   const allFilteredSelected = useMemo(

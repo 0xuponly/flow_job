@@ -235,7 +235,7 @@ textarea {
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 500;
-  padding: 8px 12px;
+  padding: 5px 12px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -330,7 +330,8 @@ textarea {
 }
 
 .table td {
-  padding: 12px;
+  padding: 3px 12px;
+  line-height: 1.2;
   border-bottom: 1px solid var(--border);
 }
 
