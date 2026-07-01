@@ -33,7 +33,6 @@ Configure models in **Settings → AI Models**. DeepSeek is the default — sign
 - **Section-level regeneration** — regenerate Experience, Leadership & Activities, or Skills & Interests independently
 - **Multi-model fallback** — configure a priority-ordered list of AI models; falls through on failure
 - **PDF export** — Harvard-formatted PDF saved to `docs/` with naming convention `{name}_{company}_{position}_{docType}.pdf`
-- **Resume import** — import your base CV from PDF or DOCX
 - **Job board scanning** — search several different job boards. Job compatibility scoring with color indicators.
 - **Application pipeline** — sourced → tailoring → ready → applied → stages with follow-up and interview tracking
 - **Privacy** — API keys encrypted via Electron safeStorage (macOS Keychain); no data stored in plaintext
