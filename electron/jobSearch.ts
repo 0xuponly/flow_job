@@ -655,7 +655,10 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
 export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: string) => void, onJobAdded?: (job: Job) => void): Promise<ScanResult> {
   const settings = getSettings()
   const keywords = (filters?.keywords || settings.job_search_keywords || '').trim()
-  const location = (filters?.location || settings.job_search_location || '').trim()
+  const locationInput = (filters?.location || settings.job_search_location || '').trim()
+  const locations = locationInput
+    ? locationInput.split(',').map((s) => s.trim()).filter(Boolean)
+    : ['']
   const workType = filters?.workType || 'any'
   const baseCv = settings.base_cv || ''
 
@@ -673,14 +676,15 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
 
   const LISTING_CONCURRENCY = 6
 
-  async function processBoard(board: BoardConfig): Promise<ScanBoardResult> {
+  async function processBoard(board: BoardConfig, location: string): Promise<ScanBoardResult> {
     const br: ScanBoardResult = { board: board.name, found: 0, added: 0, skipped: 0 }
     try {
-      progress(`Scanning ${board.name}...`)
+      const locTag = location ? ` (${location})` : ''
+      progress(`Scanning ${board.name}${locTag}...`)
       const searchUrl = board.searchUrl(keywords, location)
       const html = await fetchPageHtml(searchUrl, board.useBrowser)
 
-      progress(`Parsing listings from ${board.name}...`)
+      progress(`Parsing listings from ${board.name}${locTag}...`)
       let listings = extractJobUrls(html, searchUrl, board.name)
       br.found = listings.length
 
@@ -711,7 +715,7 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
       for (const batch of batches) {
         const results = await Promise.allSettled(
             batch.map(async (l) => {
-                progress(`Scraping ${board.name} — ${decodeEntities(l.company || l.title || l.url)}`)
+                progress(`Scraping ${board.name}${location ? ` (${location})` : ''} — ${decodeEntities(l.company || l.title || l.url)}`)
               return fetchAndScore(l.url, baseCv, seenUrls, scanSeenUrls, workType, location, onJobAdded)
           })
         )
@@ -742,11 +746,14 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
     return br
   }
 
-  // Process boards with limited concurrency (2 at a time)
+  // Process boards with limited concurrency (2 at a time), for each location
   const BOARD_CONCURRENCY = 2
-  for (let i = 0; i < BOARDS.length; i += BOARD_CONCURRENCY) {
-    const chunk = BOARDS.slice(i, i + BOARD_CONCURRENCY)
-    await Promise.allSettled(chunk.map(board => processBoard(board)))
+  for (const location of locations) {
+    if (location) progress(`Searching in: ${location}`)
+    for (let i = 0; i < BOARDS.length; i += BOARD_CONCURRENCY) {
+      const chunk = BOARDS.slice(i, i + BOARD_CONCURRENCY)
+      await Promise.allSettled(chunk.map(board => processBoard(board, location)))
+    }
   }
 
   return result

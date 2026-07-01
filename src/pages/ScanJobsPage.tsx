@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import type { ScanResult, WorkType } from '../types'
-import { isRecognizedCountry } from '../countries'
 
 function formatDuration(s: number): string {
   const h = Math.floor(s / 3600)
@@ -86,13 +85,13 @@ export default function ScanJobsPage() {
     }
   }, [])
 
-  // Default the location to the user's country (if recognized) from settings
+  // Default the location to the user's preferred location from settings
   useEffect(() => {
     let cancelled = false
     api.getSettings().then((s) => {
       if (cancelled) return
-      if (s.user_country && isRecognizedCountry(s.user_country) && !location) {
-        setLocation(s.user_country)
+      if (s.job_search_location && !location) {
+        setLocation(s.job_search_location)
       }
     })
     return () => { cancelled = true }
@@ -192,7 +191,7 @@ export default function ScanJobsPage() {
             <input
               value={location}
               onChange={(e) => setLocation(e.target.value)}
-              placeholder="e.g. London, Remote (leave blank to use saved preferences)"
+              placeholder="e.g. London, Paris, Remote (separate with commas)"
             />
           </div>
         </div>

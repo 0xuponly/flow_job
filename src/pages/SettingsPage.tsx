@@ -30,17 +30,6 @@ export default function SettingsPage() {
 
   async function handleSave() {
     if (!settings) return
-    if (models.length > 0) {
-      const hosts = Array.from(new Set(models.map((m) => {
-        try { return new URL(m.base_url).hostname } catch { return m.base_url }
-      })))
-      const confirmed = window.confirm(
-        `Your base CV, full job descriptions, and generated document content will be sent to:\n\n` +
-        hosts.map((h) => '  • ' + h).join('\n') +
-        `\n\nContinue?`
-      )
-      if (!confirmed) return
-    }
     setSaving(true)
     try {
       await api.updateSettings(settings)
