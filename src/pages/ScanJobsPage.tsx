@@ -28,6 +28,7 @@ export default function ScanJobsPage() {
   const [workType, setWorkType] = useState<WorkType>('any')
   const [allBoards, setAllBoards] = useState<{ name: string; useBrowser: boolean }[]>([])
   const [selectedBoards, setSelectedBoards] = useState<Set<string>>(new Set())
+  const [boardsExpanded, setBoardsExpanded] = useState(false)
   const [boardHealth, setBoardHealth] = useState<Record<string, number[]>>({})
   const [scanning, setScanning] = useState(false)
   const [result, setResult] = useState<ScanResult | null>(null)
@@ -234,24 +235,43 @@ export default function ScanJobsPage() {
           </div>
         </div>
         <div className="form-group">
-          <label>
-            Job boards ({selectedBoards.size} of {allBoards.length} selected)
-          </label>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+            <label>
+              Job boards ({selectedBoards.size} of {allBoards.length} selected)
+            </label>
+            <button
+              type="button"
+              className="btn btn-sm btn-secondary"
+              onClick={() => setBoardsExpanded((v) => !v)}
+            >
+              {boardsExpanded ? '−' : '+'}
+            </button>
+          </div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6, alignItems: 'center' }}>
-            <button
-              type="button"
-              className="btn btn-sm btn-secondary"
-              onClick={() => setSelectedBoards(new Set(allBoards.map((b) => b.name)))}
-            >
-              Select all
-            </button>
-            <button
-              type="button"
-              className="btn btn-sm btn-secondary"
-              onClick={() => setSelectedBoards(new Set())}
-            >
-              Deselect all
-            </button>
+            {selectedBoards.size < allBoards.length && (
+              <button
+                type="button"
+                className="btn btn-sm btn-secondary"
+                onClick={() => {
+                  setSelectedBoards(new Set(allBoards.map((b) => b.name)))
+                  setBoardsExpanded(true)
+                }}
+              >
+                Select all
+              </button>
+            )}
+            {selectedBoards.size > 0 && (
+              <button
+                type="button"
+                className="btn btn-sm btn-secondary"
+                onClick={() => {
+                  setSelectedBoards(new Set())
+                  setBoardsExpanded(true)
+                }}
+              >
+                Deselect all
+              </button>
+            )}
             <span style={{ width: 1, height: 20, background: 'var(--border)', margin: '0 4px' }} />
             {(() => {
               const frequentErrors = allBoards
@@ -273,15 +293,18 @@ export default function ScanJobsPage() {
                   key="frequent-errors"
                   type="button"
                   className="btn btn-sm btn-secondary"
-                  onClick={() => setSelectedBoards((prev) => {
-                    const next = new Set(prev)
-                    if (allSelected) {
-                      for (const name of frequentErrors) next.delete(name)
-                    } else {
-                      for (const name of frequentErrors) next.add(name)
-                    }
-                    return next
-                  })}
+                  onClick={() => {
+                    setBoardsExpanded(true)
+                    setSelectedBoards((prev) => {
+                      const next = new Set(prev)
+                      if (allSelected) {
+                        for (const name of frequentErrors) next.delete(name)
+                      } else {
+                        for (const name of frequentErrors) next.add(name)
+                      }
+                      return next
+                    })
+                  }}
                 >
                   {label}
                 </button>
@@ -300,69 +323,74 @@ export default function ScanJobsPage() {
                   key={t.label}
                   type="button"
                   className="btn btn-sm btn-secondary"
-                  onClick={() => setSelectedBoards((prev) => {
-                    const next = new Set(prev)
-                    if (allSelected) {
-                      for (const name of t.boards) next.delete(name)
-                    } else {
-                      for (const name of t.boards) next.add(name)
-                    }
-                    return next
-                  })}
+                  onClick={() => {
+                    setBoardsExpanded(true)
+                    setSelectedBoards((prev) => {
+                      const next = new Set(prev)
+                      if (allSelected) {
+                        for (const name of t.boards) next.delete(name)
+                      } else {
+                        for (const name of t.boards) next.add(name)
+                      }
+                      return next
+                    })
+                  }}
                 >
                   {label}
                 </button>
               )
             })}
           </div>
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
-            gap: 4,
-            padding: 8,
-            background: 'var(--bg)',
-            borderRadius: 6,
-            border: '1px solid var(--border)'
-          }}>
-            {allBoards.map((b) => {
-              const checked = selectedBoards.has(b.name)
-              const history = boardHealth[b.name] || []
-              // Red if the last 5 results were all zero/errored
-              const allBad = history.length >= 5 && history.every((h) => h <= 0)
-              return (
-                <label
-                  key={b.name}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    fontSize: 13,
-                    color: allBad ? '#ef4444' : undefined,
-                    fontWeight: allBad ? 600 : undefined,
-                    cursor: 'pointer',
-                    minWidth: 0
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => {
-                      setSelectedBoards((prev) => {
-                        const next = new Set(prev)
-                        if (next.has(b.name)) next.delete(b.name)
-                        else next.add(b.name)
-                        return next
-                      })
+          {boardsExpanded && (
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+              gap: 4,
+              padding: 8,
+              background: 'var(--bg)',
+              borderRadius: 6,
+              border: '1px solid var(--border)'
+            }}>
+              {allBoards.map((b) => {
+                const checked = selectedBoards.has(b.name)
+                const history = boardHealth[b.name] || []
+                // Red if the last 5 results were all zero/errored
+                const allBad = history.length >= 5 && history.every((h) => h <= 0)
+                return (
+                  <label
+                    key={b.name}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      fontSize: 13,
+                      color: allBad ? '#ef4444' : undefined,
+                      fontWeight: allBad ? 600 : undefined,
+                      cursor: 'pointer',
+                      minWidth: 0
                     }}
-                  />
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.name}</span>
-                  {allBad && (
-                    <span style={{ fontSize: 10, color: '#ef4444' }}>(5 empty)</span>
-                  )}
-                </label>
-              )
-            })}
-          </div>
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => {
+                        setSelectedBoards((prev) => {
+                          const next = new Set(prev)
+                          if (next.has(b.name)) next.delete(b.name)
+                          else next.add(b.name)
+                          return next
+                        })
+                      }}
+                    />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.name}</span>
+                    {allBad && (
+                      <span style={{ fontSize: 10, color: '#ef4444' }}>(5 empty)</span>
+                    )}
+                  </label>
+                )
+              })}
+            </div>
+          )}
         </div>
         <div style={{ marginTop: 12 }}>
           <button className="btn btn-primary" onClick={handleScan} disabled={scanning || selectedBoards.size === 0}>
