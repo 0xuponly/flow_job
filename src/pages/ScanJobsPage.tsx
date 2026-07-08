@@ -223,7 +223,7 @@ export default function ScanJobsPage() {
         }
       `}</style>
 
-      {(scanning || entries.length > 0) && (
+      {scanning && (
         <div className="card" style={{ maxWidth: 800, marginTop: 16 }}>
           <p style={{ marginBottom: 8 }}>
             {scanning ? `Fetching job listings from job boards... ${formatDuration(elapsed)} elapsed` : `Scan completed in ${formatDuration(elapsed)}`}
@@ -268,17 +268,34 @@ export default function ScanJobsPage() {
               </tr>
             </thead>
             <tbody>
-              {result.boards.map((b) => (
-                <tr key={b.board}>
-                  <td><strong>{b.board}</strong></td>
-                  <td>{b.found}</td>
-                  <td style={{ color: '#22c55e', fontWeight: 600 }}>{b.added}</td>
-                  <td>{b.skipped}</td>
-                  <td>
-                    {b.error && <span style={{ color: '#ef4444', fontSize: 12 }}>{b.error}</span>}
-                  </td>
-                </tr>
-              ))}
+              {(() => {
+                // Merge duplicates from multi-location scans: sum counts per board
+                const merged = new Map<string, { board: string; found: number; added: number; skipped: number; error?: string }>()
+                for (const b of result.boards) {
+                  const existing = merged.get(b.board)
+                  if (existing) {
+                    existing.found += b.found
+                    existing.added += b.added
+                    existing.skipped += b.skipped
+                    if (b.error && !existing.error) existing.error = b.error
+                  } else {
+                    merged.set(b.board, { ...b })
+                  }
+                }
+                return Array.from(merged.values())
+                  .filter((b) => b.found > 0 || b.added > 0 || b.skipped > 0 || !!b.error)
+                  .map((b) => (
+                  <tr key={b.board}>
+                    <td><strong>{b.board}</strong></td>
+                    <td>{b.found}</td>
+                    <td style={{ color: '#22c55e', fontWeight: 600 }}>{b.added}</td>
+                    <td>{b.skipped}</td>
+                    <td>
+                      {b.error && <span style={{ color: '#ef4444', fontSize: 12 }}>{b.error}</span>}
+                    </td>
+                  </tr>
+                ))
+              })()}
             </tbody>
           </table>
           {result.errors.length > 0 && (
