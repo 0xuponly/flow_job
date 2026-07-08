@@ -252,7 +252,15 @@ export default function ScanJobsPage() {
               Deselect all
             </button>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 200, overflowY: 'auto', padding: 8, background: 'var(--bg)', borderRadius: 6, border: '1px solid var(--border)' }}>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+            gap: 4,
+            padding: 8,
+            background: 'var(--bg)',
+            borderRadius: 6,
+            border: '1px solid var(--border)'
+          }}>
             {allBoards.map((b) => {
               const checked = selectedBoards.has(b.name)
               const history = boardHealth[b.name] || []
@@ -268,7 +276,8 @@ export default function ScanJobsPage() {
                     fontSize: 13,
                     color: allBad ? '#ef4444' : undefined,
                     fontWeight: allBad ? 600 : undefined,
-                    cursor: 'pointer'
+                    cursor: 'pointer',
+                    minWidth: 0
                   }}
                 >
                   <input
@@ -283,9 +292,9 @@ export default function ScanJobsPage() {
                       })
                     }}
                   />
-                  <span>{b.name}</span>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.name}</span>
                   {allBad && (
-                    <span style={{ fontSize: 10, color: '#ef4444' }}>(5 empty scans)</span>
+                    <span style={{ fontSize: 10, color: '#ef4444' }}>(5 empty)</span>
                   )}
                 </label>
               )
