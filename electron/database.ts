@@ -82,7 +82,9 @@ function defaultStore(): Store {
       base_cv: '',
       job_search_keywords: '',
       job_search_location: '',
-      deleted_jobs_cap: 50000
+      deleted_jobs_cap: 50000,
+      auto_scan_enabled: true,
+      auto_scan_interval_minutes: 120
     },
     api_models: [],
     nextId: 1,
@@ -187,6 +189,12 @@ function loadStore(): Store {
     }
     if (!store.deleted_jobs) {
       store.deleted_jobs = []
+    }
+    if (typeof store.settings.auto_scan_enabled !== 'boolean') {
+      store.settings.auto_scan_enabled = true
+    }
+    if (typeof store.settings.auto_scan_interval_minutes !== 'number' || store.settings.auto_scan_interval_minutes <= 0) {
+      store.settings.auto_scan_interval_minutes = 120
     }
     let jobsMigrated = false
     for (const j of store.jobs) {

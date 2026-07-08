@@ -25,6 +25,12 @@ export default function SettingsPage() {
       if (typeof s.deleted_jobs_cap !== 'number' || s.deleted_jobs_cap <= 0) {
         s.deleted_jobs_cap = 50000
       }
+      if (typeof s.auto_scan_enabled !== 'boolean') {
+        s.auto_scan_enabled = true
+      }
+      if (typeof s.auto_scan_interval_minutes !== 'number' || s.auto_scan_interval_minutes <= 0) {
+        s.auto_scan_interval_minutes = 120
+      }
       setSettings(s)
       setModels(m.length > 0 ? m : PRESETS.map((p, i) => ({ id: `model-${i + 1}`, ...p.model })))
       setEncryptionMode(sec.mode)
@@ -44,7 +50,7 @@ export default function SettingsPage() {
     }
   }
 
-  function update(field: keyof Settings, value: string | number) {
+  function update(field: keyof Settings, value: string | number | boolean) {
     setSettings((prev) => (prev ? { ...prev, [field]: value as never } : prev))
   }
 
@@ -136,6 +142,34 @@ export default function SettingsPage() {
           />
           <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
             How many manually-deleted low-fit jobs to remember so the scanner doesn't re-add them. Older entries are dropped when this cap is exceeded.
+          </p>
+        </div>
+        <div className="form-group" style={{ marginTop: 4 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={settings.auto_scan_enabled}
+              onChange={(e) => update('auto_scan_enabled', e.target.checked)}
+            />
+            Run job scan automatically in the background
+          </label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, marginLeft: 24 }}>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Every</span>
+            <input
+              type="number"
+              min={5}
+              step={5}
+              style={{ width: 80 }}
+              value={settings.auto_scan_interval_minutes}
+              onChange={(e) => {
+                const n = parseInt(e.target.value, 10)
+                if (!isNaN(n) && n > 0) update('auto_scan_interval_minutes', n)
+              }}
+            />
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>minutes after the last scan completes</span>
+          </div>
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, marginLeft: 24 }}>
+            Auto-scans use all job boards, all work types, and your saved Preferred location. The scan runs while the app is open; you'll see progress in the Scan Jobs tab.
           </p>
         </div>
       </div>
