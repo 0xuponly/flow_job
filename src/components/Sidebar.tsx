@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react'
+import { api } from '../api'
 import type { Page } from '../types'
 
 interface Props {
@@ -17,6 +19,23 @@ const NAV_ITEMS: { id: Page; label: string; icon: string }[] = [
 ]
 
 export default function Sidebar({ current, onNavigate }: Props) {
+  const [scanning, setScanning] = useState(false)
+
+  useEffect(() => {
+    let mounted = true
+    const check = () => {
+      api.getScanStatus().then((s) => {
+        if (mounted) setScanning(!!s.scanning)
+      }).catch(() => {})
+    }
+    check()
+    const interval = setInterval(check, 3000)
+    return () => {
+      mounted = false
+      clearInterval(interval)
+    }
+  }, [])
+
   return (
     <aside className="sidebar">
       <div className="sidebar-logo">
@@ -34,6 +53,16 @@ export default function Sidebar({ current, onNavigate }: Props) {
           </button>
         ))}
       </nav>
+      {scanning && (
+        <div
+          className="sidebar-scan-indicator"
+          title="A job scan is currently running"
+          onClick={() => onNavigate('scanjobs')}
+        >
+          <span className="scan-pulse" />
+          Scanning…
+        </div>
+      )}
     </aside>
   )
 }

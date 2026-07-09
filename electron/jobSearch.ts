@@ -669,7 +669,8 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
   const seenUrls = new Set(getSeenUrls().map(dedupKey))
   const scanSeenUrls = new Set<string>()
 
-  const result: ScanResult = { totalFound: 0, totalAdded: 0, totalSkipped: 0, boards: [], errors: [] }
+  const startedAt = Date.now()
+  const result: ScanResult = { totalFound: 0, totalAdded: 0, totalSkipped: 0, boards: [], errors: [], startedAt, durationMs: 0 }
   const _seenProgress = new Set<string>()
   const progress = (msg: string) => {
     if (_seenProgress.has(msg)) return
@@ -785,6 +786,8 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
   result.boards = result.boards.filter(
     (b) => b.found > 0 || b.added > 0 || b.skipped > 0 || !!b.error
   )
+
+  result.durationMs = Date.now() - startedAt
 
   return result
 }

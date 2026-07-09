@@ -186,6 +186,8 @@ export interface ScanResult {
   totalSkipped: number
   boards: ScanBoardResult[]
   errors: string[]
+  startedAt: number | null
+  durationMs: number
 }
 
 export interface ScanStatus {

@@ -455,11 +455,21 @@ export default function ScanJobsPage() {
           (b) => b.found > 0 || b.added > 0 || b.skipped > 0 || !!b.error
         )
         if (rows.length === 0) return null
+        const ranAt = result.startedAt
+          ? new Date(result.startedAt).toLocaleString('en-US', { timeZone: 'America/New_York', dateStyle: 'medium', timeStyle: 'medium' }) + ' EST'
+          : 'unknown time'
+        const seconds = Math.round(result.durationMs / 1000)
+        const minutes = Math.floor(seconds / 60)
+        const remSeconds = seconds % 60
+        const duration = minutes > 0 ? `${minutes}m ${remSeconds}s` : `${seconds}s`
         return (
           <div className="card" style={{ maxWidth: 800, marginTop: 16 }}>
-            <h3 style={{ marginBottom: 12 }}>
+            <h3 style={{ marginBottom: 4 }}>
               Found {result.totalFound} postings — added {result.totalAdded}, skipped {result.totalSkipped}
             </h3>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+              Ran at {ranAt} · Took {duration}
+            </p>
             <table className="table">
               <thead>
                 <tr>
