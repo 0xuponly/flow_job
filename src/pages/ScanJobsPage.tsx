@@ -90,6 +90,15 @@ export default function ScanJobsPage() {
     }
   }, [])
 
+  // Stop the elapsed timer whenever scanning becomes false (covers both manual
+  // and auto-scan completion, even if the user is on this tab when it finishes).
+  useEffect(() => {
+    if (!scanning && timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+  }, [scanning])
+
   // Load available boards and health data
   useEffect(() => {
     let cancelled = false
@@ -155,6 +164,7 @@ export default function ScanJobsPage() {
     unsubRef.current = null
 
     const start = Date.now()
+    if (timerRef.current) clearInterval(timerRef.current)
     timerRef.current = setInterval(() => {
       setElapsed(Math.floor((Date.now() - start) / 1000))
     }, 1000)
@@ -177,7 +187,10 @@ export default function ScanJobsPage() {
         workType,
         boards: selectedBoards.size < allBoards.length ? Array.from(selectedBoards) : undefined
       })
-      if (mountedRef.current) setResult(r)
+      if (mountedRef.current) {
+        setResult(r)
+        setElapsed(Math.round(r.durationMs / 1000))
+      }
       // Refresh health data after scan completes
       api.getBoardHealth().then((h) => { if (mountedRef.current) setBoardHealth(h) })
     } catch (err) {
@@ -458,10 +471,13 @@ export default function ScanJobsPage() {
         const ranAt = result.startedAt
           ? new Date(result.startedAt).toLocaleString('en-US', { timeZone: 'America/New_York', dateStyle: 'medium', timeStyle: 'medium' }) + ' EST'
           : 'unknown time'
-        const seconds = Math.round(result.durationMs / 1000)
+        const totalMs = typeof result.durationMs === 'number' && Number.isFinite(result.durationMs) ? result.durationMs : 0
+        const seconds = Math.round(totalMs / 1000)
         const minutes = Math.floor(seconds / 60)
         const remSeconds = seconds % 60
-        const duration = minutes > 0 ? `${minutes}m ${remSeconds}s` : `${seconds}s`
+        const duration = totalMs > 0
+          ? (minutes > 0 ? `${minutes}m ${remSeconds}s` : `${seconds}s`)
+          : 'unknown duration'
         return (
           <div className="card" style={{ maxWidth: 800, marginTop: 16 }}>
             <h3 style={{ marginBottom: 4 }}>
