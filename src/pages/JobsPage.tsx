@@ -79,6 +79,34 @@ function formatJobDate(iso: string | null | undefined): string {
   return `${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${String(d.getFullYear()).slice(-2)} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+// Deduplicate jobs that share the same URL (normalized) or the same
+// company+title+location triple. Defends against rows that slipped past
+// the DB-level dedupe (e.g. before the scan-path fix landed, or rows
+// imported via manual add). Keeps the first occurrence.
+function dedupeJobs(jobs: Job[]): Job[] {
+  const seenUrl = new Set<string>()
+  const seenKey = new Set<string>()
+  return jobs.filter((j) => {
+    if (j.url) {
+      try {
+        const u = new URL(j.url)
+        const k = `${u.protocol}//${u.host}${u.pathname.replace(/\/$/, '')}`.toLowerCase()
+        if (seenUrl.has(k)) return false
+        seenUrl.add(k)
+      } catch {
+        // fall through to company+title match
+      }
+    }
+    const c = j.company?.trim().toLowerCase() ?? ''
+    const t = j.title?.trim().toLowerCase() ?? ''
+    const l = j.location?.trim().toLowerCase() ?? ''
+    const ck = `${c}::${t}::${l}`
+    if (seenKey.has(ck)) return false
+    seenKey.add(ck)
+    return true
+  })
+}
+
 export default function JobsPage() {
   const [jobs, setJobs] = useState<Job[]>([])
   const [search, setSearch] = useState('')
@@ -223,7 +251,7 @@ export default function JobsPage() {
   async function loadJobs() {
     const before = new Map(jobs.map((j) => [j.id, j.fit_last_error ?? null]))
     const data = search ? await api.searchJobs(search) : await api.listJobs()
-    setJobs(data.map(cleanJob))
+    setJobs(dedupeJobs(data.map(cleanJob)))
     // Surface fit-level assessment failures that appeared since last load.
     const newlyFailing = data.filter((j) => {
       const prev = before.get(j.id)
@@ -257,7 +285,7 @@ export default function JobsPage() {
     setLinkError('')
     try {
       const job = cleanJob(await api.importJobFromUrl(linkUrl))
-      setJobs((prev) => [job, ...prev])
+      setJobs((prev) => dedupeJobs([job, ...prev]))
       setShowAddLink(false)
       setLinkUrl('')
       setSelectedJob(job)
@@ -280,7 +308,7 @@ export default function JobsPage() {
     setSaving(true)
     try {
       const job = cleanJob(await api.createJob(form))
-      setJobs((prev) => [job, ...prev])
+      setJobs((prev) => dedupeJobs([job, ...prev]))
       setShowAddManual(false)
       setForm(EMPTY_FORM)
       setSelectedJob(job)
