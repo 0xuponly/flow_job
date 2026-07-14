@@ -482,7 +482,12 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
                     <option key={t} value={t}>{EMPLOYMENT_TYPE_LABELS[t]}</option>
                   ))}
                 </select>
-                <input value={editWorkMode} onChange={(e) => setEditWorkMode(e.target.value)} placeholder="On-site / Hybrid / Remote" style={{ flex: 1 }} />
+                <select value={editWorkMode} onChange={(e) => setEditWorkMode(e.target.value)} style={{ flex: 1 }}>
+                  <option value="">— Select work mode —</option>
+                  {WORK_MODES.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
               </div>
               <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                 <input value={editHiringManager} onChange={(e) => setEditHiringManager(e.target.value)} placeholder="Hiring manager" style={{ flex: 1 }} />
