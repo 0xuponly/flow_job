@@ -848,3 +848,50 @@ input[type="checkbox"]:disabled {
   color: var(--text);
   border-color: var(--text-muted);
 }
+
+/* Icon-only square button. Generic across the app — pair with a color
+   modifier (.icon-btn-danger) to indicate destructive actions. Equal
+   width and height (28px) and 0 padding keep the control a true
+   square regardless of the inner glyph's natural width. The danger
+   variant uses a low-alpha red fill that brightens on hover, matching
+   the .btn-danger convention from elsewhere in the app. */
+.icon-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
+.icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.icon-btn-danger {
+  color: var(--danger);
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.icon-btn-danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.18);
+  color: var(--danger);
+  border-color: rgba(239, 68, 68, 0.6);
+}

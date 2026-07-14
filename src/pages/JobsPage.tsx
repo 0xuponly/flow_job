@@ -1297,10 +1297,9 @@ export default function JobsPage() {
                 <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{formatJobDate(job.last_updated)}</td>
                 <td>
                   <button
-                    className="btn btn-danger btn-sm"
+                    className="icon-btn icon-btn-danger"
                     title="Delete job"
                     aria-label="Delete job"
-                    style={{ minWidth: 32, padding: '0 8px' }}
                     onClick={(e) => {
                       e.stopPropagation()
                       handleDelete(job.id)
