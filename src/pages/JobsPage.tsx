@@ -560,11 +560,6 @@ export default function JobsPage() {
   const [filterSalary, setFilterSalary] = useState<SalaryFilter>(EMPTY_SALARY_FILTER)
   const [filterFit, setFilterFit] = useState<string[]>([])
   const [filterDatePosted, setFilterDatePosted] = useState<DateFilter>(EMPTY_DATE_FILTER)
-  // User's country, used as the fallback currency code for salary cells
-  // whose stored value has no 3-letter ISO prefix (e.g. "$100,000" with
-  // no CAD/USD label). Defaulted to USD until settings load; the
-  // display effect below refreshes it once api.getSettings resolves.
-  const [defaultCurrency, setDefaultCurrency] = useState<string>('USD')
   // Sort: null = default behavior (score DESC, nulls last). A column click
   // cycles default → asc → desc → default. Only one column is sorted at a
   // time; clicking a different column resets the previous one to default.
@@ -926,23 +921,6 @@ export default function JobsPage() {
     const timer = setTimeout(loadJobs, 300)
     return () => clearTimeout(timer)
   }, [search])
-
-  // Fetch the user's country once on mount so the Salary column has a
-  // sensible default currency code to fall back on. Settings are
-  // page-level here (not deep into the IPC), so a one-shot fetch on
-  // mount is enough — the Salary cell only re-renders when jobs
-  // change, and if the user changes country in Settings and re-runs
-  // the Sidebar refresh, this effect won't re-run (settings is cached
-  // by the main process, but the user can also Cmd-R to pick up a
-  // country change without us wiring a listener).
-  useEffect(() => {
-    let cancelled = false
-    api.getSettings().then((s) => {
-      if (cancelled) return
-      setDefaultCurrency(defaultCurrencyForCountry(s.user_country))
-    }).catch(() => { /* leave USD as fallback */ })
-    return () => { cancelled = true }
-  }, [])
 
   // Sidebar refresh button: re-run loadJobs
   useEffect(() => {
@@ -1391,7 +1369,7 @@ export default function JobsPage() {
                     {STATUS_LABELS[job.status]}
                   </span>
                 </td>
-                <td>{hasMeaningfulSalary(job.salary_range) ? formatSalaryForDisplay(job.salary_range, defaultCurrency) : '—'}</td>
+                <td>{hasMeaningfulSalary(job.salary_range) ? formatSalaryForDisplay(job.salary_range, job) : '—'}</td>
                 <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{formatJobDate(job.date_posted)}</td>
                 <td>
                   <button
