@@ -532,6 +532,50 @@ export function updateDocumentVerification(
   return s.documents[idx]
 }
 
+// Recompute a job's status from its current documents. Called whenever
+// documents are added, updated, deleted, or their verification score
+// changes. Single source of truth for the doc-derived status transitions.
+//
+// Rule:
+//   - Never overwrite a status the user has moved past the doc pipeline
+//     (applied, interviewing, offer, rejected, withdrawn).
+//   - Otherwise, if the job has both a CV and a cover letter with
+//     verification_score >= 70, status = 'ready'.
+//   - Otherwise (has docs but not both passing, or only one type),
+//     status = 'reviewing'.
+//   - With no docs, status = 'sourced'.
+const DOC_PROTECTED_STATUSES: JobStatus[] = ['applied', 'interviewing', 'offer', 'rejected', 'withdrawn']
+
+export function recomputeJobStatusFromDocs(jobId: number): JobStatus | null {
+  const s = loadStore()
+  const jobIdx = s.jobs.findIndex((j) => j.id === jobId)
+  if (jobIdx === -1) return null
+  const current = s.jobs[jobIdx].status
+  if (DOC_PROTECTED_STATUSES.includes(current)) return current
+
+  const docs = s.documents.filter((d) => d.job_id === jobId)
+  const cv = docs.find((d) => d.type === 'cv')
+  const cl = docs.find((d) => d.type === 'cover_letter')
+
+  let next: JobStatus
+  if (docs.length === 0) {
+    next = 'sourced'
+  } else if (
+    cv && cl &&
+    (cv.verification_score ?? 0) >= 70 &&
+    (cl.verification_score ?? 0) >= 70
+  ) {
+    next = 'ready'
+  } else {
+    next = 'reviewing'
+  }
+
+  if (next === current) return current
+  s.jobs[jobIdx] = { ...s.jobs[jobIdx], status: next, updated_at: now() }
+  persistStore()
+  return next
+}
+
 // Applications
 
 export function listApplications(): (Application & { job_title: string; company: string })[] {

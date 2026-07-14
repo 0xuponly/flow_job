@@ -98,15 +98,11 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
       }
     }
 
-    // Auto-set status to ready when both docs score >= 70
-    let status = job.status
-    const cv2 = docs.find((d) => d.type === 'cv')
-    const cl2 = docs.find((d) => d.type === 'cover_letter')
-    if (cv2 && cl2 && (cv2.verification_score ?? 0) >= 70 && (cl2.verification_score ?? 0) >= 70 && status !== 'ready' && status !== 'applied') {
-      await api.updateJob(job.id, { status: 'ready' })
-      status = 'ready'
-      onUpdate({ ...job, status: 'ready' })
-    }
+    // Note: status transitions off document changes are owned by the backend
+    // (recomputeJobStatusFromDocs in electron/database.ts). The frontend
+    // re-fetches the job below to pick up the new status.
+    const refreshed = await api.getJob(job.id)
+    if (refreshed) onUpdate(refreshed)
   }
 
   async function generateAndVerifyDoc(type: 'cv' | 'cover_letter'): Promise<Application | null> {

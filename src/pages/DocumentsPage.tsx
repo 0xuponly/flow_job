@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { AIQueueItem, Document } from '../types'
+import { STATUS_LABELS } from '../types'
 import { notify } from '../components/Notifications'
 import Modal from '../components/Modal'
 
@@ -127,10 +128,27 @@ export default function DocumentsPage() {
 
   async function handleDelete(id: number) {
     if (!confirm('Delete this document?')) return
+    const target = documents.find((d) => d.id === id)
     await api.deleteDocument(id)
     setDocuments((prev) => prev.filter((d) => d.id !== id))
     if (selected?.id === id) {
       setSelected(null)
+    }
+    await maybeNotifyStatusChange(target)
+  }
+
+  async function maybeNotifyStatusChange(doc: Document | undefined) {
+    if (!doc?.job_id) return
+    const job = await api.getJob(doc.job_id)
+    if (!job) return
+    // We don't know the prior status without a pre-snapshot; the backend's
+    // recompute is idempotent for protected statuses. Compare against
+    // doc type: if user just deleted a CV or cover letter, status may have
+    // dropped from 'ready' to 'reviewing'.
+    const stillHasCV = documents.some((d) => d.job_id === doc.job_id && d.type === 'cv' && d.id !== doc.id)
+    const stillHasCL = documents.some((d) => d.job_id === doc.job_id && d.type === 'cover_letter' && d.id !== doc.id)
+    if (!stillHasCV || !stillHasCL) {
+      notify(`Job status updated: ${STATUS_LABELS[job.status]}`, 'info')
     }
   }
 
@@ -181,6 +199,17 @@ export default function DocumentsPage() {
         alert(`Deleted ${deleted.size}, failed ${failed.length}:\n${failed.join('\n')}`)
       } else {
         notify(`Deleted ${deleted.size} document${deleted.size > 1 ? 's' : ''}.`, 'info')
+      }
+      // Notify once per affected job whose status may have changed.
+      const affectedJobIds = new Set<number>()
+      for (const id of ids) {
+        if (!deleted.has(id)) continue
+        const doc = documents.find((d) => d.id === id)
+        if (doc?.job_id) affectedJobIds.add(doc.job_id)
+      }
+      for (const jobId of affectedJobIds) {
+        const job = await api.getJob(jobId)
+        if (job) notify(`Job "${job.title}" status: ${STATUS_LABELS[job.status]}`, 'info')
       }
     } finally {
       setBulkDeleting(false)
