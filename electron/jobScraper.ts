@@ -1262,8 +1262,8 @@ function applyUltiPro(result: ScrapedJob, html: string): void {
   if (typeof opp.RequisitionNumber === 'string' && opp.RequisitionNumber) {
     result.requirements = `Requisition: ${opp.RequisitionNumber}`
   }
-  if (opp.FullTime === true) result.employment_type = 'Full-time'
-  else if (opp.FullTime === false) result.employment_type = 'Part-time'
+  if (opp.FullTime === true) result.employment_type = 'FULL_TIME'
+  else if (opp.FullTime === false) result.employment_type = 'PART_TIME'
   // JobLocationType: 0 = On-site, 1 = Remote, 2 = Hybrid (per UKG docs)
   if (typeof opp.JobLocationType === 'number') {
     if (opp.JobLocationType === 1) result.work_mode = 'Remote'
