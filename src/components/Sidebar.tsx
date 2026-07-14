@@ -10,7 +10,7 @@ interface Props {
 const NAV_ITEMS: { id: Page; label: string; icon: string }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: '◉' },
   { id: 'scanjobs', label: 'Scan Jobs', icon: '⟐' },
-  { id: 'jobs', label: 'Job Board', icon: '◎' },
+  { id: 'jobs', label: 'My Job Board', icon: '◎' },
   { id: 'pipeline', label: 'Pipeline', icon: '▤' },
   { id: 'documents', label: 'Documents', icon: '▣' },
   { id: 'followups', label: 'Follow-ups', icon: '↻' },
