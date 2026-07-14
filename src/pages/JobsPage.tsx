@@ -285,6 +285,49 @@ function formatJobDate(iso: string | null | undefined): string {
  * the end, and is hidden by an active salary filter. parseAmount
  * would parse "0" to 0; we explicitly collapse that to null.
  */
+/**
+ * Map the user's country (free-text, from Settings) to a default ISO
+ * currency code. We only do this for countries where the local code is
+ * also the most common one in scraped postings — UK → GBP, anywhere
+ * else falls through to USD because the symbol-only salaries we see
+ * ($100,000) are most often US postings misclassified by their
+ * scraper, and the user's own country is rarely available as a code.
+ */
+function defaultCurrencyForCountry(country: string | null | undefined): string {
+  const c = (country ?? '').trim().toLowerCase()
+  if (!c) return 'USD'
+  if (c === 'uk' || c === 'united kingdom' || c === 'gb' || c === 'great britain' || c === 'england') return 'GBP'
+  return 'USD'
+}
+
+/**
+ * Render a stored salary_range for the Job Board Salary cell. The
+ * stored value may already include a currency code (e.g. "CAD 90,000 -
+ * 129,000" produced by normalizeSalary when the source had a CAD
+ * marker) or it may be symbol-only ("$100,000" or "$90,000 - $120,000"
+ * from sources whose scraper didn't capture a code). For symbol-only
+ * values we prepend the user's country-derived default code so the
+ * user can tell at a glance which currency a row is denominated in
+ * (CAD $100,000 vs USD $100,000 looks identical otherwise). Values
+ * that already carry a 3-letter ISO code, or that we don't recognise
+ * as a currency-bearing string, are returned unchanged.
+ */
+function formatSalaryForDisplay(
+  s: string | null | undefined,
+  defaultCurrency: string
+): string {
+  if (!s) return s ?? ''
+  // Already has a 3-letter ISO code — leave alone.
+  if (/\b(USD|CAD|EUR|GBP|AUD|NZD)\b/i.test(s)) return s
+  // Recognise a leading currency symbol (only the ones normalizeSalary
+  // emits) and prepend the default code. Cover both single-amount
+  // ("$100,000") and range ("$90,000 - $120,000") shapes; the second
+  // amount already has the symbol, so we don't double-prefix.
+  if (/^\s*[$€£¥]/.test(s)) return `${defaultCurrency} ${s.trim()}`
+  // No recognisable currency marker — return as-is rather than guess.
+  return s
+}
+
 function hasMeaningfulSalary(s: string | null | undefined): boolean {
   if (!s) return false
   const n = parseSalaryForSort(s)
@@ -474,6 +517,11 @@ export default function JobsPage() {
   const [filterSalary, setFilterSalary] = useState<SalaryFilter>(EMPTY_SALARY_FILTER)
   const [filterFit, setFilterFit] = useState<string[]>([])
   const [filterDatePosted, setFilterDatePosted] = useState<DateFilter>(EMPTY_DATE_FILTER)
+  // User's country, used as the fallback currency code for salary cells
+  // whose stored value has no 3-letter ISO prefix (e.g. "$100,000" with
+  // no CAD/USD label). Defaulted to USD until settings load; the
+  // display effect below refreshes it once api.getSettings resolves.
+  const [defaultCurrency, setDefaultCurrency] = useState<string>('USD')
   // Sort: null = default behavior (score DESC, nulls last). A column click
   // cycles default → asc → desc → default. Only one column is sorted at a
   // time; clicking a different column resets the previous one to default.
@@ -835,6 +883,23 @@ export default function JobsPage() {
     const timer = setTimeout(loadJobs, 300)
     return () => clearTimeout(timer)
   }, [search])
+
+  // Fetch the user's country once on mount so the Salary column has a
+  // sensible default currency code to fall back on. Settings are
+  // page-level here (not deep into the IPC), so a one-shot fetch on
+  // mount is enough — the Salary cell only re-renders when jobs
+  // change, and if the user changes country in Settings and re-runs
+  // the Sidebar refresh, this effect won't re-run (settings is cached
+  // by the main process, but the user can also Cmd-R to pick up a
+  // country change without us wiring a listener).
+  useEffect(() => {
+    let cancelled = false
+    api.getSettings().then((s) => {
+      if (cancelled) return
+      setDefaultCurrency(defaultCurrencyForCountry(s.user_country))
+    }).catch(() => { /* leave USD as fallback */ })
+    return () => { cancelled = true }
+  }, [])
 
   // Sidebar refresh button: re-run loadJobs
   useEffect(() => {
@@ -1283,7 +1348,7 @@ export default function JobsPage() {
                     {STATUS_LABELS[job.status]}
                   </span>
                 </td>
-                <td>{hasMeaningfulSalary(job.salary_range) ? job.salary_range : '—'}</td>
+                <td>{hasMeaningfulSalary(job.salary_range) ? formatSalaryForDisplay(job.salary_range, defaultCurrency) : '—'}</td>
                 <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{formatJobDate(job.date_posted)}</td>
                 <td>
                   <button
