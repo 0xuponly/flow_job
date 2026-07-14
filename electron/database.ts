@@ -557,12 +557,12 @@ export function updateJob(
     : existing.description
   s.jobs[idx] = {
     ...existing,
-    title: fields.title !== undefined
-      ? (normalizeTitle(de(fields.title)) ?? de(fields.title) ?? existing.title)
-      : existing.title,
-    company: fields.company !== undefined
-      ? (normalizeCompany(de(fields.company)) ?? de(fields.company) ?? existing.company)
-      : existing.company,
+    // Title and company are normalized on add (createJob) only.
+    // Edits via updateJob write the user's exact text so they can
+    // adjust the casing / wording without the boundary silently
+    // re-canonicalizing it.
+    title: fields.title !== undefined ? de(fields.title) ?? existing.title : existing.title,
+    company: fields.company !== undefined ? de(fields.company) ?? existing.company : existing.company,
     location: fields.location !== undefined ? (fields.location ? de(fields.location) : null) : existing.location,
     url: fields.url !== undefined ? (fields.url ?? null) : existing.url,
     description: nextDescription,
