@@ -253,6 +253,12 @@ export default function JobsPage() {
   // batch-score refresh. The Map persists across renders for the lifetime
   // of this page instance.
   const lastSeenFitErrors = useRef<Map<number, string | null>>(new Map())
+  // Session-scoped "have we already toasted this job's fit failure?"
+  // record. Independent of the snapshot above so it survives snapshot
+  // rebuilds. A job is re-armed only when its error text changes or its
+  // error is cleared and then re-appears — not when the same failure
+  // simply persists across loads, polls, or remounts.
+  const toastedFitErrors = useRef<Map<number, string | null>>(new Map())
   // Debounce: collapse multiple loadJobs() invocations that complete within
   // a short window into a single toast. Concurrent mounts + the search
   // debounce + the batchScore refetch can all resolve in the same tick.
@@ -261,12 +267,24 @@ export default function JobsPage() {
 
   async function loadJobs() {
     const before = lastSeenFitErrors.current
+    const toasted = toastedFitErrors.current
     const data = search ? await api.searchJobs(search) : await api.listJobs()
     setJobs(dedupeJobs(data.map(cleanJob)))
     // Surface fit-level assessment failures that appeared since last load.
+    // "New" = currently failing AND (never toasted this session, OR the
+    // error text differs from what we last toasted, OR the error was
+    // cleared since we toasted it and has now re-appeared). The same
+    // failure persisting across loads/polls/remounts does NOT re-fire.
     const newlyFailing = data.filter((j) => {
+      if (!j.fit_last_error) return false
       const prev = before.get(j.id)
-      return j.fit_last_error && prev !== j.fit_last_error
+      if (prev === j.fit_last_error) return false
+      const lastToasted = toasted.get(j.id)
+      // lastToasted === undefined → never toasted this session
+      // lastToasted === j.fit_last_error → already toasted, same text
+      // lastToasted === null → toasted, error was cleared since, now back
+      if (lastToasted === j.fit_last_error) return false
+      return true
     })
     if (newlyFailing.length > 0) {
       // Build a short one-line summary of the most common error so the user
@@ -304,7 +322,22 @@ export default function JobsPage() {
         const current = lastSeenFitErrors.current
         const stillFailingSame = [...myFailingIds].every((id) => current.get(id) != null)
         if (!stillFailingSame) return
+        // Re-check session toast record: a toast that fired in the debounce
+        // window for an overlapping failing set should not double-fire.
+        const toastedNow = toastedFitErrors.current
+        const anyAlreadyToasted = [...myFailingIds].some((id) => {
+          const t = toastedNow.get(id)
+          return t != null && t === current.get(id)
+        })
+        if (anyAlreadyToasted) return
         lastFitToastAt.current = Date.now()
+        // Mark each job we toasted with the error text that was shown, so
+        // future loads of the same failure do not re-fire. If the error
+        // later clears, we update the entry to null (a re-occurrence of a
+        // non-null error will then re-arm via the text-change path).
+        for (const j of data) {
+          if (myFailingIds.has(j.id)) toastedNow.set(j.id, j.fit_last_error ?? null)
+        }
         notify(message, 'error', 12000)
       }, wait)
     } else {
@@ -319,6 +352,16 @@ export default function JobsPage() {
     const next = new Map<number, string | null>()
     for (const j of data) next.set(j.id, j.fit_last_error ?? null)
     lastSeenFitErrors.current = next
+    // Mirror the "cleared" state in the toast record: when a previously
+    // failed job no longer has an error, mark its toast entry as null so
+    // a later re-occurrence counts as new (text-change re-arm). Jobs that
+    // are still failing keep their existing toast record untouched, so the
+    // session-scoped no-re-fire rule holds.
+    for (const j of data) {
+      if (!j.fit_last_error && toasted.has(j.id)) {
+        toasted.set(j.id, null)
+      }
+    }
   }
 
   useEffect(() => {
