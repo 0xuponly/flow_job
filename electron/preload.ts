@@ -69,6 +69,7 @@ export interface Api {
   getScanStatus: () => Promise<ScanStatus>
   clearScanResult: () => Promise<void>
   cancelScan: () => Promise<void>
+  cancelImport: () => Promise<void>
   onScanProgress: (cb: (msg: string) => void) => () => void
   onScanComplete: (cb: (result: ScanResult) => void) => () => void
   clearSeenUrls: () => Promise<void>
@@ -103,6 +104,7 @@ const api: Api = {
   getScanStatus: () => ipcRenderer.invoke('scan:status'),
   clearScanResult: () => ipcRenderer.invoke('scan:clearResult'),
   cancelScan: () => ipcRenderer.invoke('scan:cancel'),
+  cancelImport: () => ipcRenderer.invoke('import:cancel'),
   onScanProgress: (cb: (msg: string) => void) => {
     const handler = (_e: Electron.IpcRendererEvent, msg: string) => cb(msg)
     ipcRenderer.on('scan:progress', handler)

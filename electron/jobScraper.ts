@@ -19,12 +19,14 @@ interface ScrapedJob {
   date_posted?: string
 }
 
-export async function scrapeJobFromUrl(rawUrl: string): Promise<CreateJobInput> {
+export async function scrapeJobFromUrl(rawUrl: string, signal?: AbortSignal): Promise<CreateJobInput> {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
   const url = normalizeUrl(rawUrl)
   const hostname = new URL(url).hostname.replace(/^www\./, '')
   const source = detectSource(hostname)
 
-  const html = await fetchPageHtml(url, hostname)
+  const html = await fetchPageHtml(url, hostname, signal)
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
   const scraped = extractFromHtml(html, hostname, url, source)
 
   const missing: string[] = []
@@ -128,14 +130,15 @@ function detectSource(hostname: string): string | undefined {
   return undefined
 }
 
-async function fetchPageHtml(url: string, hostname: string): Promise<string> {
+async function fetchPageHtml(url: string, hostname: string, signal?: AbortSignal): Promise<string> {
   const response = await fetch(url, {
     headers: {
       'User-Agent': USER_AGENT,
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Accept-Language': 'en-US,en;q=0.9'
     },
-    redirect: 'follow'
+    redirect: 'follow',
+    signal
   })
 
   if (!response.ok) {
@@ -143,6 +146,7 @@ async function fetchPageHtml(url: string, hostname: string): Promise<string> {
   }
 
   const html = await response.text()
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
   if (isChallengePage(html)) {
     return fetchHtmlViaBrowser(url)
   }

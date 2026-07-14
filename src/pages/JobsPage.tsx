@@ -383,6 +383,7 @@ export default function JobsPage() {
     }
     setImporting(true)
     setLinkError('')
+    let cancelled = false
     try {
       const job = cleanJob(await api.importJobFromUrl(linkUrl))
       setJobs((prev) => dedupeJobs([job, ...prev]))
@@ -390,9 +391,18 @@ export default function JobsPage() {
       setLinkUrl('')
       setSelectedJob(job)
     } catch (err) {
+      // If the user clicked Cancel, the IPC rejects with an AbortError.
+      // Close the modal silently rather than surfacing the abort as a
+      // red error message. Any other error is the user's problem to read.
+      if (err instanceof Error && /aborted/i.test(err.message)) {
+        cancelled = true
+        setShowAddLink(false)
+        setLinkUrl('')
+        return
+      }
       setLinkError(err instanceof Error ? err.message : 'Failed to import job.')
     } finally {
-      setImporting(false)
+      if (!cancelled) setImporting(false)
     }
   }
 
@@ -712,10 +722,28 @@ export default function JobsPage() {
       <Modal
         open={showAddLink}
         title="Add job from link"
-        onClose={() => !importing && setShowAddLink(false)}
+        onClose={() => {
+          // Always allow closing. If an import is in flight, abort it
+          // first; the in-flight promise will reject with AbortError and
+          // handleImportFromLink closes the modal silently.
+          if (importing) {
+            api.cancelImport()
+          } else {
+            setShowAddLink(false)
+          }
+        }}
         actions={
           <>
-            <button className="btn btn-secondary" onClick={() => setShowAddLink(false)} disabled={importing}>
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                if (importing) {
+                  api.cancelImport()
+                } else {
+                  setShowAddLink(false)
+                }
+              }}
+            >
               Cancel
             </button>
             <button

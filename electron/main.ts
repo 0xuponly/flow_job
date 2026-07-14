@@ -32,6 +32,9 @@ const _scanState: { scanning: boolean; progress: string[]; result: ScanResult | 
 // Active scan's AbortController — created when a scan starts, aborted on
 // user cancel. Replaces itself on the next scan.
 let _scanAbortController: AbortController | null = null
+// Active import-from-link's AbortController. Same pattern as the scan one;
+// created per import, replaced on the next import, aborted on user cancel.
+let _importAbortController: AbortController | null = null
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -84,11 +87,22 @@ function registerIpc(): void {
   ipcMain.handle('jobs:delete', (_e, id: number) => db.deleteJob(id))
   ipcMain.handle('jobs:search', (_e, query: string) => db.searchJobs(query))
   ipcMain.handle('jobs:importFromUrl', async (_e, url: string) => {
-    const input = await scrapeJobFromUrl(url)
-    const dup = db.findDuplicateJob(input)
-    if (dup) throw new Error(`Job already exists: ${dup.company} — ${dup.title}`)
-    const job = db.createJob(input, { skipDuplicateCheck: true })
-    return job
+    _importAbortController = new AbortController()
+    try {
+      const input = await scrapeJobFromUrl(url, _importAbortController.signal)
+      const dup = db.findDuplicateJob(input)
+      if (dup) throw new Error(`Job already exists: ${dup.company} — ${dup.title}`)
+      const job = db.createJob(input, { skipDuplicateCheck: true })
+      return job
+    } finally {
+      _importAbortController = null
+    }
+  })
+
+  ipcMain.handle('import:cancel', () => {
+    if (_importAbortController) {
+      _importAbortController.abort()
+    }
   })
 
   ipcMain.handle('jobs:batchScore', async () => {
