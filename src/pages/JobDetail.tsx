@@ -523,28 +523,29 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
                 </button>
               </div>
               <div style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
-                {currentJob.fit_last_error && job.score == null ? (
-                  // Scorer is broken AND we don't have a real score to fall back on.
-                  <span style={{ color: 'var(--text-muted)' }}>—</span>
-                ) : job.score == null ? (
-                  <span>—</span>
-                ) : (
-                  <>
-                    <span
-                      className="fit-dot"
-                      style={{
-                        background:
-                          job.score >= 0.6 ? 'var(--success)' :
-                          job.score >= 0.3 ? 'var(--warning)' :
-                          'var(--danger)',
-                      }}
-                    />
-                    <span>{currentJob.score.toFixed(2)}</span>
-                    <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
-                      ({currentJob.score >= 0.6 ? 'High' : job.score >= 0.3 ? 'Medium' : 'Low'})
-                    </span>
-                  </>
-                )}
+                {(() => {
+                  const score = currentJob.score
+                  if (score == null) {
+                    return <span>—</span>
+                  }
+                  return (
+                    <>
+                      <span
+                        className="fit-dot"
+                        style={{
+                          background:
+                            score >= 0.6 ? 'var(--success)' :
+                            score >= 0.3 ? 'var(--warning)' :
+                            'var(--danger)',
+                        }}
+                      />
+                      <span>{score.toFixed(2)}</span>
+                      <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                        ({score >= 0.6 ? 'High' : score >= 0.3 ? 'Medium' : 'Low'})
+                      </span>
+                    </>
+                  )
+                })()}
               </div>
               {currentJob.fit_last_error && job.score == null && (
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
