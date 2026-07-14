@@ -557,7 +557,12 @@ export function normalizeSalary(
   if (amountMatches.length === 0) return null
 
   const hoursPerWeek = extractHoursPerWeek(description) ?? DEFAULT_HOURS_PER_WEEK
-  const amounts = amountMatches.map(a => annualize(a, period, hoursPerWeek))
+  // Drop zero amounts — a posting of "$0" or "Salary: 0" is almost
+  // always a placeholder / unparseable, not a real offer. Better to
+  // store null than to remember a $0 in the UI forever.
+  const positive = amountMatches.filter(n => n > 0)
+  if (positive.length === 0) return null
+  const amounts = positive.map(a => annualize(a, period, hoursPerWeek))
 
   if (amounts.length === 1) return formatSalaryString(amounts[0], currency)
   if (amounts.length >= 2) {
