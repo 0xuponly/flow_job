@@ -455,35 +455,26 @@ textarea {
   margin-bottom: 18px;
 }
 
-/* Sticky toolbar + page header for the Job Board. The wrapper is one
-   sticky element so we don't have to coordinate two `top` offsets. The
-   page's `<main>` scroll container is the sticky offset parent. A subtle
-   bottom border keeps the sticky region visually distinct from the
-   scrolling table underneath. `min-width: 100%` keeps the wrapper at
-   the page's full content width even when the toolbar's children
-   would otherwise force the wrapper to grow wider than the table
-   underneath — the table overflows the wrapper's right edge when this
-   isn't set, and the sticky header leaves a "window" of scrolling
-   text on the right side. */
+/* Sticky toolbar + page header for the Job Board. Negative horizontal
+   margins pull the wrapper out of .page's 32px left/right padding so
+   the sticky background extends edge-to-edge of the scroll container,
+   matching the table's extent on both sides. The matching positive
+   padding keeps the inner content (title, toolbar buttons) at the same
+   visual position they had before. A negative top margin + matching
+   top padding pulls the wrapper up to cover .page's 28px top padding
+   as well, so the sticky region spans the full vertical extent of the
+   viewport once it sticks (no padding gap showing scrolled content
+   above the title). A subtle bottom border keeps the sticky region
+   visually distinct from the scrolling table underneath. */
 .jobs-page-sticky {
   position: sticky;
   top: 0;
   z-index: 10;
   background: var(--bg);
-  padding-bottom: 4px;
+  margin: -28px -32px 0;
+  padding: 28px 32px 4px;
   border-bottom: 1px solid var(--border);
-  min-width: 100%;
   box-sizing: border-box;
-}
-
-/* Clip the toolbar if its buttons overflow the available width on
-   narrow windows — the spacer between search and buttons will
-   collapse to 0 and the trailing buttons wrap to a second row inside
-   the sticky wrapper, keeping the sticky header aligned with the
-   table's width. */
-.jobs-page-sticky .toolbar {
-  flex-wrap: wrap;
-  overflow: hidden;
 }
 
 /* Sticky column headers on the Job Board. The `top` value is set
