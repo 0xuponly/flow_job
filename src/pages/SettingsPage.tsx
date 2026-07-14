@@ -201,22 +201,6 @@ export default function SettingsPage() {
               </div>
             </div>
             <div className="form-group" style={{ marginTop: 4 }}>
-              <label>Deleted-jobs blacklist cap</label>
-              <input
-                type="number"
-                min={100}
-                step={1000}
-                value={settings.deleted_jobs_cap}
-                onChange={(e) => {
-                  const n = parseInt(e.target.value, 10)
-                  if (!isNaN(n) && n > 0) update('deleted_jobs_cap', n)
-                }}
-              />
-              <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                How many manually-deleted low-fit jobs to remember so the scanner doesn't re-add them. Older entries are dropped when this cap is exceeded.
-              </p>
-            </div>
-            <div className="form-group" style={{ marginTop: 4 }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <input
                   type="checkbox"
@@ -417,6 +401,32 @@ export default function SettingsPage() {
             >
               Export all data
             </button>
+          </div>
+
+          <div className="section-title">Scan memory</div>
+
+          <div className="card" style={{ maxWidth: 600, marginBottom: 12 }}>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 6 }}>
+              Deleted-jobs blacklist cap
+            </label>
+            <input
+              type="number"
+              min={100}
+              step={1000}
+              value={settings.deleted_jobs_cap}
+              onChange={(e) => {
+                const n = parseInt(e.target.value, 10)
+                if (!isNaN(n) && n > 0) update('deleted_jobs_cap', n)
+              }}
+              onBlur={async () => {
+                if (!settings) return
+                await api.updateSettings({ deleted_jobs_cap: settings.deleted_jobs_cap })
+              }}
+              style={{ maxWidth: 200 }}
+            />
+            <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+              How many manually-deleted low-fit jobs to remember so the scanner doesn't re-add them. Older entries are dropped when this cap is exceeded.
+            </p>
           </div>
 
           <div className="section-title" style={{ color: 'var(--danger)' }}>Danger zone</div>
