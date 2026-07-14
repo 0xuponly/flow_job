@@ -1,7 +1,7 @@
 import { createJob, findDuplicateJob, getSeenUrls, getSettings, listJobs, recordBoardResults, JobBlacklistedError, JobDuplicateError } from './database'
 import { decodeEntities } from './utils'
 import { scrapeJobFromUrl } from './jobScraper'
-import { fetchHtmlViaBrowser, isChallengePage } from './browserScraper'
+import { fetchHtmlViaBrowser, isChallengePage, paginateHtmlViaBrowser } from './browserScraper'
 import { scoreJobFit } from './ai'
 export { scoreCompatibility } from './fitHeuristic'
 import type { Job, ScanFilters, WorkType } from './types'

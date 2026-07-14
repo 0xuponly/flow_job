@@ -182,3 +182,116 @@ export function isChallengePage(html: string): boolean {
     html.includes('Checking your browser before accessing')
   )
 }
+
+/**
+ * For hash-routed SPAs, navigating to a new page is the same document
+ * with a different fragment — `loadURL` won't fire `did-finish-load` and
+ * `fetchHtmlViaBrowser` would return the original page's HTML every
+ * time. This helper:
+ *   1. Loads the base URL once.
+ *   2. For each subsequent `pageHash` in `pageHashes`, sets
+ *      `window.location.hash` to that fragment, waits for the SPA to
+ *      re-render, and concatenates the resulting outerHTML.
+ *
+ * The first page is whatever was rendered after the initial load; you
+ * typically pass `[]` if you only care about page 2+.
+ *
+ * `perPageWaitMs` defaults to 2500 — most SPAs finish their route +
+ * fetch + re-render in well under 2s. Override for slower sites.
+ */
+export async function paginateHtmlViaBrowser(
+  baseUrl: string,
+  pageHashes: string[],
+  perPageWaitMs = 2500
+): Promise<string> {
+  // Reuse fetchHtmlViaBrowser for the initial load — it already handles
+  // stealth injection, challenge detection, and timeout. Then continue
+  // in the same BrowserWindow via a second loadURL with a query-string
+  // hack: SPAs that key on the hash won't re-render on hash changes
+  // alone, so we navigate to a SAME-PAGE URL with a cache-busting query
+  // string. This forces a real document reload that re-initializes the
+  // SPA with the new hash.
+  const firstPageHtml = await fetchHtmlViaBrowser(baseUrl)
+  if (pageHashes.length === 0) return firstPageHtml
+
+  const ses = session.fromPartition(`scraper-paginate-${  Date.now()}`, { cache: false })
+  const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
+
+  const win = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false,
+      session: ses
+    }
+  })
+
+  const injectStealth = (_e: Electron.Event, _details: Electron.Event) => {
+    if (!win.isDestroyed()) {
+      win.webContents.executeJavaScript(STEALTH_SCRIPT, true).catch(() => {})
+    }
+  }
+  win.webContents.on('will-frame-navigate', injectStealth)
+  win.webContents.on('did-start-loading', injectStealth)
+
+  ses.webRequest.onBeforeSendHeaders((details, callback) => {
+    details.requestHeaders['User-Agent'] = ua
+    details.requestHeaders['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+    details.requestHeaders['Accept-Language'] = 'en-US,en;q=0.9'
+    details.requestHeaders['Accept-Encoding'] = 'gzip, deflate, br'
+    details.requestHeaders['DNT'] = '1'
+    details.requestHeaders['Upgrade-Insecure-Requests'] = '1'
+    callback({ requestHeaders: details.requestHeaders })
+  })
+
+  const collected: string[] = []
+  let aborted = false
+
+  const finish = () => {
+    if (!win.isDestroyed()) win.destroy()
+  }
+
+  try {
+    for (let i = 0; i < pageHashes.length; i++) {
+      if (aborted) break
+      const hash = pageHashes[i]
+      // Build a same-origin URL whose hash matches what the user sees
+      // for this page. Add a cache-buster query so the browser treats
+      // it as a fresh navigation and re-runs the SPA bootstrap.
+      const u = new URL(baseUrl)
+      u.hash = hash
+      u.searchParams.set('_p', String(i + 2)) // page numbers are 1-based; page 1 was the initial load
+
+      await new Promise<void>((resolve, reject) => {
+        const onFinish = () => {
+          win.webContents.off('did-fail-load', onFail)
+          resolve()
+        }
+        const onFail = (_e: unknown, code: number, desc: string) => {
+          win.webContents.off('did-finish-load', onFinish)
+          reject(new Error(`Failed to load page (${code}: ${desc}).`))
+        }
+        win.webContents.once('did-finish-load', onFinish)
+        win.webContents.once('did-fail-load', onFail)
+        win.loadURL(u.href).catch(reject)
+      })
+
+      // Give the SPA time to fetch its data and re-render the list.
+      await new Promise((r) => setTimeout(r, perPageWaitMs))
+
+      const html = await win.webContents.executeJavaScript(
+        'document.documentElement.outerHTML',
+        true
+      )
+      collected.push(html)
+    }
+  } catch (err) {
+    // Partial result is fine — return what we have so far.
+    aborted = true
+  } finally {
+    finish()
+  }
+
+  return [firstPageHtml, ...collected].join('\n')
+}
