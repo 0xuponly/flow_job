@@ -383,26 +383,31 @@ export default function JobsPage() {
     }
     setImporting(true)
     setLinkError('')
-    let cancelled = false
+    // Track whether the user cancelled (or closed) the modal while the
+    // import was in flight. If the main process eventually returns a job
+    // even though we asked to cancel, we drop it instead of surfacing it
+    // in the list — the user explicitly said they didn't want to wait.
+    const cancelled = { current: false }
+    const onCancel = () => { cancelled.current = true }
+    window.addEventListener('app:import-cancelled', onCancel)
     try {
       const job = cleanJob(await api.importJobFromUrl(linkUrl))
+      if (cancelled.current) return
       setJobs((prev) => dedupeJobs([job, ...prev]))
       setShowAddLink(false)
       setLinkUrl('')
       setSelectedJob(job)
     } catch (err) {
-      // If the user clicked Cancel, the IPC rejects with an AbortError.
-      // Close the modal silently rather than surfacing the abort as a
-      // red error message. Any other error is the user's problem to read.
+      if (cancelled.current) return
       if (err instanceof Error && /aborted/i.test(err.message)) {
-        cancelled = true
         setShowAddLink(false)
         setLinkUrl('')
         return
       }
       setLinkError(err instanceof Error ? err.message : 'Failed to import job.')
     } finally {
-      if (!cancelled) setImporting(false)
+      window.removeEventListener('app:import-cancelled', onCancel)
+      setImporting(false)
     }
   }
 
@@ -723,14 +728,16 @@ export default function JobsPage() {
         open={showAddLink}
         title="Add job from link"
         onClose={() => {
-          // Always allow closing. If an import is in flight, abort it
-          // first; the in-flight promise will reject with AbortError and
-          // handleImportFromLink closes the modal silently.
+          // Close immediately so the user isn't stuck on a modal that
+          // is waiting for a slow fetch or browser scrape. If an import
+          // is in flight, ask main to abort it; handleImportFromLink
+          // will discard the result via the app:import-cancelled event.
           if (importing) {
+            window.dispatchEvent(new CustomEvent('app:import-cancelled'))
             api.cancelImport()
-          } else {
-            setShowAddLink(false)
           }
+          setImporting(false)
+          setShowAddLink(false)
         }}
         actions={
           <>
@@ -738,10 +745,11 @@ export default function JobsPage() {
               className="btn btn-secondary"
               onClick={() => {
                 if (importing) {
+                  window.dispatchEvent(new CustomEvent('app:import-cancelled'))
                   api.cancelImport()
-                } else {
-                  setShowAddLink(false)
                 }
+                setImporting(false)
+                setShowAddLink(false)
               }}
             >
               Cancel
