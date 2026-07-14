@@ -220,8 +220,26 @@ export default function JobsPage() {
   }
 
   async function loadJobs() {
+    const before = new Map(jobs.map((j) => [j.id, j.fit_last_error ?? null]))
     const data = search ? await api.searchJobs(search) : await api.listJobs()
     setJobs(data.map(cleanJob))
+    // Surface fit-level assessment failures that appeared since last load.
+    const newlyFailing = data.filter((j) => {
+      const prev = before.get(j.id)
+      return j.fit_last_error && prev !== j.fit_last_error
+    })
+    if (newlyFailing.length > 0) {
+      const sample = newlyFailing
+        .slice(0, 3)
+        .map((j) => `• ${j.title} @ ${j.company}: ${j.fit_last_error}`)
+        .join('\n')
+      const more = newlyFailing.length > 3 ? `\n…and ${newlyFailing.length - 3} more.` : ''
+      notify(
+        `Fit assessment failed for ${newlyFailing.length} job${newlyFailing.length > 1 ? 's' : ''}:\n${sample}${more}`,
+        'error',
+        12000
+      )
+    }
   }
 
   useEffect(() => {
@@ -296,6 +314,7 @@ export default function JobsPage() {
     let queued = 0
     let failed = 0
     let success = 0
+    const failedReasons: { job: Job; reason: string }[] = []
     try {
       const CONCURRENCY = 3
       for (let i = 0; i < needs.length; i += CONCURRENCY) {
@@ -313,8 +332,14 @@ export default function JobsPage() {
                 [type === 'cv' ? 'cv_document_id' : 'cover_letter_document_id']: result.document_id
               })
               success++
-            } catch {
+            } catch (err) {
               failed++
+              if (failedReasons.length < 3) {
+                failedReasons.push({
+                  job,
+                  reason: err instanceof Error ? err.message : 'Unknown error'
+                })
+              }
             }
             setGenCount((c) => c + 1)
           })
@@ -330,6 +355,13 @@ export default function JobsPage() {
     if (failed > 0) parts.push(`${failed} failed`)
     if (parts.length > 0) {
       notify(parts.join(' · '), failed > 0 ? 'error' : queued > 0 ? 'info' : 'success')
+    }
+    if (failedReasons.length > 0) {
+      const sample = failedReasons
+        .map((f) => `• ${f.job.title} @ ${f.job.company}: ${f.reason}`)
+        .join('\n')
+      const more = failed - failedReasons.length > 0 ? `\n…and ${failed - failedReasons.length} more.` : ''
+      notify(`Failure details (first ${failedReasons.length}):\n${sample}${more}`, 'error', 12000)
     }
   }
 

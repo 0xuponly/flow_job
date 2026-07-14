@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { FollowUp } from '../types'
+import { notify } from '../components/Notifications'
 
 export default function FollowUpsPage() {
   const [followUps, setFollowUps] = useState<(FollowUp & { job_title: string; company: string })[]>([])
@@ -30,7 +31,7 @@ export default function FollowUpsPage() {
       navigator.clipboard.writeText(message)
       alert('Follow-up message copied to clipboard!')
     } catch (err) {
-      alert(`Failed to generate: ${err instanceof Error ? err.message : 'Unknown error'}`)
+      notify(`Generation failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
     } finally {
       setGenerating(null)
     }

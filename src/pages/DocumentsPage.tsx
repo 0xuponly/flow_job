@@ -120,7 +120,7 @@ export default function DocumentsPage() {
       setEditContent(updatedContent)
       setSelected({ ...selected, content: updatedContent })
     } catch (err) {
-      alert(`Failed to regenerate section: ${err instanceof Error ? err.message : 'Unknown error'}`)
+      notify(`Section regeneration failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
     } finally {
       setRegeneratingSection(null)
     }

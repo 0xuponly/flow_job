@@ -4,13 +4,19 @@ interface Toast {
   id: number
   message: string
   type: 'info' | 'success' | 'error'
+  ttl: number
 }
 
 let nextId = 0
 let listeners: ((toast: Toast) => void)[] = []
 
-export function notify(message: string, type: Toast['type'] = 'info'): void {
-  const toast: Toast = { id: nextId++, message, type }
+export function notify(message: string, type: Toast['type'] = 'info', ttl?: number): void {
+  const toast: Toast = {
+    id: nextId++,
+    message,
+    type,
+    ttl: ttl ?? (type === 'error' ? 8000 : 4000)
+  }
   for (const l of listeners) l(toast)
 }
 
@@ -22,7 +28,7 @@ export default function Notifications() {
       setToasts((prev) => [...prev, toast])
       setTimeout(() => {
         setToasts((prev) => prev.filter((t) => t.id !== toast.id))
-      }, 4000)
+      }, toast.ttl)
     }
     listeners.push(listener)
     return () => {
@@ -52,9 +58,11 @@ export default function Notifications() {
           fontSize: 13,
           fontWeight: 500,
           boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-          maxWidth: 360,
+          maxWidth: t.message.includes('\n') ? 480 : 360,
           border: '1px solid rgba(255,255,255,0.1)',
-          animation: 'toast-slide-in 0.2s ease-out'
+          animation: 'toast-slide-in 0.2s ease-out',
+          whiteSpace: 'pre-line',
+          pointerEvents: 'auto'
         }}>
           {t.message}
         </div>
