@@ -1367,12 +1367,13 @@ export default function JobsPage() {
           </div>
         )}
 
-        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 16 }}>
-          If details can't be sourced, you'll see an error and no job will be added.{' '}
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 16, marginBottom: 12 }}>
+          If details can't be sourced, you'll see an error and no job will be added.
+        </p>
+        <div style={{ marginTop: 8 }}>
           <button
             type="button"
             className="btn btn-secondary btn-sm"
-            style={{ display: 'inline', padding: '2px 6px', marginLeft: 4 }}
             onClick={() => {
               setShowAddLink(false)
               setShowAddManual(true)
@@ -1380,6 +1381,7 @@ export default function JobsPage() {
           >
             Add manually instead
           </button>
+        </div>
         </p>
       </Modal>
 
