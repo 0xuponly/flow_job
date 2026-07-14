@@ -583,7 +583,9 @@ export function updateJob(
     employment_type: fields.employment_type !== undefined
       ? (normalizeEmploymentType(fields.employment_type))
       : existing.employment_type,
-    work_mode: fields.work_mode !== undefined ? de(fields.work_mode ?? null) : existing.work_mode,
+    work_mode: fields.work_mode !== undefined
+      ? (normalizeWorkMode(fields.work_mode))
+      : existing.work_mode,
     source: fields.source !== undefined ? (fields.source ?? null) : existing.source,
     status: fields.status ?? existing.status,
     score: fields.score !== undefined ? (fields.score ?? null) : existing.score,
