@@ -253,6 +253,11 @@ export default function JobsPage() {
   // batch-score refresh. The Map persists across renders for the lifetime
   // of this page instance.
   const lastSeenFitErrors = useRef<Map<number, string | null>>(new Map())
+  // Debounce: collapse multiple loadJobs() invocations that complete within
+  // a short window into a single toast. Concurrent mounts + the search
+  // debounce + the batchScore refetch can all resolve in the same tick.
+  const lastFitToastAt = useRef<number>(0)
+  const FIT_TOAST_DEBOUNCE_MS = 5000
 
   async function loadJobs() {
     const before = lastSeenFitErrors.current
@@ -279,11 +284,34 @@ export default function JobsPage() {
       const reason = topCount === newlyFailing.length
         ? cleanedReason
         : `${cleanedReason} (and ${newlyFailing.length - topCount} similar)`
-      notify(
-        `Fit assessment failed for ${newlyFailing.length} job${newlyFailing.length > 1 ? 's' : ''}. ${reason}.`,
-        'error',
-        12000
-      )
+      const message = `Fit assessment failed for ${newlyFailing.length} job${newlyFailing.length > 1 ? 's' : ''}. ${reason}.`
+      // Debounce: concurrent loadJobs() calls (mount + search-debounce +
+      // batchScore refetch) can all see the same freshly-failed set. Only
+      // the last one to fire within the window gets to toast; older queued
+      // callers bail because their captured failing set is now stale
+      // (covered by a later call) or their message matches a recent toast.
+      const myFailingIds = new Set(newlyFailing.map((j) => j.id))
+      const myReason = cleanedReason
+      const now = Date.now()
+      const wait = Math.max(0, FIT_TOAST_DEBOUNCE_MS - (now - lastFitToastAt.current))
+      setTimeout(() => {
+        // If a newer loadJobs has already fired the toast in the meantime,
+        // skip — its failing set subsumes ours or matches.
+        if (lastFitToastAt.current > now) return
+        // Re-check the live snapshot: if my failing jobs no longer match
+        // what's currently failing, a later call will handle it (or has
+        // already done so).
+        const current = lastSeenFitErrors.current
+        const stillFailingSame = [...myFailingIds].every((id) => current.get(id) != null)
+        if (!stillFailingSame) return
+        lastFitToastAt.current = Date.now()
+        notify(message, 'error', 12000)
+      }, wait)
+    } else {
+      // No new failures this load — clear the debounce so the next time
+      // failures appear we fire immediately rather than waiting out a stale
+      // window.
+      lastFitToastAt.current = 0
     }
     // Update the snapshot so the next load only toasts on *new* failures.
     // If a job's error cleared (e.g. it fit successfully on a retry), drop it
