@@ -503,6 +503,10 @@ export function createJob(
   // hours-per-week (e.g. "37.5 hours per week"); if the posting
   // doesn't state hours, normalizeSalary falls back to 40/week.
   const salaryNormalized = normalizeSalary(de(input.salary_range), description)
+  // Canonicalize employment_type to one of 8 UPPER_SNAKE tokens so
+  // the Edit dropdown is the single source of truth and downstream
+  // consumers (filters, scoring, exports) only see the enum values.
+  const employmentTypeNormalized = normalizeEmploymentType(input.employment_type)
   const job: Job = {
     id: nextId(),
     title: normalizeTitle(de(input.title)) ?? de(input.title)!,
@@ -514,7 +518,7 @@ export function createJob(
     requirements: de(input.requirements ?? null),
     application_requirements: de(input.application_requirements ?? null),
     hiring_manager: de(input.hiring_manager ?? null),
-    employment_type: de(input.employment_type ?? null),
+    employment_type: employmentTypeNormalized,
     work_mode: de(input.work_mode ?? null),
     source: input.source ?? null,
     status: 'sourced',
