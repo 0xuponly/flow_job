@@ -885,15 +885,48 @@ function applyMonster(result: ScrapedJob, html: string): void {
 }
 
 function applyZipRecruiter(result: ScrapedJob, html: string): void {
-  const titleMatch = html.match(/data-testid="jobTitle"[^>]*>([^<]+)/i) || html.match(/<h1[^>]*class="[^"]*job_title[^"]*"[^>]*>([^<]+)<\/h1>/i)
+  // ZipRecruiter renders the job page with a mix of `data-testid` markers
+  // (React Testing Library) and a small set of stable CSS classes. The
+  // title and location are in `data-testid` attributes on plain elements;
+  // the company name is the visible text inside a link with
+  // `data-testid="companyLink"`. Fall back to the more specific markers
+  // if those are absent, then to the older `h1.job_title` /
+  // `span.company_name` shape (used by older ZipRecruiter pages).
+  const titleMatch = html.match(/data-testid="jobTitle"[^>]*>([^<]+)/i)
+    || html.match(/<h1[^>]*class="[^"]*job_title[^"]*"[^>]*>([^<]+)<\/h1>/i)
   if (titleMatch) result.title = decodeHtmlEntities(titleMatch[1].trim())
-  const companyMatch = html.match(/data-testid="companyLink"[^>]*>([^<]+)/i) || html.match(/class="[^"]*company_name[^"]*"[^>]*>([^<]+)/i)
-  if (companyMatch) result.company = decodeHtmlEntities(companyMatch[1].trim())
-  const locMatch = html.match(/data-testid="jobLocation"[^>]*>([^<]+)/i) || html.match(/class="[^"]*location[^"]*"[^>]*>([^<]+)/i)
+
+  // The `companyLink` testid is on an `<a>` whose visible text is the
+  // company name. Anchor-text extraction handles the link case.
+  const companyMatch = html.match(/<a[^>]*data-testid="companyLink"[^>]*>([\s\S]*?)<\/a>/i)
+    || html.match(/<span[^>]*class="[^"]*company_name[^"]*"[^>]*>([^<]+)<\/span>/i)
+    || html.match(/<a[^>]*class="[^"]*company_name[^"]*"[^>]*>([^<]+)<\/a>/i)
+  if (companyMatch) result.company = decodeHtmlEntities(stripHtml(companyMatch[1]).trim())
+
+  const locMatch = html.match(/data-testid="jobLocation"[^>]*>([^<]+)/i)
+    || html.match(/<span[^>]*class="[^"]*location[^"]*"[^>]*>([^<]+)<\/span>/i)
   if (locMatch) result.location = decodeHtmlEntities(locMatch[1].trim())
-  const salaryMatch = html.match(/class="[^"]*salary[^"]*"[^>]*>([^<]+)/i) || html.match(/\$([\d,]+(?:k|K)?)\s*(?:–|-|to)\s*\$?([\d,]+(?:k|K)?)/)
-  if (salaryMatch && !result.salary_range) result.salary_range = decodeHtmlEntities(salaryMatch[1].trim())
-  const descMatch = html.match(/<div[^>]*data-testid="jobDescription"[^>]*>([\s\S]*?)<\/div>/i) || html.match(/<section[^>]*class="[^"]*description[^"]*"[^>]*>([\s\S]*?)<\/section>/i)
+
+  // Salary shows up in a span with `class="...salary..."` or in a `meta`
+  // tag (`<meta property="og:...">`). The fallback regex catches the
+  // bare "$X – $Y" form (without a `k`/`K` suffix) that the older
+  // path-only regex would miss.
+  const salaryMatch = html.match(/<span[^>]*class="[^"]*salary[^"]*"[^>]*>([^<]+)<\/span>/i)
+    || html.match(/<div[^>]*class="[^"]*salary[^"]*"[^>]*>([^<]+)<\/div>/i)
+    || html.match(/\$\s*[\d,]+(?:\.\d+)?\s*(?:–|-|to)\s*\$?\s*[\d,]+(?:\.\d+)?\s*(?:k|K)?/i)
+  if (salaryMatch && !result.salary_range) {
+    result.salary_range = decodeHtmlEntities(
+      (salaryMatch[1] || salaryMatch[0]).trim()
+    )
+  }
+
+  // Description lives in `data-testid="jobDescription"`. Fall back to
+  // the legacy `<section class="...description...">` shape, then to any
+  // element whose class contains "job-description".
+  const descMatch = html.match(/<div[^>]*data-testid="jobDescription"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/i)
+    || html.match(/<div[^>]*data-testid="jobDescription"[^>]*>([\s\S]*?)<\/div>/i)
+    || html.match(/<section[^>]*class="[^"]*description[^"]*"[^>]*>([\s\S]*?)<\/section>/i)
+    || html.match(/<div[^>]*class="[^"]*job-description[^"]*"[^>]*>([\s\S]*?)<\/div>/i)
   if (descMatch) {
     const desc = stripHtml(descMatch[1]).trim()
     if (desc) result.description = desc
