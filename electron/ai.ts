@@ -128,8 +128,24 @@ async function callAI(
       } else if (response.status === 429) {
         rateLimited = true
         errors.push(`${model.name}: rate limited (429)`)
-      } else {
+      } else if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 425) {
+        // Persistent client error — auth, payment required, not found, etc.
+        // These won't fix themselves on retry, so record the failure with
+        // a short, labeled reason and continue to the next model instead of
+        // wasting the rest of the rotation on a known-bad config.
+        const label = response.status === 401 ? 'unauthorized (401)'
+          : response.status === 402 ? 'payment required (402)'
+          : response.status === 403 ? 'forbidden (403)'
+          : response.status === 404 ? 'not found (404)'
+          : `HTTP ${response.status}`
         const errText = await response.text().catch(() => '')
+        // Truncate + collapse whitespace so a chatty error page doesn't
+        // blow up the toast with megabytes of HTML.
+        const trimmed = errText.replace(/\s+/g, ' ').trim().slice(0, 200)
+        errors.push(trimmed ? `${model.name}: ${label} — ${trimmed}` : `${model.name}: ${label}`)
+      } else {
+        // 5xx, 408 (request timeout), 425 (too early) — transient, worth
+        // continuing to the next model.
         errors.push(`${model.name}: HTTP ${response.status}`)
       }
     } catch (err) {
