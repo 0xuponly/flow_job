@@ -1,5 +1,5 @@
 import type { CreateJobInput } from './types'
-import { fetchHtmlViaBrowser, isChallengePage, navigateToHashViaBrowser } from './browserScraper'
+import { fetchHtmlViaBrowser, isChallengePage } from './browserScraper'
 
 const USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -155,6 +155,36 @@ async function fetchPageHtml(url: string, hostname: string, signal?: AbortSignal
 }
 
 function extractFromHtml(html: string, hostname: string, pageUrl: string, source?: string): Promise<ScrapedJob> {
+  return extractFromHtmlImpl(html, hostname, pageUrl, source)
+}
+
+async function extractFromHtmlImpl(html: string, hostname: string, pageUrl: string, source?: string): Promise<ScrapedJob> {
+  // WorkBC job-detail URLs are hash-routed onto the search page
+  // (`https://www.workbc.ca/find-job/search-jobs#/job-details/{id}`).
+  // The document path is the same as the search results page, so the
+  // first fetch returns the search page and `extractFromHtml` below
+  // would extract the wrong job. Detect the hash, navigate the SPA
+  // router, and re-extract from the rendered detail panel.
+  if (hostname === 'www.workbc.ca' || hostname === 'workbc.ca') {
+    const hash = new URL(pageUrl).hash
+    const detailMatch = hash.match(/^#\/?job-details\/(\d+)/)
+    if (detailMatch) {
+      const targetHash = `#/job-details/${detailMatch[1]}`
+      const detailHtml = await navigateToHashViaBrowser(
+        'https://www.workbc.ca/find-job/search-jobs',
+        targetHash,
+        // Markers that prove the detail panel rendered, not the search
+        // results. WorkBC's detail panel always shows the job title in
+        // an <h1> AND a "Job details" or "Apply now" label. Use the
+        // job-id fragment itself as a strong signal — the search page
+        // does not embed numeric job ids in the same way.
+        ['Apply now', 'Job details', `job-details/${detailMatch[1]}`],
+        20000
+      )
+      return extractFromHtmlImpl(detailHtml, hostname, pageUrl, source)
+    }
+  }
+
   const result: ScrapedJob = { source }
 
   const jobPosting = selectJobPosting(collectJobPostings(extractJsonLd(html)), html, pageUrl)
