@@ -246,7 +246,7 @@ textarea {
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 500;
-  padding: 5px 2px 5px 2px;
+  padding: 5px 2px;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
