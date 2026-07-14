@@ -26,6 +26,7 @@ export interface Api {
   createJob: (input: CreateJobInput) => Promise<Job>
   updateJob: (id: number, fields: Partial<CreateJobInput & { status: JobStatus }>) => Promise<Job>
   deleteJob: (id: number) => Promise<void>
+  deleteJobs: (ids: number[]) => Promise<void>
   searchJobs: (query: string) => Promise<Job[]>
   importJobFromUrl: (url: string) => Promise<Job>
   scanBoards: (filters?: ScanFilters) => Promise<ScanResult>
@@ -95,6 +96,7 @@ const api: Api = {
   createJob: (input) => ipcRenderer.invoke('jobs:create', input),
   updateJob: (id, fields) => ipcRenderer.invoke('jobs:update', id, fields),
   deleteJob: (id) => ipcRenderer.invoke('jobs:delete', id),
+  deleteJobs: (ids) => ipcRenderer.invoke('jobs:deleteMany', ids),
   searchJobs: (query) => ipcRenderer.invoke('jobs:search', query),
   importJobFromUrl: (url) => ipcRenderer.invoke('jobs:importFromUrl', url),
   scanBoards: (filters) => ipcRenderer.invoke('jobs:scanBoards', filters),

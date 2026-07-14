@@ -526,6 +526,51 @@ export function deleteJob(id: number): void {
   persistStore()
 }
 
+// Batch variant used by the Job Board's checkbox delete. Loads the store
+// once, applies all deletions to that single in-memory copy, and writes
+// the result back exactly once. The per-job loop in the renderer (one
+// IPC call per id) was both slow for large selections and racy: each
+// per-call loadStore() + persistStore() round-trip could interleave with
+// other writers (background scan, auto-scan, fit scorer), and any
+// intermediate failure would leave the store half-deleted with no
+// transactional guarantee that the next call's read sees the previous
+// call's write. This atomic version is the source of truth.
+export function deleteJobs(ids: number[]): void {
+  if (ids.length === 0) return
+  const idSet = new Set(ids)
+  const s = loadStore()
+  // Move each deleted job into the deleted-jobs blacklist (used by the
+  // scanner to avoid re-adding the same URL). The blacklist is capped
+  // to settings.deleted_jobs_cap to keep the store from growing
+  // unbounded over time.
+  if (!s.deleted_jobs) s.deleted_jobs = []
+  for (const id of idSet) {
+    const job = s.jobs.find((j) => j.id === id)
+    if (!job) continue
+    s.deleted_jobs.push({
+      url: job.url,
+      title: job.title,
+      company: job.company,
+      location: job.location,
+      score: job.score,
+      deletedAt: Date.now()
+    })
+  }
+  const cap = typeof s.settings.deleted_jobs_cap === 'number' && s.settings.deleted_jobs_cap > 0
+    ? s.settings.deleted_jobs_cap
+    : 50000
+  if (s.deleted_jobs.length > cap) s.deleted_jobs.splice(0, s.deleted_jobs.length - cap)
+  // Cascade: drop documents, applications, follow-ups, interviews for
+  // the deleted jobs in one pass each.
+  const appIds = s.applications.filter((a) => idSet.has(a.job_id)).map((a) => a.id)
+  s.jobs = s.jobs.filter((j) => !idSet.has(j.id))
+  s.documents = s.documents.filter((d) => d.job_id == null || !idSet.has(d.job_id))
+  s.applications = s.applications.filter((a) => !idSet.has(a.job_id))
+  s.follow_ups = s.follow_ups.filter((f) => !appIds.includes(f.application_id))
+  s.interviews = s.interviews.filter((i) => !appIds.includes(i.application_id))
+  persistStore()
+}
+
 // Documents
 
 export function getDocument(id: number): Document | undefined {

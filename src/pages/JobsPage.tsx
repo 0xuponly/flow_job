@@ -454,9 +454,13 @@ export default function JobsPage() {
   async   function handleBatchDelete() {
     const count = selectedIds.size
     if (!confirm(`Delete ${count} job${count === 1 ? '' : 's'} and all related data?`)) return
-    for (const id of selectedIds) {
-      await api.deleteJob(id)
-    }
+    // Single IPC: deletes all selected jobs atomically in main and
+    // writes the store once. The previous per-id loop was slow for
+    // large selections and each per-id loadStore/persistStore round
+    // could interleave with other writers, occasionally leaving the
+    // store half-deleted after a restart.
+    const ids = Array.from(selectedIds)
+    await api.deleteJobs(ids)
     setJobs((prev) => prev.filter((j) => !selectedIds.has(j.id)))
     if (selectedJob && selectedIds.has(selectedJob.id)) setSelectedJob(null)
     setSelectedIds(new Set())

@@ -25,6 +25,7 @@ export interface Api {
   createJob: (input: CreateJobInput) => Promise<Job>
   updateJob: (id: number, fields: Partial<CreateJobInput & { status: JobStatus }>) => Promise<Job>
   deleteJob: (id: number) => Promise<void>
+  deleteJobs: (ids: number[]) => Promise<void>
   searchJobs: (query: string) => Promise<Job[]>
   importJobFromUrl: (url: string) => Promise<Job>
   scanBoards: (filters?: ScanFilters) => Promise<ScanResult>
