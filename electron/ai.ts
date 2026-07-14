@@ -49,7 +49,11 @@ SECTIONS IN ORDER (do not add, remove, or rename any section):
 
 FORMATTING RULES (must follow exactly):
 - Section headers on their own line, centered, bold
-- Use a TAB character between bold left text (school/org/title) and right-aligned location/dates
+- Use a LITERAL TAB CHARACTER (\\t, ASCII 0x09 — NOT spaces, NOT em-dashes, NOT pipes) between the bold left text (school/org/title) and the right-aligned location/dates. Do not use multiple spaces or "—" as separators.
+- Each experience entry is EXACTLY two lines, in this order:
+    Line 1: <Organization>\\t<City, State>
+    Line 2: <Position Title>\\t<Month Year – Month Year>
+  Followed by bullet points describing the role.
 - Each bullet point on its own line, starting with an action verb
 - Write experience bullet points in the XYZ format: "Accomplished [X] as measured by [Y], by doing [Z]."
 - Do NOT use asterisks or markdown formatting
