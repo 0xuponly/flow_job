@@ -164,7 +164,7 @@ export async function fetchHtmlViaBrowser(url: string): Promise<string> {
       }
     }
 
-    win.webContents.on('did-finish-load', () => {
+    win.webContents.once('did-finish-load', () => {
       void extract()
     })
 
