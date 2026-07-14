@@ -226,6 +226,10 @@ function loadStore(): Store {
         j.fit_score_version = null
         jobsMigrated = true
       }
+      if (j.fit_last_error === undefined) {
+        j.fit_last_error = null
+        jobsMigrated = true
+      }
     }
     if (typeof store.settings.cv_version !== 'number') {
       store.settings.cv_version = 0
@@ -359,6 +363,7 @@ export function createJob(input: CreateJobInput): Job {
     fit_rationale: input.fit_rationale ?? null,
     fit_breakdown: input.fit_breakdown ?? null,
     fit_score_version: input.fit_score_version ?? null,
+    fit_last_error: input.fit_last_error ?? null,
     notes: input.notes ?? null,
     date_posted: input.date_posted ?? null,
     last_updated: now(),
@@ -403,6 +408,7 @@ export function updateJob(
     fit_rationale: fields.fit_rationale !== undefined ? (fields.fit_rationale ?? null) : existing.fit_rationale,
     fit_breakdown: fields.fit_breakdown !== undefined ? (fields.fit_breakdown ?? null) : existing.fit_breakdown,
     fit_score_version: fields.fit_score_version !== undefined ? (fields.fit_score_version ?? null) : existing.fit_score_version,
+    fit_last_error: fields.fit_last_error !== undefined ? (fields.fit_last_error ?? null) : existing.fit_last_error,
     notes: fields.notes !== undefined ? (fields.notes ?? null) : existing.notes,
     date_posted: fields.date_posted !== undefined ? (fields.date_posted ?? null) : existing.date_posted,
     last_updated: fields.last_updated !== undefined ? (fields.last_updated ?? null) : existing.last_updated,
@@ -865,6 +871,30 @@ export function hasLocationsNormalized(): boolean {
 export function markLocationsNormalized(): void {
   const s = loadStore()
   s.settings.locations_normalized = '1'
+  persistStore()
+}
+
+/**
+ * Increment the global CV version. The next time the bootstrap score pass
+ * runs, it will re-score every job whose `fit_score_version` doesn't match
+ * the new value — i.e. every job that's currently holding a stale (or
+ * heuristic-only) fit score. The user can also call this from the UI by
+ * editing the base CV in Settings, which already does the same thing.
+ */
+export function bumpCvVersion(): number {
+  const s = loadStore()
+  s.settings.cv_version = (typeof s.settings.cv_version === 'number' ? s.settings.cv_version : 0) + 1
+  persistStore()
+  return s.settings.cv_version
+}
+
+export function hasFitRescoreFlag(): boolean {
+  return loadStore().settings.fit_rescored_v2 === '1'
+}
+
+export function markFitRescored(): void {
+  const s = loadStore()
+  s.settings.fit_rescored_v2 = '1'
   persistStore()
 }
 

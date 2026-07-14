@@ -120,15 +120,29 @@ function registerIpc(): void {
           requirements: job.requirements,
           baseCv
         })
-        db.updateJob(job.id, {
-          score: fit.score,
-          fit_rationale: fit.rationale,
-          fit_breakdown: fit.breakdown,
-          fit_score_version: currentVersion
-        })
-        updated++
-      } catch {
-        // Swallow per-job errors so one bad job doesn't block the rest
+        if (fit.source === 'heuristic') {
+          // LLM call failed. Do NOT overwrite any existing real fit score with
+          // a heuristic fallback. Persist only the error so the user can see
+          // why the scorer is broken.
+          db.updateJob(job.id, {
+            fit_last_error: fit.error || 'LLM scorer fell back to heuristic.'
+          })
+          console.warn(`[fit] job ${job.id} (${job.company} — ${job.title}): ${fit.error || 'heuristic fallback'}`)
+        } else {
+          db.updateJob(job.id, {
+            score: fit.score,
+            fit_rationale: fit.rationale,
+            fit_breakdown: fit.breakdown,
+            fit_score_version: currentVersion,
+            fit_last_error: null
+          })
+          updated++
+        }
+      } catch (err) {
+        // Don't silently swallow — surface the error and leave the row alone.
+        const msg = err instanceof Error ? err.message : 'Unknown error'
+        console.warn(`[fit] job ${job.id} (${job.company} — ${job.title}): ${msg}`)
+        db.updateJob(job.id, { fit_last_error: msg })
       }
     }
     return { updated }
@@ -145,7 +159,8 @@ function registerIpc(): void {
         score: 0.5,
         fit_rationale: 'No base CV configured.',
         fit_breakdown: { matched_skills: [], missing_skills: [], experience_years_match: null },
-        fit_score_version: currentVersion
+        fit_score_version: currentVersion,
+        fit_last_error: null
       })
     }
     const fit = await scoreJobFit({
@@ -154,11 +169,18 @@ function registerIpc(): void {
       requirements: job.requirements,
       baseCv
     })
+    if (fit.source === 'heuristic') {
+      // Don't pretend a heuristic fallback is a real fit score.
+      const errMsg = fit.error || 'LLM scorer fell back to heuristic.'
+      console.warn(`[fit] job ${id}: ${errMsg}`)
+      return db.updateJob(id, { fit_last_error: errMsg })
+    }
     return db.updateJob(id, {
       score: fit.score,
       fit_rationale: fit.rationale,
       fit_breakdown: fit.breakdown,
-      fit_score_version: currentVersion
+      fit_score_version: currentVersion,
+      fit_last_error: null
     })
   })
 
@@ -587,6 +609,22 @@ app.whenReady().then(() => {
       }
     } catch (err) {
       console.error('[startup] Location retrofit failed:', err)
+    }
+  }
+
+  // One-shot: bump the global CV version so the bootstrap score pass re-scores
+  // every job that's currently holding a heuristic-only fit score. This
+  // self-heals the bug where the LLM scorer silently fell back to a keyword
+  // overlap score and the user got a misleading number. After this runs
+  // once the flag is set, so subsequent launches only re-score when the
+  // user actually edits the base CV.
+  if (!db.hasFitRescoreFlag() && db.listJobs().length > 0) {
+    try {
+      const v = db.bumpCvVersion()
+      db.markFitRescored()
+      console.log(`[startup] Bumped cv_version to ${v} to force fit re-score of all jobs.`)
+    } catch (err) {
+      console.error('[startup] CV version bump failed:', err)
     }
   }
 

@@ -525,6 +525,10 @@ export interface JobFitResult {
   rationale: string
   breakdown: FitBreakdown
   source: 'llm' | 'heuristic'
+  // Populated when source === 'heuristic' AND the fallback was reached because
+  // the LLM call failed (no models, all rate-limited, parse error, etc.).
+  // Empty string for the no-base-CV case and for legitimate keyword fallback.
+  error?: string
 }
 
 function emptyBreakdown(): FitBreakdown {
@@ -538,13 +542,15 @@ function heuristicFit(input: {
   baseCv: string
   cvEduLevel: number
   cvYears: number
+  error?: string
 }): JobFitResult {
   const score = scoreCompatibility(input.title, input.description || '', input.baseCv)
   return {
     score,
     rationale: `Heuristic score based on keyword overlap. CV education level: ${input.cvEduLevel || 'unspecified'}, years experience: ${input.cvYears || 'unspecified'}.`,
     breakdown: emptyBreakdown(),
-    source: 'heuristic'
+    source: 'heuristic',
+    error: input.error
   }
 }
 
@@ -565,8 +571,11 @@ export async function scoreJobFit(input: {
   const cvEduLevel = extractEducationLevel(input.baseCv)
   const cvYears = extractYearsExperience(input.baseCv)
 
-  const fallback = (): JobFitResult =>
-    heuristicFit({ ...input, cvEduLevel, cvYears })
+  // The fallback returned when the LLM call fails. The error message is
+  // captured so callers can surface it on the job row and the user can tell
+  // the difference between "bad fit" and "scorer is broken".
+  const fallbackWithError = (error: string): JobFitResult =>
+    heuristicFit({ ...input, cvEduLevel, cvYears, error })
 
   if (!input.baseCv) {
     return {
@@ -626,7 +635,13 @@ Return the JSON object now.`
     const content = result.content || ''
     // Try to locate a JSON object in the response (defensive against stray prose)
     const match = content.match(/\{[\s\S]*\}/)
-    if (!match) return fallback()
+    if (!match) {
+      return fallbackWithError(
+        result.rateLimited
+          ? 'All AI models were rate limited.'
+          : 'Reviewer returned a non-JSON response.'
+      )
+    }
     const parsed = JSON.parse(match[0]) as {
       score?: number
       rationale?: string
@@ -635,7 +650,9 @@ Return the JSON object now.`
       experience_years_match?: unknown
     }
     const rawScore = Number(parsed.score)
-    if (!Number.isFinite(rawScore)) return fallback()
+    if (!Number.isFinite(rawScore)) {
+      return fallbackWithError('Reviewer response was missing a numeric score.')
+    }
     const score = Math.max(0, Math.min(1, rawScore))
     const matched = Array.isArray(parsed.matched_skills)
       ? parsed.matched_skills.filter((s): s is string => typeof s === 'string').slice(0, 8)
@@ -661,7 +678,8 @@ Return the JSON object now.`
       },
       source: 'llm'
     }
-  } catch {
-    return fallback()
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Unknown error'
+    return fallbackWithError(`LLM scorer failed: ${msg}`)
   }
 }

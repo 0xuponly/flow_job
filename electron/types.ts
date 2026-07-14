@@ -37,6 +37,12 @@ export interface Job {
   fit_rationale: string | null
   fit_breakdown: FitBreakdown | null
   fit_score_version: number | null
+  // Set when the most recent fit-scorer run fell back to a heuristic (no
+  // LLM response, parse failure, no models configured, etc.). NULL means
+  // the row is either unscored or was scored successfully by the LLM. The
+  // UI shows this in place of a numeric score so the user can tell the
+  // difference between "bad fit" and "scorer is broken".
+  fit_last_error: string | null
   notes: string | null
   date_posted: string | null
   last_updated: string | null

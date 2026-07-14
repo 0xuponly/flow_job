@@ -485,7 +485,10 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
                 </button>
               </div>
               <div style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
-                {job.score == null ? (
+                {job.fit_last_error && job.score == null ? (
+                  // Scorer is broken AND we don't have a real score to fall back on.
+                  <span style={{ color: 'var(--text-muted)' }}>—</span>
+                ) : job.score == null ? (
                   <span>—</span>
                 ) : (
                   <>
@@ -505,7 +508,23 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
                   </>
                 )}
               </div>
-              {job.fit_rationale && (
+              {job.fit_last_error && (
+                <div
+                  title={job.fit_last_error}
+                  style={{
+                    fontSize: 11,
+                    color: 'var(--danger)',
+                    marginTop: 4,
+                    lineHeight: 1.4,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  Fit score unavailable: {job.fit_last_error}
+                </div>
+              )}
+              {!job.fit_last_error && job.fit_rationale && (
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.4 }}>
                   {job.fit_rationale}
                 </div>

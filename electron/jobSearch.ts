@@ -473,7 +473,10 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
     }
   }
 
-  if (fit.score < 0.08) {
+  if (fit.source === 'llm' && fit.score < 0.08) {
+    // Only reject on a low score when we actually have one. Heuristic
+    // fallbacks are noisy and would cause us to silently drop good jobs
+    // whenever the LLM scorer is misconfigured.
     return { action: 'incompatible', reason: `Score ${fit.score.toFixed(2)} < 0.08` }
   }
 
@@ -483,7 +486,8 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
       score: fit.score,
       fit_rationale: fit.rationale,
       fit_breakdown: fit.breakdown,
-      fit_score_version: getSettings().cv_version ?? 0
+      fit_score_version: getSettings().cv_version ?? 0,
+      fit_last_error: fit.source === 'heuristic' ? (fit.error || 'LLM scorer fell back to heuristic.') : null
     })
     // Fire-and-forget auto-generation of CV and cover letter
     onJobAdded?.(job)
