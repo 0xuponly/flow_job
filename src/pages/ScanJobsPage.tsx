@@ -302,7 +302,8 @@ export default function ScanJobsPage() {
                 Deselect all
               </button>
             )}
-            <span style={{ width: 1, height: 20, background: 'var(--border)', margin: '0 4px' }} />
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6, alignItems: 'center' }}>
             {(() => {
               const frequentErrors = allBoards
                 .filter((b) => {
