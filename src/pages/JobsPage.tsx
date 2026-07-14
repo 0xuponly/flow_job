@@ -1292,7 +1292,7 @@ export default function JobsPage() {
                     {STATUS_LABELS[job.status]}
                   </span>
                 </td>
-                <td>{job.salary_range ?? '—'}</td>
+                <td>{hasMeaningfulSalary(job.salary_range) ? job.salary_range : '—'}</td>
                 <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{formatJobDate(job.date_posted)}</td>
                 <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{formatJobDate(job.last_updated)}</td>
                 <td>
