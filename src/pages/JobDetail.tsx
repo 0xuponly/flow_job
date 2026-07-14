@@ -490,7 +490,10 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
               <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', marginBottom: 2 }}>Hiring manager</div>
               <div style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{currentJob.hiring_manager || '—'}</div>
             </div>
-            <div className="card" style={{ flex: '1 0 120px', padding: '8px 12px', minHeight: 56 }}>
+          </div>
+
+          <div style={{ marginTop: 8 }}>
+            <div className="card" style={{ flex: '1 0 100%', padding: '8px 12px', minHeight: 56 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
                 <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)' }}>Fit</div>
                 <button
