@@ -530,7 +530,7 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
               </div>
               {job.fit_last_error && (
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                  Fit score unavailable — see toast for details.
+                  Fit score unavailable.
                 </div>
               )}
               {!job.fit_last_error && job.fit_rationale && (
