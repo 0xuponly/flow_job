@@ -473,7 +473,13 @@ export default function JobsPage() {
     // Surface what actually got deleted vs. what was requested so the
     // user can spot the partial-deletion case immediately rather than
     // wondering why some selected jobs are still in the table.
-    if (result.missingFromStore.length > 0) {
+    if (result.stillPresentAfterFilter.length > 0) {
+      notify(
+        `Bug: ${result.stillPresentAfterFilter.length} IDs (${result.stillPresentAfterFilter.join(', ')}) survived the filter — these jobs were not removed from the store.`,
+        'error',
+        15000
+      )
+    } else if (result.missingFromStore.length > 0) {
       notify(
         `Deleted ${result.deleted} of ${result.requested} jobs. ${result.missingFromStore.length} IDs were not in the database (likely stale selection from a previous session).`,
         'warning',
