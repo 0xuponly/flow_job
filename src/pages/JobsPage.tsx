@@ -460,7 +460,7 @@ export default function JobsPage() {
     // could interleave with other writers, occasionally leaving the
     // store half-deleted after a restart.
     const ids = Array.from(selectedIds)
-    await api.deleteJobs(ids)
+    const result = await api.deleteJobs(ids)
     // Re-fetch from the DB rather than applying an optimistic filter.
     // This guarantees the table shows the actual persisted state, so
     // any job the DB still has (e.g. if a concurrent writer re-added
@@ -470,6 +470,18 @@ export default function JobsPage() {
     setJobs(dedupeJobs(data.map(cleanJob)))
     setSelectedIds(new Set())
     if (selectedJob && ids.includes(selectedJob.id)) setSelectedJob(null)
+    // Surface what actually got deleted vs. what was requested so the
+    // user can spot the partial-deletion case immediately rather than
+    // wondering why some selected jobs are still in the table.
+    if (result.missingFromStore.length > 0) {
+      notify(
+        `Deleted ${result.deleted} of ${result.requested} jobs. ${result.missingFromStore.length} IDs were not in the database (likely stale selection from a previous session).`,
+        'warning',
+        12000
+      )
+    } else if (result.deleted < result.requested) {
+      notify(`Deleted ${result.deleted} of ${result.requested} jobs.`, 'info', 8000)
+    }
   }
 
   async function handleDeleteLowFit() {

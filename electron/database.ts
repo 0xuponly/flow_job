@@ -559,19 +559,19 @@ export function deleteJob(id: number): void {
 // intermediate failure would leave the store half-deleted with no
 // transactional guarantee that the next call's read sees the previous
 // call's write. This atomic version is the source of truth.
-export function deleteJobs(ids: number[]): void {
-  if (ids.length === 0) return
+export function deleteJobs(ids: number[]): { requested: number; deleted: number; missingFromStore: number[] } {
+  if (ids.length === 0) return { requested: 0, deleted: 0, missingFromStore: [] }
   const idSet = new Set(ids)
   const s = loadStore()
   const beforeCount = s.jobs.length
   const idsMissing = [...idSet].filter((id) => !s.jobs.find((j) => j.id === id))
-   
   console.log(`[db.deleteJobs] requested ${ids.length} ids, ${idsMissing.length} missing from store, before count=${beforeCount}`)
   // Move each deleted job into the deleted-jobs blacklist (used by the
   // scanner to avoid re-adding the same URL). The blacklist is capped
   // to settings.deleted_jobs_cap to keep the store from growing
   // unbounded over time.
   if (!s.deleted_jobs) s.deleted_jobs = []
+  let deleted = 0
   for (const id of idSet) {
     const job = s.jobs.find((j) => j.id === id)
     if (!job) continue
@@ -583,6 +583,7 @@ export function deleteJobs(ids: number[]): void {
       score: job.score,
       deletedAt: Date.now()
     })
+    deleted++
   }
   const cap = typeof s.settings.deleted_jobs_cap === 'number' && s.settings.deleted_jobs_cap > 0
     ? s.settings.deleted_jobs_cap
@@ -597,8 +598,8 @@ export function deleteJobs(ids: number[]): void {
   s.follow_ups = s.follow_ups.filter((f) => !appIds.includes(f.application_id))
   s.interviews = s.interviews.filter((i) => !appIds.includes(i.application_id))
   persistStore()
-   
-  console.log(`[db.deleteJobs] persisted: ${beforeCount} -> ${s.jobs.length} jobs`)
+  console.log(`[db.deleteJobs] persisted: ${beforeCount} -> ${s.jobs.length} jobs, deleted=${deleted}`)
+  return { requested: ids.length, deleted, missingFromStore: idsMissing }
 }
 
 // Documents
