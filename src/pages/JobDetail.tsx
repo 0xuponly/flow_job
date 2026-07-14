@@ -465,7 +465,7 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
             </div>
           )}
 
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 16 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 16, alignItems: 'stretch' }}>
             <div className="card" style={{ flex: '1 0 140px', padding: '8px 12px', minHeight: 56 }}>
               <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', marginBottom: 2 }}>Date posted</div>
               <div style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{currentJob.date_posted ? new Date(job.date_posted).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—'}</div>
