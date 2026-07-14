@@ -289,7 +289,16 @@ function dedupeJobs(jobs: Job[]): Job[] {
     if (j.url) {
       try {
         const u = new URL(j.url)
-        const k = `${u.protocol}//${u.host}${u.pathname.replace(/\/$/, '')}`.toLowerCase()
+        // Most sites use the hash only for in-page anchors ("#apply",
+        // "#section-2") — those aren't job identities, so we strip them.
+        // But hash-routed SPAs (e.g. WorkBC stores the jobId in
+        // `#/job-details/{id}`) put the job identity IN the hash, so two
+        // different jobs share the same path and only differ by fragment.
+        // Keep the hash when it looks like a path (`#/foo/bar/...` or
+        // starts with `/` after the `#`).
+        const hashLooksLikePath = u.hash.startsWith('#/') || u.hash.startsWith('/')
+        const hashPart = hashLooksLikePath ? u.hash.toLowerCase() : ''
+        const k = `${u.protocol}//${u.host}${u.pathname.replace(/\/$/, '')}${u.search}${hashPart}`.toLowerCase()
         if (seenUrl.has(k)) return false
         seenUrl.add(k)
       } catch {
