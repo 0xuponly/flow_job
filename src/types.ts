@@ -102,6 +102,7 @@ export interface ApiModelConfig {
   base_url: string
   api_key: string
   model: string
+  enabled?: boolean
 }
 
 export interface Settings {

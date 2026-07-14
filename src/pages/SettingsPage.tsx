@@ -66,7 +66,7 @@ export default function SettingsPage() {
     setSettings((prev) => (prev ? { ...prev, [field]: value as never } : prev))
   }
 
-  function updateModel(i: number, field: keyof ApiModelConfig, value: string) {
+  function updateModel(i: number, field: keyof ApiModelConfig, value: string | boolean) {
     setModels((prev) => prev.map((m, idx) => (idx === i ? { ...m, [field]: value } : m)))
   }
 
@@ -252,13 +252,36 @@ export default function SettingsPage() {
         <>
           <div className="section-title">AI models</div>
           <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
-            Add one or more AI providers. The app tries each model in order until one succeeds.
+            Add one or more AI providers. The app tries each <strong>enabled</strong> model in order until one succeeds. Toggle a model off to temporarily disable it without losing its config.
           </p>
 
+          {models.every((m) => m.enabled === false) && (
+            <div className="alert alert-warning" style={{ maxWidth: 800, marginBottom: 12 }}>
+              All models are disabled — AI features (generation, verification, fit scoring) will fail.
+            </div>
+          )}
+
           {models.map((model, i) => (
-            <div className="card" style={{ maxWidth: 800, marginBottom: 12 }} key={i}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                <strong style={{ fontSize: 13 }}>Model {i + 1}{i === 0 ? ' (default)' : ''}</strong>
+            <div
+              className="card"
+              style={{ maxWidth: 800, marginBottom: 12, opacity: model.enabled === false ? 0.55 : 1 }}
+              key={i}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, minWidth: 0 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={model.enabled !== false}
+                      onChange={(e) => updateModel(i, 'enabled', e.target.checked)}
+                      title="Enable or disable this model"
+                    />
+                  </label>
+                  <strong style={{ fontSize: 13 }}>
+                    {model.name || `Model ${i + 1}`}{i === 0 ? ' (default)' : ''}
+                    {model.enabled === false && <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>(disabled)</span>}
+                  </strong>
+                </div>
                 {models.length > 1 && (
                   <button className="btn btn-secondary btn-sm" onClick={() => removeModel(i)}>Remove</button>
                 )}

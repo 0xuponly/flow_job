@@ -89,8 +89,8 @@ async function callAI(
   temperature = 0.7,
   timeoutMs = 20000
 ): Promise<CallAIResult> {
-  const models: ApiModelConfig[] = listApiModels()
-  if (models.length === 0) throw new Error('No AI models configured. Add one in Settings.')
+  const models: ApiModelConfig[] = listApiModels().filter((m) => m.enabled !== false)
+  if (models.length === 0) throw new Error('No enabled AI models configured. Add one in Settings.')
 
   let content: string | null = null
   let modelUsed: string | null = null
