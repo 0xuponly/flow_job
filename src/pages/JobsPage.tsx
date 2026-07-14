@@ -393,14 +393,12 @@ export default function JobsPage() {
     const titles = new Set<string>()
     const locations = new Set<string>()
     const statuses = new Set<string>()
-    const sources = new Set<string>()
     const fits = new Set<string>()
     for (const j of jobs) {
       companies.add(j.company)
       titles.add(j.title)
       locations.add(j.location || '—')
       statuses.add(j.status)
-      sources.add(j.source || '—')
       fits.add(fitLabel(j.score))
     }
     return {
@@ -408,7 +406,6 @@ export default function JobsPage() {
       titles: [...titles].sort(),
       locations: [...locations].sort(),
       statuses: [...statuses].sort(),
-      sources: [...sources].sort(),
       fits: [...fits].sort()
     }
   }, [jobs])
@@ -426,7 +423,6 @@ export default function JobsPage() {
       if (filterTitle.length && !filterTitle.includes(j.title)) return false
       if (filterLocation.length && !filterLocation.includes(j.location || '—')) return false
       if (filterStatus.length && !filterStatus.includes(j.status)) return false
-      if (filterSource.length && !filterSource.includes(j.source || '—')) return false
       if (filterFit.length && !filterFit.includes(fitLabel(j.score))) return false
       if (!matchesDateFilter(j.date_posted, filterDatePosted)) return false
       if (!matchesDateFilter(j.last_updated, filterLastUpdated)) return false
@@ -441,7 +437,6 @@ export default function JobsPage() {
         case 'title': return j.title
         case 'location': return j.location ?? null
         case 'status': return j.status
-        case 'source': return j.source ?? null
         case 'salary_range': return parseSalaryForSort(j.salary_range)
         case 'date_posted': return j.date_posted ?? null
         case 'last_updated': return j.last_updated ?? null
@@ -465,7 +460,7 @@ export default function JobsPage() {
     }
     return rows.sort((a, b) => (b.score ?? -1) - (a.score ?? -1))
   },
-    [displayedJobs, filterCompany, filterTitle, filterLocation, filterStatus, filterSource, filterFit, filterDatePosted, filterLastUpdated, sortColumn, sortDir])
+    [displayedJobs, filterCompany, filterTitle, filterLocation, filterStatus, filterFit, filterDatePosted, filterLastUpdated, sortColumn, sortDir])
 
   const allFilteredSelected = useMemo(
     () => filteredJobs.length > 0 && filteredJobs.every((j) => selectedIds.has(j.id)),
