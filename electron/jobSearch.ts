@@ -818,9 +818,17 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
             } else if (r.value.action === 'skipped' || r.value.action === 'incompatible') {
               br.skipped++
               result.totalSkipped++
+            } else if (r.value.action === 'error') {
+              // Per-listing scrape/duplicate error: surfaced separately from
+              // skipped so the user can see whether listings are being
+              // dropped because of fit/duplicate filters vs. genuine scrape
+              // failures. The 4-arg summary line in the UI shows both.
+              br.errors++
+              result.totalErrors++
             }
           } else {
-            br.skipped++
+            br.errors++
+            result.totalErrors++
           }
         }
       }
