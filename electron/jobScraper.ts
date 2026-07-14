@@ -348,7 +348,7 @@ async function tryWorkBcApi(jobId: string, signal?: AbortSignal): Promise<Create
       application_requirements: job.ApplyEmailAddress
         ? `Apply by email: ${job.ApplyEmailAddress}`
         : undefined,
-      employment_type: [hoursOfWork, periodOfEmployment, employmentTerms].filter(Boolean).join(', ') || undefined,
+      employment_type: normalizeEmploymentType([hoursOfWork, periodOfEmployment, employmentTerms].filter(Boolean).join(', ')) ?? undefined,
       work_mode: workplaceType || undefined,
       date_posted: typeof job.DatePosted === 'string' ? job.DatePosted : undefined
     }
