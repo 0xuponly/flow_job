@@ -563,7 +563,7 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
             </div>
           </div>
 
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8, paddingLeft: 8, paddingRight: 8 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
             <div className="card" style={{ flex: '1 0 100px', padding: '8px 12px', height: 56, display: 'flex', flexDirection: 'column', justifyContent: 'flex-start' }}>
               <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', marginBottom: 2 }}>Salary</div>
               <div style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{currentJob.salary_range || '—'}</div>
