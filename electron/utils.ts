@@ -345,3 +345,211 @@ export function normalizeCompany(raw: string | null | undefined): string | null 
     .map((t, i) => titleCaseWord(t, i === 0))
     .join(' ')
 }
+
+// ---------------------------------------------------------------------------
+// Salary normalization
+// ---------------------------------------------------------------------------
+// Salaries land in the database in whatever unit the source page used:
+// "$43/hour", "$7,502.25 - $10,788.33 CAD Monthly", "$80,000 - $100,000",
+// "Up to $120,000", etc. For the Job Board, the JobDetail card, and any
+// salary-aware sort/filter, the user wants everything in annual terms
+// (CAD or USD as the source specifies). This util normalizes a free-form
+// salary string to its annual equivalent and reformats it as a clean
+// range string. Null / unparseable input returns null so callers can
+// distinguish "no salary info" from "salary $0".
+//
+// Conversion rules (industry standard, project policy):
+//   hourly   → × hoursPerWeek × 50 weeks (50 = 2 weeks unpaid vacation
+//              per accounting convention; 52 would overstate)
+//   monthly  → × 12
+//   yearly   → as-is
+//   weekly   → × 50
+//   daily    → × 5 × 50  (5 working days/week, 50 work weeks/year)
+//   unknown  → assume yearly
+//
+// hoursPerWeek is parsed from the job description when present (e.g.
+// "37.5 hours per week", "40 hrs/week") and falls back to 40 per
+// the project default. This is the same policy as the upstream
+// "annualize" request: use the posting's stated hours if available,
+// else 40.
+//
+// The "k" / "K" suffix is expanded ("$100k" → 100000). Currency
+// symbols ($ € £ ¥) and 3-letter codes (USD, CAD, EUR, GBP, AUD, NZD)
+// are preserved in the output.
+
+const CURRENCY_SYMBOLS: Record<string, string> = { '$': 'USD', '€': 'EUR', '£': 'GBP', '¥': 'JPY' }
+const WORK_WEEKS_PER_YEAR = 50
+const WORK_DAYS_PER_WEEK = 5
+const DEFAULT_HOURS_PER_WEEK = 40
+
+type Period = 'hour' | 'day' | 'week' | 'month' | 'year' | undefined
+
+function detectCurrency(raw: string): string | undefined {
+  // 3-letter ISO code first (more specific)
+  const code = raw.match(/\b(USD|CAD|EUR|GBP|AUD|NZD)\b/i)
+  if (code) return code[1].toUpperCase()
+  for (const sym of Object.keys(CURRENCY_SYMBOLS)) {
+    if (raw.includes(sym)) return CURRENCY_SYMBOLS[sym]
+  }
+  return undefined
+}
+
+function detectPeriod(raw: string): Period {
+  const lc = raw.toLowerCase()
+  if (/\bper\s*hour\b|\/hour\b|\/hr\b|\/h\b|\bhourly\b/.test(lc)) return 'hour'
+  if (/\bper\s*day\b|\/day\b|\/d\b|\bdaily\b/.test(lc)) return 'day'
+  if (/\bper\s*week\b|\/week\b|\/wk\b|\bweekly\b/.test(lc)) return 'week'
+  if (/\bper\s*month\b|\/month\b|\/mo\b|\bmonthly\b/.test(lc)) return 'month'
+  if (/\bper\s*year\b|\/year\b|\/yr\b|\/annum\b|\bannually\b|\byearly\b|\bsalary\b/.test(lc)) return 'year'
+  return undefined
+}
+
+function parseAmount(token: string): number | null {
+  // Strip commas, currency, whitespace
+  const t = token.replace(/[,$€£¥\s]/g, '').toLowerCase()
+  if (!t) return null
+  let n: number
+  if (/^\d+(\.\d+)?k$/.test(t)) {
+    n = parseFloat(t.slice(0, -1)) * 1000
+  } else if (/^\d+(\.\d+)?m$/.test(t)) {
+    n = parseFloat(t.slice(0, -1)) * 1_000_000
+  } else if (/^\d+(\.\d+)?$/.test(t)) {
+    n = parseFloat(t)
+  } else {
+    return null
+  }
+  return Number.isFinite(n) ? n : null
+}
+
+/**
+ * Extract hours-per-week from a job description. Returns the first
+ * match of patterns like "37.5 hours per week", "40 hrs/week",
+ * "40-hour work week". Returns null if no hours are stated.
+ */
+export function extractHoursPerWeek(description: string | null | undefined): number | null {
+  if (!description) return null
+  const patterns = [
+    /(\d+(?:\.\d+)?)\s*(?:hours?|hrs?)\s*(?:per|a|each)\s*week/i,
+    /(\d+(?:\.\d+)?)\s*[-]?\s*hour\s+work\s+week/i,
+    /(\d+(?:\.\d+)?)\s*\/\s*week/i
+  ]
+  for (const p of patterns) {
+    const m = description.match(p)
+    if (m) {
+      const n = parseFloat(m[1])
+      if (Number.isFinite(n) && n > 0 && n <= 80) return n
+    }
+  }
+  return null
+}
+
+/**
+ * Convert a single salary amount to annual, given a period and
+ * hours-per-week. Returns the annual amount, rounded to the nearest
+ * integer.
+ */
+function annualize(amount: number, period: Period, hoursPerWeek: number): number {
+  switch (period) {
+    case 'hour':  return Math.round(amount * hoursPerWeek * WORK_WEEKS_PER_YEAR)
+    case 'day':   return Math.round(amount * WORK_DAYS_PER_WEEK * WORK_WEEKS_PER_YEAR)
+    case 'week':  return Math.round(amount * WORK_WEEKS_PER_YEAR)
+    case 'month': return Math.round(amount * 12)
+    case 'year':  return Math.round(amount)
+    default:      return Math.round(amount)  // assume yearly
+  }
+}
+
+/**
+ * Format a number as a clean "$1,234,567"-style string. For annual
+ * amounts under $10,000 round to the nearest $100; for $10k+ round
+ * to the nearest $1,000. This is the precision the user actually
+ * cares about for job comparisons.
+ */
+function formatAmount(n: number): string {
+  const rounded = n >= 10000 ? Math.round(n / 1000) * 1000
+                 : n >= 1000  ? Math.round(n / 100) * 100
+                              : Math.round(n)
+  return rounded.toLocaleString('en-US')
+}
+
+/**
+ * Pick a display prefix for a currency. Prefer the symbol ($/€/£/¥)
+ * for the most common currencies; fall back to the 3-letter code for
+ * less common ones (CAD keeps the code "CAD" because Canadian users
+ * see lots of mixed CAD/USD postings and the code disambiguates).
+ */
+function currencyPrefix(currency: string | undefined, withCurrency: boolean): string {
+  if (!withCurrency) return ''
+  switch (currency) {
+    case 'USD': return '$'
+    case 'EUR': return '€'
+    case 'GBP': return '£'
+    case 'JPY': return '¥'
+    case 'CAD':
+    case 'AUD':
+    case 'NZD':
+    default:   return currency ? `${currency} ` : '$'
+  }
+}
+
+function formatSalaryString(amount: number, currency: string | undefined, withCurrency = true): string {
+  return `${currencyPrefix(currency, withCurrency)}${formatAmount(amount)}`
+}
+
+/**
+ * Normalize a free-form salary string to its annual equivalent in
+ * the original currency. Handles:
+ *   "$43/hour"                                → "$86,000"          (40 hrs × 50 weeks)
+ *   "$50/hour"                                → "$100,000"
+ *   "$7,502.25 - $10,788.33 CAD Monthly"      → "CAD 90,000 - 129,000"
+ *   "$80,000 - $100,000"                      → "$80,000 - $100,000"   (already annual)
+ *   "Up to $120,000"                          → "$120,000"
+ *   "$100k/year"                              → "$100,000"
+ *   "" or null                                → null
+ *   unparseable                               → null
+ *
+ * The `description` argument is used to extract hours-per-week
+ * (e.g. "37.5 hours per week") for hourly postings; if not present,
+ * DEFAULT_HOURS_PER_WEEK is used.
+ */
+export function normalizeSalary(
+  raw: string | null | undefined,
+  description?: string | null | undefined
+): string | null {
+  if (raw == null) return null
+  const trimmed = raw.trim()
+  if (!trimmed) return null
+
+  // Strip the "Up to" / "Starting at" / "From" qualifier prefix and
+  // "annually" / "per annum" suffix, and any trailing "(plus bonus)".
+  const cleaned = trimmed
+    .replace(/^(?:up\s+to|starting\s+at|from|minimum|maximum|min\.?|max\.?)\s*[:]?\s*/i, '')
+    .replace(/\s*annually\b/gi, '')
+    .replace(/\s*per\s*annum\b/gi, '')
+    .replace(/\s*\(.*?\)\s*$/g, '')
+    .trim()
+  if (!cleaned) return null
+
+  const currency = detectCurrency(cleaned)
+  const period = detectPeriod(cleaned)
+
+  // Pull all numeric tokens (with optional commas, decimals, k-suffix).
+  // e.g. "$80,000 - $100,000"      → ["80,000", "100,000"]
+  //      "$7,502.25 - $10,788.33"  → ["7,502.25", "10,788.33"]
+  //      "$43/hour"                → ["43"]
+  //      "$100k" / "$1M"           → ["100k", "1M"]
+  const amountMatches = [...cleaned.matchAll(/(?:\$|€|£|¥)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?[kKmM]?|\d+(?:\.\d+)?[kKmM]?)/g)]
+    .map(m => parseAmount(m[1]))
+    .filter((n): n is number => n !== null)
+  if (amountMatches.length === 0) return null
+
+  const hoursPerWeek = extractHoursPerWeek(description) ?? DEFAULT_HOURS_PER_WEEK
+  const amounts = amountMatches.map(a => annualize(a, period, hoursPerWeek))
+
+  if (amounts.length === 1) return formatSalaryString(amounts[0], currency)
+  if (amounts.length >= 2) {
+    const [lo, hi] = [Math.min(...amounts), Math.max(...amounts)]
+    return `${formatSalaryString(lo, currency)} - ${formatSalaryString(hi, currency, false)}`
+  }
+  return null
+}

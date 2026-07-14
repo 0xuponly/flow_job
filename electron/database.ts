@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { cleanDescription, scrapePostingDateFromUrl } from './jobScraper'
 import { getOrCreateDek, encryptJson, decryptJson, deleteDek, encryptionMode } from './secureStore'
-import { formatLocation, decodeEntities, normalizeTitle, normalizeCompany } from './utils'
+import { formatLocation, decodeEntities, normalizeTitle, normalizeCompany, normalizeSalary } from './utils'
 import type {
   ApiModelConfig,
   AIQueueItem,
