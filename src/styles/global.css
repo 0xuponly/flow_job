@@ -342,7 +342,7 @@ textarea {
 }
 
 .table td {
-  padding: 3px 4px;
+  padding: 5px 4px;
   line-height: 1.2;
   border-bottom: 1px solid var(--border);
 }
