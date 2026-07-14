@@ -582,6 +582,11 @@ input[type="checkbox"]:disabled {
    still sits at the same horizontal position as before. */
 .jobs-page.page {
   padding-top: 0;
+  /* The sticky header and table use negative margins / wide content
+     that can push beyond the page's content box. Clip any horizontal
+     overflow so the user can't scroll sideways; the sticky wrapper
+     already paints edge-to-edge so the visual is unaffected. */
+  overflow-x: hidden;
 }
 
 /* Sticky column headers on the Job Board. The `top` value is set
