@@ -4,6 +4,7 @@ import { join } from 'path'
 import { cleanDescription, scrapePostingDateFromUrl } from './jobScraper'
 import { getOrCreateDek, encryptJson, decryptJson, deleteDek, encryptionMode } from './secureStore'
 import { formatLocation, decodeEntities, normalizeTitle, normalizeCompany, normalizeSalary } from './utils'
+import { normalizeEmploymentType } from './employmentType'
 import type {
   ApiModelConfig,
   AIQueueItem,
@@ -97,6 +98,7 @@ function defaultStore(): Store {
       auto_scan_interval_minutes: 120,
       locations_normalized: '',
       locations_normalized_v2: '',
+      employment_type_normalized: '',
       statuses_recomputed: '',
       heuristic_scores_cleared: ''
     },
@@ -1193,6 +1195,54 @@ export function markSalaryNormalized(): void {
   const s = loadStore()
   s.settings.salary_normalized = '1'
   persistStore()
+}
+
+export function hasEmploymentTypeNormalized(): boolean {
+  return loadStore().settings.employment_type_normalized === '1'
+}
+
+export function markEmploymentTypeNormalized(): void {
+  const s = loadStore()
+  s.settings.employment_type_normalized = '1'
+  persistStore()
+}
+
+/**
+ * One-shot retrofit: re-run normalizeEmploymentType on every existing
+ * job's employment_type so pre-existing rows that landed in mixed
+ * free-form strings ("Full-time", "Part-Time Job", "Contract Position",
+ * "Permanent, Full Time", etc.) collapse to the 8 canonical tokens that
+ * the Edit dropdown is constrained to. New jobs added after this point
+ * are normalized at the persistence boundary (createJob / updateJob) so
+ * the retrofit only touches pre-existing rows.
+ *
+ * Unmappable values (e.g. "Casual", "On-Call", "Apprenticeship") are
+ * nulled so the user can pick the right token in Edit. Idempotent:
+ * re-running on already-canonical rows is a no-op. Gated by
+ * `employment_type_normalized` so it only runs once per store, mirroring
+ * the `locations_normalized_v2` and `salary_normalized` patterns.
+ */
+export function retrofitEmploymentTypeNormalization(): { updated: number; nulled: number; total: number } {
+  const s = loadStore()
+  let updated = 0
+  let nulled = 0
+  for (const j of s.jobs) {
+    if (j.employment_type == null) continue
+    const normalized = normalizeEmploymentType(j.employment_type)
+    if (normalized === j.employment_type) continue
+    if (normalized == null) {
+      // No token match — null it so the user picks the right one in Edit
+      // instead of the UI showing a free-form string the dropdown doesn't cover.
+      j.employment_type = null
+      nulled++
+    } else {
+      j.employment_type = normalized
+      updated++
+    }
+    j.updated_at = now()
+  }
+  if (updated > 0 || nulled > 0) persistStore()
+  return { updated, nulled, total: s.jobs.length }
 }
 
 /**

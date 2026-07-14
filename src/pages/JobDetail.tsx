@@ -4,6 +4,7 @@ import Modal from '../components/Modal'
 import { notify } from '../components/Notifications'
 import type { Application, Document, Job } from '../types'
 import { STATUS_COLORS, STATUS_LABELS } from '../types'
+import { EMPLOYMENT_TYPES, EMPLOYMENT_TYPE_LABELS, formatEmploymentType } from '../employmentType'
 
 interface Props {
   job: Job
@@ -475,7 +476,12 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
               <textarea rows={3} value={editNotes} onChange={(e) => setEditNotes(e.target.value)} placeholder="Notes..." style={{ width: '100%', marginTop: 8 }} />
               <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                 <input value={editSalaryRange} onChange={(e) => setEditSalaryRange(e.target.value)} placeholder="Salary" style={{ flex: 1 }} />
-                <input value={editEmploymentType} onChange={(e) => setEditEmploymentType(e.target.value)} placeholder="Full-time / Part-time / Contract" style={{ flex: 1 }} />
+                <select value={editEmploymentType} onChange={(e) => setEditEmploymentType(e.target.value)} style={{ flex: 1 }}>
+                  <option value="">— Select type —</option>
+                  {EMPLOYMENT_TYPES.map((t) => (
+                    <option key={t} value={t}>{EMPLOYMENT_TYPE_LABELS[t]}</option>
+                  ))}
+                </select>
                 <input value={editWorkMode} onChange={(e) => setEditWorkMode(e.target.value)} placeholder="On-site / Hybrid / Remote" style={{ flex: 1 }} />
               </div>
               <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>

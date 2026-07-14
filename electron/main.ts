@@ -631,6 +631,28 @@ app.whenReady().then(() => {
     }
   }
 
+  // One-shot: collapse legacy employment_type strings to the 8 canonical
+  // tokens that the Edit dropdown is constrained to. Unmappable values
+  // are nulled so the user can pick the right token. New jobs added
+  // after this point are normalized at the persistence boundary
+  // (createJob / updateJob) so the retrofit only touches pre-existing
+  // rows. Idempotent — gated by a flag, mirroring the salary/locations
+  // pattern.
+  if (!db.hasEmploymentTypeNormalized() && db.listJobs().length > 0) {
+    try {
+      const result = db.retrofitEmploymentTypeNormalization()
+      if (result.updated > 0 || result.nulled > 0) {
+        console.log(
+          `[startup] Standardized ${result.updated} employment_type values, ` +
+          `nulled ${result.nulled} unmappable.`
+        )
+      }
+      db.markEmploymentTypeNormalized()
+    } catch (err) {
+      console.error('[startup] Employment type retrofit failed:', err)
+    }
+  }
+
   // One-shot: recompute every job's status from its current documents the
   // first time the app loads after the doc-derived status rule landed. This
   // backfills statuses that drifted while the recompute was per-handler
