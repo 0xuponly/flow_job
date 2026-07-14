@@ -99,6 +99,7 @@ function defaultStore(): Store {
       locations_normalized: '',
       locations_normalized_v2: '',
       employment_type_normalized: '',
+      work_mode_normalized: '',
       statuses_recomputed: '',
       heuristic_scores_cleared: ''
     },
@@ -1209,6 +1210,47 @@ export function markEmploymentTypeNormalized(): void {
   const s = loadStore()
   s.settings.employment_type_normalized = '1'
   persistStore()
+}
+
+export function hasWorkModeNormalized(): boolean {
+  return loadStore().settings.work_mode_normalized === '1'
+}
+
+export function markWorkModeNormalized(): void {
+  const s = loadStore()
+  s.settings.work_mode_normalized = '1'
+  persistStore()
+}
+
+/**
+ * One-shot retrofit: re-run normalizeWorkMode on every existing job's
+ * work_mode so pre-existing rows that landed in mixed free-form
+ * strings ("Remote", "On-site", "Work from home", "Hybrid (2 days
+ * in office)", etc.) collapse to the 3 canonical tokens. Unmappable
+ * values are nulled so the user can pick the right token in Edit.
+ * Gated by `work_mode_normalized` so it only runs once per store,
+ * mirroring the `employment_type_normalized` and `salary_normalized`
+ * patterns.
+ */
+export function retrofitWorkModeNormalization(): { updated: number; nulled: number; total: number } {
+  const s = loadStore()
+  let updated = 0
+  let nulled = 0
+  for (const j of s.jobs) {
+    if (j.work_mode == null) continue
+    const normalized = normalizeWorkMode(j.work_mode)
+    if (normalized === j.work_mode) continue
+    if (normalized == null) {
+      j.work_mode = null
+      nulled++
+    } else {
+      j.work_mode = normalized
+      updated++
+    }
+    j.updated_at = now()
+  }
+  if (updated > 0 || nulled > 0) persistStore()
+  return { updated, nulled, total: s.jobs.length }
 }
 
 /**

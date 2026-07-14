@@ -141,6 +141,7 @@ export interface Settings {
   locations_normalized: string
   locations_normalized_v2: string
   employment_type_normalized: string
+  work_mode_normalized: string
 }
 
 export interface DashboardStats {

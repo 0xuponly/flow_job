@@ -4,7 +4,7 @@ import Modal from '../components/Modal'
 import { notify } from '../components/Notifications'
 import type { Application, Document, Job } from '../types'
 import { STATUS_COLORS, STATUS_LABELS } from '../types'
-import { EMPLOYMENT_TYPES, EMPLOYMENT_TYPE_LABELS, formatEmploymentType } from '../employmentType'
+import { EMPLOYMENT_TYPES, EMPLOYMENT_TYPE_LABELS, WORK_MODES, formatEmploymentType } from '../employmentType'
 
 interface Props {
   job: Job

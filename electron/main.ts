@@ -653,6 +653,26 @@ app.whenReady().then(() => {
     }
   }
 
+  // One-shot: collapse legacy work_mode strings ("Remote", "On-site",
+  // "Work from home", "Hybrid (2 days)", etc.) to the 3 canonical
+  // tokens (ON_SITE, HYBRID, REMOTE) that the Edit dropdown is
+  // constrained to. Unmappable values are nulled. New jobs added
+  // after this point are normalized at the persistence boundary.
+  if (!db.hasWorkModeNormalized() && db.listJobs().length > 0) {
+    try {
+      const result = db.retrofitWorkModeNormalization()
+      if (result.updated > 0 || result.nulled > 0) {
+        console.log(
+          `[startup] Standardized ${result.updated} work_mode values, ` +
+          `nulled ${result.nulled} unmappable.`
+        )
+      }
+      db.markWorkModeNormalized()
+    } catch (err) {
+      console.error('[startup] Work mode retrofit failed:', err)
+    }
+  }
+
   // One-shot: recompute every job's status from its current documents the
   // first time the app loads after the doc-derived status rule landed. This
   // backfills statuses that drifted while the recompute was per-handler
