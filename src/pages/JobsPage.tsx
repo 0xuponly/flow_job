@@ -302,9 +302,22 @@ export default function JobsPage() {
     )
     // Only process jobs that match the current filter/search and don't yet
     // have a document of this type. Without a filter, this is just all jobs.
-    const needs = filteredJobs.filter((j) => !existing.has(j.id))
+    const eligible = filteredJobs.filter((j) => !existing.has(j.id))
+    // Never generate for low-Fit jobs (red in the first column, score <= 0.3).
+    // A null score is treated as unscored-eligible, since we don't yet know
+    // the fit; only explicitly low scores are skipped.
+    const lowFitSkipped = eligible.filter((j) => j.score != null && j.score <= 0.3)
+    const needs = eligible.filter((j) => j.score == null || j.score > 0.3)
     if (needs.length === 0) {
-      notify(`All visible jobs already have a ${type === 'cv' ? 'CV' : 'cover letter'}.`, 'info')
+      if (lowFitSkipped.length > 0) {
+        notify(
+          `All eligible jobs are low-Fit (${lowFitSkipped.length} skipped). ` +
+            `Low-Fit jobs are skipped by design — clear or delete them instead.`,
+          'info'
+        )
+      } else {
+        notify(`All visible jobs already have a ${type === 'cv' ? 'CV' : 'cover letter'}.`, 'info')
+      }
       return
     }
 
@@ -353,6 +366,7 @@ export default function JobsPage() {
     if (success > 0) parts.push(`${success} ${label} generated`)
     if (queued > 0) parts.push(`${queued} rate-limited and queued`)
     if (failed > 0) parts.push(`${failed} failed`)
+    if (lowFitSkipped.length > 0) parts.push(`${lowFitSkipped.length} low-Fit skipped`)
     if (parts.length > 0) {
       notify(parts.join(' · '), failed > 0 ? 'error' : queued > 0 ? 'info' : 'success')
     }
