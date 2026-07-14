@@ -461,9 +461,15 @@ export default function JobsPage() {
     // store half-deleted after a restart.
     const ids = Array.from(selectedIds)
     await api.deleteJobs(ids)
-    setJobs((prev) => prev.filter((j) => !selectedIds.has(j.id)))
-    if (selectedJob && selectedIds.has(selectedJob.id)) setSelectedJob(null)
+    // Re-fetch from the DB rather than applying an optimistic filter.
+    // This guarantees the table shows the actual persisted state, so
+    // any job the DB still has (e.g. if a concurrent writer re-added
+    // it) is visible to the user immediately rather than hidden until
+    // the next refresh.
+    const data = await (search ? api.searchJobs(search) : api.listJobs())
+    setJobs(dedupeJobs(data.map(cleanJob)))
     setSelectedIds(new Set())
+    if (selectedJob && ids.includes(selectedJob.id)) setSelectedJob(null)
   }
 
   async function handleDeleteLowFit() {
