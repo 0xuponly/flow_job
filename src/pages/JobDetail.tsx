@@ -35,6 +35,7 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
   const [editHiringManager, setEditHiringManager] = useState(job.hiring_manager ?? '')
   const [editEmploymentType, setEditEmploymentType] = useState(job.employment_type ?? '')
   const [editWorkMode, setEditWorkMode] = useState(job.work_mode ?? '')
+  const [editUrl, setEditUrl] = useState(job.url ?? '')
   const [viewDoc, setViewDoc] = useState<Document | null>(null)
   const [docTitle, setDocTitle] = useState('')
   const [docContent, setDocContent] = useState('')
@@ -75,6 +76,7 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
       setEditHiringManager(job.hiring_manager ?? '')
       setEditEmploymentType(job.employment_type ?? '')
       setEditWorkMode(job.work_mode ?? '')
+      setEditUrl(job.url ?? '')
     }
   }, [job, editing])
 
@@ -327,22 +329,27 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
   }
 
   async function handleSaveEdits() {
-    const updated = await api.updateJob(job.id, {
-      title: editTitle,
-      company: editCompany,
-      location: editLocation || null,
-      description: editDesc,
-      notes: editNotes,
-      salary_range: editSalaryRange || null,
-      requirements: editRequirements || null,
-      application_requirements: editApplicationRequirements || null,
-      hiring_manager: editHiringManager || null,
-      employment_type: editEmploymentType || null,
-      work_mode: editWorkMode || null
-    })
-    setCurrentJob(updated)
-    onUpdate(updated)
-    setEditing(false)
+    try {
+      const updated = await api.updateJob(job.id, {
+        title: editTitle,
+        company: editCompany,
+        location: editLocation || null,
+        description: editDesc,
+        notes: editNotes,
+        salary_range: editSalaryRange || null,
+        requirements: editRequirements || null,
+        application_requirements: editApplicationRequirements || null,
+        hiring_manager: editHiringManager || null,
+        employment_type: editEmploymentType || null,
+        work_mode: editWorkMode || null,
+        url: editUrl || null
+      })
+      setCurrentJob(updated)
+      onUpdate(updated)
+      setEditing(false)
+    } catch (err) {
+      notify(`Save failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+    }
   }
 
   const cv = documents.find((d) => d.type === 'cv')
@@ -394,6 +401,7 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
               <input value={editCompany} onChange={(e) => setEditCompany(e.target.value)} placeholder="Company" style={{ flex: 1, fontSize: 16 }} />
               <input value={editLocation} onChange={(e) => setEditLocation(e.target.value)} placeholder="Location" style={{ flex: 1, fontSize: 16 }} />
             </div>
+            <input value={editUrl} onChange={(e) => setEditUrl(e.target.value)} placeholder="Posting link (https://...)" style={{ fontSize: 14 }} />
           </div>
         ) : (
           <>
