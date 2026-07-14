@@ -533,12 +533,18 @@ export function normalizeSalary(
   const currency = detectCurrency(cleaned)
   const period = detectPeriod(cleaned)
 
-  // Pull all numeric tokens (with optional commas, decimals, k-suffix).
-  // e.g. "$80,000 - $100,000"      → ["80,000", "100,000"]
-  //      "$7,502.25 - $10,788.33"  → ["7,502.25", "10,788.33"]
-  //      "$43/hour"                → ["43"]
-  //      "$100k" / "$1M"           → ["100k", "1M"]
-  const amountMatches = [...cleaned.matchAll(/(?:\$|€|£|¥)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?[kKmM]?|\d+(?:\.\d+)?[kKmM]?)/g)]
+  // Pull all numeric tokens. The regex has two alternatives:
+  //   1. Comma-grouped: 1-3 digits, then one or more ",NNN" groups —
+  //      this captures the full "85,000" / "8,500,000" / "850,000" form
+  //      as one token.
+  //   2. Bare digits (no commas): just \d+ optionally followed by k/m.
+  //      This captures "100k" / "1M" / "43" / "85000" as one token.
+  // The key fix vs the prior version: \d{1,3} was greedy and would
+  // split "85000" into "850" + "00" because the first alternative
+  // required commas to consume the trailing groups. Requiring commas
+  // (or a k/m suffix) for the first alternative forces the engine
+  // to fall through to the bare-digit alternative for "85000".
+  const amountMatches = [...cleaned.matchAll(/(?:\$|€|£|¥)?\s*(\d{1,3}(?:,\d{3})+(?:\.\d+)?[kKmM]?|\d+(?:\.\d+)?[kKmM]?)/g)]
     .map(m => parseAmount(m[1]))
     .filter((n): n is number => n !== null)
   if (amountMatches.length === 0) return null
