@@ -176,6 +176,9 @@ function formatSingleLocation(raw: string, defaultCountry: string): string {
     .filter(Boolean)
 
   if (parts.length === 0) return cleaned
+  // If the city half is a remote token (e.g. "Remote, CA, US"), drop the
+  // location suffix — remote is country-agnostic.
+  if (REMOTE_TOKENS.has(parts[0].toLowerCase())) return parts[0]
   if (parts.length === 1) {
     const city = parts[0]
     const cc = canonicalizeCountry(defaultCountry)
@@ -184,16 +187,30 @@ function formatSingleLocation(raw: string, defaultCountry: string): string {
 
   if (parts.length === 2) {
     const [city, regionOrCountry] = parts
-    const region = canonicalizeRegion(regionOrCountry)
-    if (region) {
-      const cc = canonicalizeCountry(defaultCountry)
-      return cc ? `${city}, ${region}, ${cc}` : `${city}, ${region}`
+
+    // 2-part inputs NEVER get the default country appended — the user has
+    // already specified a second piece (region OR country), so respect it.
+    // 2-letter tokens are disambiguated against US_STATES + CA_PROVINCES +
+    // COUNTRIES; the "CA" collision (California vs Canada) prefers country.
+    const upper = regionOrCountry.toUpperCase()
+    if (upper.length === 2 && /^[A-Z]{2}$/.test(upper)) {
+      const isCountryCode = !!COUNTRIES[regionOrCountry.toLowerCase()]
+      const isRegionCode = !!REGION_MAP[regionOrCountry.toLowerCase()]
+      if (isCountryCode || isRegionCode) {
+        return `${city}, ${upper}`
+      }
+      // Unknown 2-letter token: pass through unchanged.
+      return `${city}, ${regionOrCountry}`
     }
+
+    // Full-name second token: region or country, never append default.
+    const region = canonicalizeRegion(regionOrCountry)
+    if (region) return `${city}, ${region}`
     const country = canonicalizeCountry(regionOrCountry)
     if (country) return `${city}, ${country}`
-    const cc = canonicalizeCountry(defaultCountry)
-    return cc ? `${city}, ${regionOrCountry}, ${cc}` : `${city}, ${regionOrCountry}`
+    return `${city}, ${regionOrCountry}`
   }
+
 
   // 3+ parts: City, Region, Country[, extras...]
   const [city, regionTok, countryTok] = parts
