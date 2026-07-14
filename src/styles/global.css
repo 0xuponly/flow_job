@@ -469,6 +469,16 @@ textarea {
   border-bottom: 1px solid var(--border);
 }
 
+/* Sticky column headers on the Job Board. The `top` value is set
+   dynamically by JobsPage via a ResizeObserver on the sticky wrapper,
+   exposed as --jobs-sticky-offset on :root. */
+.jobs-page .table thead th {
+  position: sticky;
+  top: var(--jobs-sticky-offset, 0px);
+  z-index: 5;
+  background: var(--bg-secondary);
+}
+
 .toolbar .spacer {
   flex: 1;
 }

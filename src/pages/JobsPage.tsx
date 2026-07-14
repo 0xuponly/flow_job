@@ -4,6 +4,10 @@ import Modal from '../components/Modal'
 import { notify } from '../components/Notifications'
 import type { CreateJobInput, Document, Job } from '../types'
 
+// Lives at module scope so a single ResizeObserver can measure the
+// sticky wrapper height across the page's lifetime without re-binding.
+let jobsStickyObserver: ResizeObserver | null = null
+
 // Module-scope "have we already toasted this job's fit failure?" record.
 // Lives for the lifetime of the renderer process, not the page instance —
 // so navigating away from the Job Board and back doesn't re-fire the
@@ -494,6 +498,29 @@ export default function JobsPage() {
     return s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
   }
 
+  // Ref + height measurement for the sticky header region. The wrapper
+  // height is needed as the `top` offset for the sticky table header, so
+  // the two stack correctly without overlapping. Measured via
+  // ResizeObserver to handle font-size changes, toolbar button toggles,
+  // window resize, etc. The value is exposed as a CSS custom property
+  // on the page root so the table header cells can pick it up.
+  const stickyRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!stickyRef.current) return
+    const el = stickyRef.current
+    const setOffset = () => {
+      const h = el.getBoundingClientRect().height
+      document.documentElement.style.setProperty('--jobs-sticky-offset', `${h}px`)
+    }
+    setOffset()
+    jobsStickyObserver = new ResizeObserver(setOffset)
+    jobsStickyObserver.observe(el)
+    return () => {
+      jobsStickyObserver?.disconnect()
+      jobsStickyObserver = null
+    }
+  }, [])
+
   function cleanJob(j: Job): Job {
     return {
       ...j,
@@ -801,7 +828,7 @@ export default function JobsPage() {
 
   return (
     <div className="page jobs-page">
-      <div className="jobs-page-sticky">
+      <div className="jobs-page-sticky" ref={stickyRef}>
         <div className="page-header">
           <h1>Job Board</h1>
           <p>Source and manage job postings</p>
