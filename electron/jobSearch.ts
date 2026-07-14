@@ -528,7 +528,7 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
   }
 }
 
-export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: string) => void): Promise<ScanResult> {
+export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: string) => void, signal?: AbortSignal): Promise<ScanResult> {
   const settings = getSettings()
   const keywords = (filters?.keywords || settings.job_search_keywords || '').trim()
   const locationInput = (filters?.location || settings.job_search_location || '').trim()
@@ -543,7 +543,7 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
   const scanSeenUrls = new Set<string>()
 
   const startedAt = Date.now()
-  const result: ScanResult = { totalFound: 0, totalAdded: 0, totalSkipped: 0, boards: [], errors: [], startedAt, durationMs: 0 }
+  const result: ScanResult = { totalFound: 0, totalAdded: 0, totalSkipped: 0, boards: [], errors: [], startedAt, durationMs: 0, cancelled: false }
   const _seenProgress = new Set<string>()
   const progress = (msg: string) => {
     if (_seenProgress.has(msg)) return
@@ -590,6 +590,7 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
       }
 
       for (const batch of batches) {
+        if (signal?.aborted) break
         const results = await Promise.allSettled(
             batch.map(async (l) => {
                 progress(`Scraping ${board.name}${location ? ` (${location})` : ''} — ${decodeEntities(l.company || l.title || l.url)}`)
@@ -633,6 +634,10 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
   for (const location of locations) {
     if (location) progress(`Searching in: ${location}`)
     for (let i = 0; i < selectedBoards.length; i += BOARD_CONCURRENCY) {
+      if (signal?.aborted) {
+        result.cancelled = true
+        break
+      }
       const chunk = selectedBoards.slice(i, i + BOARD_CONCURRENCY)
       const results = await Promise.allSettled(chunk.map(board => processBoard(board, location)))
       for (let j = 0; j < results.length; j++) {
@@ -648,6 +653,7 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
         boardTotals.set(boardName, totals)
       }
     }
+    if (signal?.aborted) break
   }
   // Record per-board health (-1 means errored with no listings)
   for (const [name, totals] of boardTotals) {

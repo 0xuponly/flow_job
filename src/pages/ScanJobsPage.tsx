@@ -438,9 +438,17 @@ export default function ScanJobsPage() {
 
       {scanning && (
         <div className="card" style={{ maxWidth: 800, marginTop: 16 }}>
-          <p style={{ marginBottom: 8 }}>
-            {scanning ? `Fetching job listings from job boards... ${formatDuration(elapsed)} elapsed` : `Scan completed in ${formatDuration(elapsed)}`}
-          </p>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
+            <p style={{ margin: 0 }}>
+              {`Fetching job listings from job boards... ${formatDuration(elapsed)} elapsed`}
+            </p>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => { api.cancelScan() }}
+            >
+              Cancel
+            </button>
+          </div>
           <div style={{ fontSize: 12, lineHeight: 1.7, maxHeight: 320, overflowY: 'auto' }}>
             {(() => {
               // Show all green (✓) lines + all blue (Scanning) lines, but only the
@@ -512,6 +520,11 @@ export default function ScanJobsPage() {
           <div className="card" style={{ maxWidth: 800, marginTop: 16 }}>
             <h3 style={{ marginBottom: 4 }}>
               Found {result.totalFound} postings — added {result.totalAdded}, skipped {result.totalSkipped}
+              {result.cancelled && (
+                <span style={{ marginLeft: 8, fontSize: 12, color: 'var(--text-muted)', fontWeight: 400 }}>
+                  (cancelled)
+                </span>
+              )}
             </h3>
             <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
               Ran at {ranAt} · Took {duration}

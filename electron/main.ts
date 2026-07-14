@@ -29,6 +29,9 @@ const _scanState: { scanning: boolean; progress: string[]; result: ScanResult | 
   result: null,
   startedAt: null
 }
+// Active scan's AbortController — created when a scan starts, aborted on
+// user cancel. Replaces itself on the next scan.
+let _scanAbortController: AbortController | null = null
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -189,15 +192,16 @@ function registerIpc(): void {
     _scanState.progress = []
     _scanState.result = null
     _scanState.startedAt = Date.now()
+    _scanAbortController = new AbortController()
     markScanStarted()
     try {
       const result = await scanAllBoards(filters, (msg) => {
         _scanState.progress.push(msg)
         e.sender.send('scan:progress', msg)
-      })
+      }, _scanAbortController.signal)
       _scanState.result = result
       markScanCompleted()
-      // Notify all renderers that the scan has completed
+      // Notify all renderers that the scan has completed (success or cancelled)
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) win.webContents.send('scan:complete', result)
       }
@@ -205,6 +209,13 @@ function registerIpc(): void {
     } finally {
       _scanState.scanning = false
       _scanState.startedAt = null
+      _scanAbortController = null
+    }
+  })
+
+  ipcMain.handle('scan:cancel', () => {
+    if (_scanAbortController) {
+      _scanAbortController.abort()
     }
   })
 

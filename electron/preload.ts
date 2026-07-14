@@ -68,6 +68,7 @@ export interface Api {
   regenerateSection: (documentId: number, sectionName: string, jobId: number, extraContext?: string) => Promise<string | { queued: true }>
   getScanStatus: () => Promise<ScanStatus>
   clearScanResult: () => Promise<void>
+  cancelScan: () => Promise<void>
   onScanProgress: (cb: (msg: string) => void) => () => void
   onScanComplete: (cb: (result: ScanResult) => void) => () => void
   clearSeenUrls: () => Promise<void>
@@ -101,6 +102,7 @@ const api: Api = {
   backfillJobDates: () => ipcRenderer.invoke('jobs:backfillDates'),
   getScanStatus: () => ipcRenderer.invoke('scan:status'),
   clearScanResult: () => ipcRenderer.invoke('scan:clearResult'),
+  cancelScan: () => ipcRenderer.invoke('scan:cancel'),
   onScanProgress: (cb: (msg: string) => void) => {
     const handler = (_e: Electron.IpcRendererEvent, msg: string) => cb(msg)
     ipcRenderer.on('scan:progress', handler)

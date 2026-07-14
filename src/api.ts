@@ -28,6 +28,7 @@ export interface Api {
   searchJobs: (query: string) => Promise<Job[]>
   importJobFromUrl: (url: string) => Promise<Job>
   scanBoards: (filters?: ScanFilters) => Promise<ScanResult>
+  cancelScan: () => Promise<void>
   batchScore: () => Promise<void>
   backfillJobDates: () => Promise<number>
   listDocuments: (jobId?: number) => Promise<Document[]>

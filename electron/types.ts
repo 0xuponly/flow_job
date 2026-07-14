@@ -214,6 +214,7 @@ export interface ScanResult {
   errors: string[]
   startedAt: number | null
   durationMs: number
+  cancelled: boolean
 }
 
 export interface ScanStatus {
