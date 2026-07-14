@@ -404,24 +404,26 @@ input[type="checkbox"]:hover:not(:disabled) {
 input[type="checkbox"]:checked {
   background: var(--accent);
   border-color: var(--accent);
+  /* SVG checkmark centered in the 14x14 box. The SVG viewBox is
+     14x14, the path is positioned so the check's inside corner
+     lands at (7, 8) — slightly below center, which is the visually
+     correct position for a "✓" inside a square. The polyline
+     points are chosen so the resulting tick is visually balanced
+     and centered both horizontally and vertically. Using a
+     background-image avoids the fragile rotated-border trick
+     (whose centering depends on box-sizing, transform-origin, and
+     DPR rounding) and renders crisply at any zoom level. */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'><path d='M3.5 7.5 L6 10 L10.5 4.5' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 14px 14px;
 }
 
 input[type="checkbox"]:checked::after {
-  content: '';
-  position: absolute;
-  /* A 4x7 element, rotated 45° around its center, with a 2px right
-     and bottom border. The rotation transforms the L into a check.
-     Centered in the 14x14 box: the rotated check's bounding box is
-     ~7.8px square, so left/2 and top/2.5 places the visual center
-     at the box center. */
-  left: 2px;
-  top: 2px;
-  width: 4px;
-  height: 7px;
-  border: solid #fff;
-  border-width: 0 2px 2px 0;
-  transform: translate(1px, 0) rotate(45deg);
-  transform-origin: center;
+  /* The checkmark is drawn as a background-image on the input itself
+     (set on the :checked rule). No ::after needed. Kept empty so
+     older declarations don't leak through. */
+  content: none;
 }
 
 input[type="checkbox"]:indeterminate {
