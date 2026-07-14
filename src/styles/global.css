@@ -409,13 +409,19 @@ input[type="checkbox"]:checked {
 input[type="checkbox"]:checked::after {
   content: '';
   position: absolute;
-  left: 3px;
-  top: 0px;
+  /* A 4x7 element, rotated 45° around its center, with a 2px right
+     and bottom border. The rotation transforms the L into a check.
+     Centered in the 14x14 box: the rotated check's bounding box is
+     ~7.8px square, so left/2 and top/2.5 places the visual center
+     at the box center. */
+  left: 2px;
+  top: 2px;
   width: 4px;
-  height: 8px;
+  height: 7px;
   border: solid #fff;
-  border-width: 0 1.5px 1.5px 0;
-  transform: rotate(45deg);
+  border-width: 0 2px 2px 0;
+  transform: translate(1px, 0) rotate(45deg);
+  transform-origin: center;
 }
 
 input[type="checkbox"]:indeterminate {
@@ -426,12 +432,13 @@ input[type="checkbox"]:indeterminate {
 input[type="checkbox"]:indeterminate::after {
   content: '';
   position: absolute;
-  left: 2px;
-  top: 5px;
+  left: 50%;
+  top: 50%;
   width: 8px;
   height: 1.5px;
   background: #fff;
   border-radius: 1px;
+  transform: translate(-50%, -50%);
 }
 
 input[type="checkbox"]:focus-visible {
