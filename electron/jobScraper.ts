@@ -349,7 +349,7 @@ async function tryWorkBcApi(jobId: string, signal?: AbortSignal): Promise<Create
         ? `Apply by email: ${job.ApplyEmailAddress}`
         : undefined,
       employment_type: normalizeEmploymentType([hoursOfWork, periodOfEmployment, employmentTerms].filter(Boolean).join(', ')) ?? undefined,
-      work_mode: workplaceType || undefined,
+      work_mode: normalizeWorkMode(workplaceType) ?? undefined,
       date_posted: typeof job.DatePosted === 'string' ? job.DatePosted : undefined
     }
   } catch {
