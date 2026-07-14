@@ -2,11 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { DashboardStats, FollowUp, Interview } from '../types'
 
-interface Props {
-  onNavigate: (page: string) => void
-}
-
-export default function Dashboard({ onNavigate }: Props) {
+export default function Dashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [followUps, setFollowUps] = useState<(FollowUp & { job_title: string; company: string })[]>([])
   const [interviews, setInterviews] = useState<(Interview & { job_title: string; company: string })[]>([])
