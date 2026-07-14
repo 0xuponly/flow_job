@@ -69,6 +69,158 @@ function FilterSelect({ options, selected, onChange, displayMap }: {
   )
 }
 
+export interface DateFilter {
+  buckets: string[]
+  from: string
+  to: string
+}
+
+const DATE_BUCKETS = ['Today', 'This Week', 'This Month', 'Last 3 Months', 'Older']
+export const EMPTY_DATE_FILTER: DateFilter = { buckets: [], from: '', to: '' }
+
+function isDateFilterActive(f: DateFilter): boolean {
+  return f.buckets.length > 0 || !!f.from || !!f.to
+}
+
+// Match a job's date against a filter. Null/invalid dates match only when
+// no filter is active; otherwise they fall through (treated as "not in any
+// bucket" so they don't show up when the user is filtering to a specific
+// range). This matches the categorical-filter semantics in this page.
+export function matchesDateFilter(iso: string | null | undefined, f: DateFilter): boolean {
+  if (!isDateFilterActive(f)) return true
+  if (!iso) return false
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return false
+  const now = new Date()
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const inBucket =
+    f.buckets.length === 0 ||
+    f.buckets.some((b) => {
+      if (b === 'Today') return d >= startOfToday
+      if (b === 'This Week') {
+        const day = startOfToday.getDay() // 0 = Sun
+        const start = new Date(startOfToday)
+        start.setDate(start.getDate() - day)
+        return d >= start
+      }
+      if (b === 'This Month') {
+        const start = new Date(now.getFullYear(), now.getMonth(), 1)
+        return d >= start
+      }
+      if (b === 'Last 3 Months') {
+        const start = new Date(now.getFullYear(), now.getMonth() - 3, 1)
+        return d >= start
+      }
+      if (b === 'Older') {
+        const start = new Date(now.getFullYear(), now.getMonth() - 3, 1)
+        return d < start
+      }
+      return false
+    })
+  if (!inBucket) return false
+  if (f.from) {
+    const from = new Date(f.from)
+    if (!isNaN(from.getTime()) && d < from) return false
+  }
+  if (f.to) {
+    // Inclusive of the whole "to" day: bump to the end of the day.
+    const to = new Date(f.to)
+    if (!isNaN(to.getTime())) {
+      to.setHours(23, 59, 59, 999)
+      if (d > to) return false
+    }
+  }
+  return true
+}
+
+function DateFilterSelect({ filter, onChange }: {
+  filter: DateFilter
+  onChange: (v: DateFilter) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    if (open) document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [open])
+
+  const bucketSet = useMemo(() => new Set(filter.buckets), [filter.buckets])
+  const active = isDateFilterActive(filter)
+  const label = !active
+    ? 'Any'
+    : filter.buckets.length > 0 && (filter.from || filter.to)
+      ? 'Custom'
+      : filter.buckets.length > 0
+        ? filter.buckets.join(', ')
+        : 'Custom'
+
+  function toggleBucket(b: string) {
+    const next = new Set(bucketSet)
+    if (next.has(b)) next.delete(b)
+    else next.add(b)
+    onChange({ ...filter, buckets: [...next] })
+  }
+
+  return (
+    <div className="filter-dropdown" ref={ref}>
+      <button className="filter-dropdown-btn" onClick={() => setOpen(!open)}>
+        {label}
+        <span className="filter-arrow">{open ? '▲' : '▼'}</span>
+        {active && (
+          <span
+            className="filter-clear"
+            onClick={(e) => { e.stopPropagation(); onChange(EMPTY_DATE_FILTER) }}
+          >
+            ✕
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="filter-menu" style={{ minWidth: 220 }}>
+          {DATE_BUCKETS.map((b) => {
+            const checked = bucketSet.has(b)
+            return (
+              <label key={b} className="filter-option">
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggleBucket(b)}
+                />
+                <span>{b}</span>
+              </label>
+            )
+          })}
+          <div style={{ borderTop: '1px solid var(--border)', marginTop: 4, paddingTop: 6 }}>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Custom range</div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginBottom: 4 }}>
+              From
+              <input
+                type="date"
+                value={filter.from}
+                onChange={(e) => onChange({ ...filter, from: e.target.value })}
+                style={{ flex: 1 }}
+              />
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+              To
+              <input
+                type="date"
+                value={filter.to}
+                onChange={(e) => onChange({ ...filter, to: e.target.value })}
+                style={{ flex: 1 }}
+              />
+            </label>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 const EMPTY_FORM: CreateJobInput = {
   title: '',
   company: '',
@@ -133,6 +285,8 @@ export default function JobsPage() {
   const [filterStatus, setFilterStatus] = useState<string[]>([])
   const [filterSource, setFilterSource] = useState<string[]>([])
   const [filterFit, setFilterFit] = useState<string[]>([])
+  const [filterDatePosted, setFilterDatePosted] = useState<DateFilter>(EMPTY_DATE_FILTER)
+  const [filterLastUpdated, setFilterLastUpdated] = useState<DateFilter>(EMPTY_DATE_FILTER)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [generating, setGenerating] = useState<'cv' | 'cover_letter' | null>(null)
   const [genCount, setGenCount] = useState(0)
@@ -178,8 +332,11 @@ export default function JobsPage() {
       if (filterStatus.length && !filterStatus.includes(j.status)) return false
       if (filterSource.length && !filterSource.includes(j.source || '—')) return false
       if (filterFit.length && !filterFit.includes(fitLabel(j.score))) return false
+      if (!matchesDateFilter(j.date_posted, filterDatePosted)) return false
+      if (!matchesDateFilter(j.last_updated, filterLastUpdated)) return false
       return true
-    }).sort((a, b) => (b.score ?? -1) - (a.score ?? -1)), [jobs, filterCompany, filterTitle, filterLocation, filterStatus, filterSource, filterFit])
+    }).sort((a, b) => (b.score ?? -1) - (a.score ?? -1)),
+    [jobs, filterCompany, filterTitle, filterLocation, filterStatus, filterSource, filterFit, filterDatePosted, filterLastUpdated])
 
   const allFilteredSelected = useMemo(
     () => filteredJobs.length > 0 && filteredJobs.every((j) => selectedIds.has(j.id)),
@@ -669,8 +826,18 @@ export default function JobsPage() {
                   <FilterSelect options={filterOptions.sources} selected={filterSource} onChange={setFilterSource} />
                 </div>
               </th>
-              <th>Date Posted</th>
-              <th>Last Updated</th>
+              <th>
+                <div className="filter-header">
+                  <span>Date Posted</span>
+                  <DateFilterSelect filter={filterDatePosted} onChange={setFilterDatePosted} />
+                </div>
+              </th>
+              <th>
+                <div className="filter-header">
+                  <span>Last Updated</span>
+                  <DateFilterSelect filter={filterLastUpdated} onChange={setFilterLastUpdated} />
+                </div>
+              </th>
               <th></th>
             </tr>
           </thead>
