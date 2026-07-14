@@ -369,6 +369,24 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
     <div className="page">
       <div className="toolbar">
         <button className="btn btn-secondary" onClick={onBack}>← Back</button>
+        <span
+          title={`Status: ${STATUS_LABELS[job.status]}`}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            padding: '8px 16px',
+            borderRadius: 8,
+            fontWeight: 500,
+            fontSize: 13,
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em',
+            background: `${STATUS_COLORS[job.status]}22`,
+            color: STATUS_COLORS[job.status],
+            border: `1px solid ${STATUS_COLORS[job.status]}55`
+          }}
+        >
+          {STATUS_LABELS[job.status]}
+        </span>
         <div className="spacer" />
         <button
           className={companyBlacklisted ? 'btn btn-secondary' : 'btn btn-secondary'}
@@ -430,26 +448,9 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
         )}
       </div>
 
-      <span
-        className="badge"
-        style={{
-          background: `${STATUS_COLORS[job.status]}22`,
-          color: STATUS_COLORS[job.status],
-          // Pull the badge up to sit flush with the page header (top
-          // gap 0) and add a small 8px gap below to the Description
-          // section title. The .page-header has margin-bottom: 24px;
-          // we pull the badge up by 24px to negate it.
-          marginTop: -24,
-          marginBottom: 0,
-          display: 'inline-block'
-        }}
-      >
-        {STATUS_LABELS[job.status]}
-      </span>
-
       <div className="job-detail-grid">
         <div>
-          <div className="section-title" style={{ marginTop: 16 }}>Description</div>
+          <div className="section-title">Description</div>
           {editing ? (
             <>
               <textarea rows={12} value={editDesc} onChange={(e) => setEditDesc(e.target.value)} style={{ width: '100%' }} />
