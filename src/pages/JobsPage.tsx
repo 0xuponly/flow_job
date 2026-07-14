@@ -155,7 +155,7 @@ function DateFilterSelect({ filter, onChange }: {
   const bucketSet = useMemo(() => new Set(filter.buckets), [filter.buckets])
   const active = isDateFilterActive(filter)
   const label = !active
-    ? 'Any'
+    ? '—'
     : filter.buckets.length > 0 && (filter.from || filter.to)
       ? 'Custom'
       : filter.buckets.length > 0
