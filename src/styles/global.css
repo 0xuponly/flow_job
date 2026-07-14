@@ -455,6 +455,20 @@ textarea {
   margin-bottom: 18px;
 }
 
+/* Sticky toolbar + page header for the Job Board. The wrapper is one
+   sticky element so we don't have to coordinate two `top` offsets. The
+   page's `<main>` scroll container is the sticky offset parent. A subtle
+   bottom border keeps the sticky region visually distinct from the
+   scrolling table underneath. */
+.jobs-page-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg);
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
 .toolbar .spacer {
   flex: 1;
 }

@@ -800,11 +800,12 @@ export default function JobsPage() {
   }
 
   return (
-    <div className="page">
-      <div className="page-header">
-        <h1>Job Board</h1>
-        <p>Source and manage job postings</p>
-      </div>
+    <div className="page jobs-page">
+      <div className="jobs-page-sticky">
+        <div className="page-header">
+          <h1>Job Board</h1>
+          <p>Source and manage job postings</p>
+        </div>
 
         <div className="toolbar">
           <input
@@ -853,11 +854,12 @@ export default function JobsPage() {
           </button>
         </div>
 
-      {jobs.length === 0 && (
-        <div className="alert alert-info">
-          Paste a job posting URL. We'll only add the job if we can source the title, company, and description.
-        </div>
-      )}
+        {jobs.length === 0 && (
+          <div className="alert alert-info">
+            Paste a job posting URL. We'll only add the job if we can source the title, company, and description.
+          </div>
+        )}
+      </div>
 
       {jobs.length === 0 ? (
         <div className="empty-state">
