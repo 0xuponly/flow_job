@@ -555,6 +555,8 @@ export default function JobsPage() {
   async function loadJobs() {
     const before = lastSeenFitErrors.current
     const data = search ? await api.searchJobs(search) : await api.listJobs()
+     
+    console.log(`[JobsPage.loadJobs] fetched ${data.length} jobs (search=${JSON.stringify(search)})`)
     setJobs(dedupeJobs(data.map(cleanJob)))
     // Surface fit-level assessment failures that appeared since last load.
     // "New" = currently failing AND (never toasted this session, OR the

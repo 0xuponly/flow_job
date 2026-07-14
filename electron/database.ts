@@ -256,7 +256,17 @@ function persistStore(): void {
   if (!store) return
   const dek = getOrCreateDek()
   const payload = encryptJson(store, dek)
-  writeFileSync(getStorePath(), payload)
+  // Use the sync write AND explicitly sync to disk before returning.
+  // Without fsync, writeFileSync returns once the data is in the OS
+  // write cache; a crash or rapid subsequent read could see a stale
+  // file. fsync guarantees the bytes are on stable storage.
+  const fd = require('fs').openSync(getStorePath(), 'w')
+  try {
+    require('fs').writeSync(fd, payload)
+    require('fs').fsyncSync(fd)
+  } finally {
+    require('fs').closeSync(fd)
+  }
 }
 
 function nextId(): number {
@@ -553,6 +563,10 @@ export function deleteJobs(ids: number[]): void {
   if (ids.length === 0) return
   const idSet = new Set(ids)
   const s = loadStore()
+  const beforeCount = s.jobs.length
+  const idsMissing = [...idSet].filter((id) => !s.jobs.find((j) => j.id === id))
+   
+  console.log(`[db.deleteJobs] requested ${ids.length} ids, ${idsMissing.length} missing from store, before count=${beforeCount}`)
   // Move each deleted job into the deleted-jobs blacklist (used by the
   // scanner to avoid re-adding the same URL). The blacklist is capped
   // to settings.deleted_jobs_cap to keep the store from growing
@@ -583,6 +597,8 @@ export function deleteJobs(ids: number[]): void {
   s.follow_ups = s.follow_ups.filter((f) => !appIds.includes(f.application_id))
   s.interviews = s.interviews.filter((i) => !appIds.includes(i.application_id))
   persistStore()
+   
+  console.log(`[db.deleteJobs] persisted: ${beforeCount} -> ${s.jobs.length} jobs`)
 }
 
 // Documents
