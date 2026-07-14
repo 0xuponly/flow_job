@@ -114,8 +114,10 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
     let prevContent = ''
     let prevFeedback = ''
     let first = true
+    // Safety cap so a parse-failed or rate-limited verifier can't loop forever.
+    const MAX_ATTEMPTS = 5
 
-    while (true) {
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       const r = await api.tailorDocument({
         job_id: job.id,
         document_type: type,
@@ -130,6 +132,12 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
       })
 
       const v = await api.verifyDocument(job.id, r.document_id, type)
+      if (v.kind === 'skip') {
+        // Doc was deleted mid-flow, or the AI response couldn't be parsed.
+        // Don't loop. The next load() will surface a fresh "Pending review…"
+        // state on the new doc.
+        break
+      }
       prevFeedback = v.feedback
       if (v.passed) break
     }
@@ -139,6 +147,12 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
 
   async function ensureDocVerified(doc: Document): Promise<Document | null> {
     const v = await api.verifyDocument(job.id, doc.id, doc.type)
+    if (v.kind === 'skip') {
+      // Don't carry over a stale verification_score into a skip state — clear
+      // it on the local doc so the render code falls back to "Pending review…"
+      // and doesn't keep showing a misleading 100/100 ✓.
+      return { ...doc, verification_score: null, verification_feedback: v.feedback }
+    }
     if (v.score >= 70) {
       return { ...doc, verification_score: v.score, verification_feedback: v.feedback }
     }
@@ -146,7 +160,10 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
     let prevFeedback = v.feedback
     let bestId = doc.id
     let bestScore = v.score
-    while (true) {
+    let attempts = 0
+    const MAX_ATTEMPTS = 5
+    while (attempts < MAX_ATTEMPTS) {
+      attempts++
       const r = await api.tailorDocument({
         job_id: job.id,
         document_type: doc.type,
@@ -159,6 +176,11 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
         [doc.type === 'cv' ? 'cv_document_id' : 'cover_letter_document_id']: bestId
       })
       const v2 = await api.verifyDocument(job.id, bestId, doc.type)
+      if (v2.kind === 'skip') {
+        // Bail with the best score we've seen so far; the doc row keeps
+        // whatever score was last persisted on it.
+        break
+      }
       bestScore = v2.score
       prevFeedback = v2.feedback
       if (v2.passed) break
@@ -205,6 +227,15 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
       const target = type === 'cv' ? cv : coverLetter
       if (!target) return
       const result = await api.verifyDocument(job.id, target.id, type)
+      if (result.kind === 'skip') {
+        // Clear any stale score so the UI doesn't keep showing "100/100 ✓"
+        // for a doc that was just deleted, and surface the skip reason.
+        setDocuments((prev) => prev.map((d) => (d.id === target.id
+          ? { ...d, verification_score: null, verification_feedback: result.feedback }
+          : d)))
+        notify(result.feedback, 'info')
+        return
+      }
       const updated = { ...target, verification_score: result.score, verification_feedback: result.feedback }
       setDocuments((prev) => prev.map((d) => (d.id === target.id ? updated : d)))
       notify(

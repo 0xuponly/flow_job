@@ -58,11 +58,17 @@ export interface Document {
   updated_at: string
 }
 
-export interface VerificationResult {
-  score: number
-  passed: boolean
-  feedback: string
-}
+/**
+ * Result of `verifyDocumentContent`. Two shapes:
+ *  - `review`: an actual LLM review with a numeric score and pass/fail.
+ *  - `skip`:  no review happened (e.g. document was deleted, AI parse failed,
+ *             rate-limited but not retried here). Callers MUST NOT persist a
+ *             skip as a verification_score, and MUST NOT feed it into the
+ *             "regenerate until passed" loop.
+ */
+export type VerificationResult =
+  | { kind: 'review'; score: number; passed: boolean; feedback: string }
+  | { kind: 'skip'; reason: 'deleted' | 'parse_failed' | 'no_ai_response'; feedback: string }
 
 export interface Application {
   id: number

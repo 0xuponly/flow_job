@@ -361,9 +361,11 @@ export async function verifyDocumentContent(
   if (!job) throw new Error('Job not found')
   const doc = getDocument(documentId)
   if (!doc) {
-    // Document was deleted (or never existed) — return a neutral passing result
-    // so the user's tailoring flow doesn't fail. Clean up the stale application
-    // reference so this doesn't happen again.
+    // Document was deleted (or never existed) — return a SKIP rather than a
+    // fake 100/100. Callers must treat this as "no review happened": they
+    // MUST NOT persist a verification_score and MUST NOT trigger a regenerate
+    // loop. We do still want to clean up the stale application pointer so
+    // the next load() doesn't see a dangling reference.
     const apps = listApplications().filter((a) => a.job_id === jobId)
     for (const a of apps) {
       const update: Partial<typeof a> = {}
@@ -371,7 +373,7 @@ export async function verifyDocumentContent(
       if (docType === 'cover_letter' && a.cover_letter_document_id === documentId) update.cover_letter_document_id = null
       if (Object.keys(update).length > 0) updateApplication(a.id, update)
     }
-    return { score: 100, passed: true, feedback: 'Document was deleted; skipping verification.' }
+    return { kind: 'skip', reason: 'deleted', feedback: 'Document was deleted; skipping verification.' }
   }
 
   const systemPrompt = `You are a strict career-document reviewer. Evaluate the ${docType === 'cv' ? 'CV/resume' : 'cover letter'} against the target job posting.
@@ -397,25 +399,48 @@ ${doc.content}
 
 Evaluate how well this document is tailored for this specific job.`
 
-  let result: VerificationResult = { score: 0, passed: false, feedback: 'Verification failed — no AI model responded.' }
-
+  let rawResponse = ''
   try {
     const aiResult = await callAI(systemPrompt, userPrompt, 0.3)
     if (aiResult.content) {
-      const parsed = JSON.parse(aiResult.content.replace(/```json|```/g, '').trim()) as VerificationResult
-      result = {
-        score: Math.max(0, Math.min(100, parsed.score)),
-        passed: !!parsed.passed,
-        feedback: parsed.feedback || ''
+      rawResponse = aiResult.content
+      // Defensive: locate the first JSON object in the response, in case the
+      // model wraps it in prose or stray markdown. Don't blindly `JSON.parse`
+      // the whole string — that's what let malformed responses silently
+      // overwrite a previously-passing score with 0.
+      const match = rawResponse.match(/\{[\s\S]*\}/)
+      if (!match) {
+        return { kind: 'skip', reason: 'parse_failed', feedback: 'Reviewer returned a non-JSON response.' }
       }
+      const parsed = JSON.parse(match[0]) as { score?: unknown; passed?: unknown; feedback?: unknown }
+      const rawScore = Number(parsed.score)
+      if (!Number.isFinite(rawScore)) {
+        return { kind: 'skip', reason: 'parse_failed', feedback: 'Reviewer response was missing a numeric score.' }
+      }
+      const score = Math.max(0, Math.min(100, rawScore))
+      const result: VerificationResult = {
+        kind: 'review',
+        score,
+        passed: !!parsed.passed,
+        feedback: typeof parsed.feedback === 'string' ? parsed.feedback : ''
+      }
+      updateDocumentVerification(documentId, result.score, result.feedback)
+      return result
     }
+    return { kind: 'skip', reason: 'no_ai_response', feedback: 'No AI model responded to the verification request.' }
   } catch (err) {
     if (err instanceof RateLimitError) throw err
-    // Non-rate-limit: keep default result (score 0)
+    // Non-rate-limit failure (network, parse error, etc.) — return a skip and
+    // do NOT call updateDocumentVerification. The previous score, if any, is
+    // preserved on the document row.
+    return {
+      kind: 'skip',
+      reason: 'parse_failed',
+      feedback: rawResponse
+        ? 'Could not parse the reviewer response.'
+        : 'Verification failed before the reviewer could respond.'
+    }
   }
-
-  updateDocumentVerification(documentId, result.score, result.feedback)
-  return result
 }
 
 export async function regenerateSection(
