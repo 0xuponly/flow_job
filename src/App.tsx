@@ -18,7 +18,7 @@ export default function App() {
   function renderPage() {
     switch (page) {
       case 'dashboard':
-        return <Dashboard onNavigate={(p) => setPage(p as Page)} />
+        return <Dashboard />
       case 'scanjobs':
         return <ScanJobsPage />
       case 'jobs':
