@@ -1157,7 +1157,7 @@ export default function JobsPage() {
                     {STATUS_LABELS[job.status]}
                   </span>
                 </td>
-                <td>{job.source ?? '—'}</td>
+                <td>{job.salary_range ?? '—'}</td>
                 <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{formatJobDate(job.date_posted)}</td>
                 <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{formatJobDate(job.last_updated)}</td>
                 <td>
