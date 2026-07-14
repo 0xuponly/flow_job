@@ -1264,9 +1264,9 @@ function applyUltiPro(result: ScrapedJob, html: string): void {
   else if (opp.FullTime === false) result.employment_type = 'PART_TIME'
   // JobLocationType: 0 = On-site, 1 = Remote, 2 = Hybrid (per UKG docs)
   if (typeof opp.JobLocationType === 'number') {
-    if (opp.JobLocationType === 1) result.work_mode = 'Remote'
-    else if (opp.JobLocationType === 2) result.work_mode = 'Hybrid'
-    else if (opp.JobLocationType === 0) result.work_mode = 'On-site'
+    if (opp.JobLocationType === 1) result.work_mode = 'REMOTE'
+    else if (opp.JobLocationType === 2) result.work_mode = 'HYBRID'
+    else if (opp.JobLocationType === 0) result.work_mode = 'ON_SITE'
   }
   if (typeof opp.PayRangeCurrencyCode === 'string' && opp.PayRangeCurrencyCode) {
     const pr = opp.PayRange as { PayRangeMinimum?: number | null; PayRangeMaximum?: number | null } | undefined
