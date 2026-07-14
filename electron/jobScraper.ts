@@ -1565,7 +1565,13 @@ function applyBrainhunter(result: ScrapedJob, html: string): void {
       const m = body.match(/Job Type:\s*([^]*?)\s*(?:Salary Range|Hours of Work|Location:|Req|Position Summary|What we do|About|$)/i)
       if (m) {
         const t = m[1].trim()
-        if (t && t.length < 60) result.employment_type = t
+        if (t && t.length < 60) {
+          // Free-form body text like "Temporary Casual" or "Permanent Full Time"
+          // rarely maps to a single canonical token, but try the full
+          // matched string first; if that doesn't match a token, the
+          // persistence boundary will null it so the user can pick in Edit.
+          result.employment_type = normalizeEmploymentType(t) ?? undefined
+        }
       }
     }
 
