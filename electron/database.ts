@@ -4,7 +4,7 @@ import { join } from 'path'
 import { cleanDescription, scrapePostingDateFromUrl } from './jobScraper'
 import { getOrCreateDek, encryptJson, decryptJson, deleteDek, encryptionMode } from './secureStore'
 import { formatLocation, decodeEntities, normalizeTitle, normalizeCompany, normalizeSalary } from './utils'
-import { normalizeEmploymentType } from './employmentType'
+import { normalizeEmploymentType, normalizeWorkMode } from './employmentType'
 import type {
   ApiModelConfig,
   AIQueueItem,
