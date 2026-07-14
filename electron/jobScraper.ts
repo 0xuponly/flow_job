@@ -607,7 +607,8 @@ function applyJobPosting(result: ScrapedJob, jp: any): void {
 
   if (jp.employmentType && !result.employment_type) {
     const et = jp.employmentType
-    result.employment_type = (Array.isArray(et) ? et[0] : et)
+    const normalized = normalizeEmploymentType(Array.isArray(et) ? et[0] : et)
+    if (normalized) result.employment_type = normalized
   }
 
   if (jp.jobLocationType && !result.work_mode) {
