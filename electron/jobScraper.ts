@@ -1330,11 +1330,8 @@ function extractWorkModeFromText(text: string): string | undefined {
   for (const p of patterns) {
     const m = text.match(p)
     if (m) {
-      const val = m[1].toLowerCase().replace(/[- ]/g, '-')
-      if (val.startsWith('remote')) return 'Remote'
-      if (val.startsWith('hybrid')) return 'Hybrid'
-      if (/on.?site|in.?office/.test(val)) return 'On-site'
-      return val.charAt(0).toUpperCase() + val.slice(1)
+      const wm = normalizeWorkMode(m[1])
+      if (wm) return wm
     }
   }
   return undefined
