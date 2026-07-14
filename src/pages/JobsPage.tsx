@@ -1138,7 +1138,7 @@ export default function JobsPage() {
           }}
         >
           <span>
-            {hiddenDupes} duplicate{hiddenDupes === 1 ? '' : 's'} hidden from My Job Board (store has {hiddenDupes + jobs.length}).
+            {hiddenDupes} duplicate{hiddenDupes === 1 ? '' : 's'} hidden from My Jobs (store has {hiddenDupes + jobs.length}).
           </span>
           <button className="btn btn-secondary btn-sm" onClick={() => setShowAll(true)}>
             Show all
