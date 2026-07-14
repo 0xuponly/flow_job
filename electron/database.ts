@@ -550,6 +550,11 @@ export function updateJob(
   const existing = s.jobs[idx]
   const de = (v: string | null | undefined): string | null =>
     v == null ? null : decodeEntities(v)
+  // Resolve the new description first so the salary normalizer can
+  // pick up hours-per-week from the posting body when present.
+  const nextDescription = fields.description !== undefined
+    ? (fields.description ? cleanDescription(decodeEntities(fields.description)) : null)
+    : existing.description
   s.jobs[idx] = {
     ...existing,
     title: fields.title !== undefined
@@ -560,7 +565,7 @@ export function updateJob(
       : existing.company,
     location: fields.location !== undefined ? (fields.location ? de(fields.location) : null) : existing.location,
     url: fields.url !== undefined ? (fields.url ?? null) : existing.url,
-    description: fields.description !== undefined ? (fields.description ? cleanDescription(decodeEntities(fields.description)) : null) : existing.description,
+    description: nextDescription,
     salary_range: fields.salary_range !== undefined ? de(fields.salary_range ?? null) : existing.salary_range,
     requirements: fields.requirements !== undefined ? de(fields.requirements ?? null) : existing.requirements,
     application_requirements: fields.application_requirements !== undefined ? de(fields.application_requirements ?? null) : existing.application_requirements,
