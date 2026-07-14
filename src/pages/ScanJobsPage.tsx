@@ -33,6 +33,11 @@ export default function ScanJobsPage() {
   const [scanning, setScanning] = useState(false)
   const [result, setResult] = useState<ScanResult | null>(null)
   const [entries, setEntries] = useState<ProgressEntry[]>([])
+  // Snapshot of the visible log lines (blue + green + latest grey) at the
+  // moment the most recent scan ended, so the user can copy them after the
+  // scan card collapses. Reset on every new scan.
+  const [logSnapshot, setLogSnapshot] = useState<ProgressEntry[]>([])
+  const [logCopied, setLogCopied] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const entriesRef = useRef<ProgressEntry[]>([])
@@ -46,6 +51,7 @@ export default function ScanJobsPage() {
     const unsub = api.onScanComplete((result) => {
       if (cancelled || !mountedRef.current) return
       setResult(result)
+      setLogSnapshot(entriesRef.current)
       setScanning(false)
       setElapsed(Math.round((typeof result.durationMs === 'number' && Number.isFinite(result.durationMs) ? result.durationMs : 0) / 1000))
       // Refresh health data after a completed scan
@@ -186,10 +192,44 @@ export default function ScanJobsPage() {
     return () => clearInterval(interval)
   }, [])
 
+  // Build the text the user actually sees in the log block: every blue
+  // (Scanning) and green (✓) entry in order, plus the most recent grey
+  // entry if one exists. This is the same set the in-scan card renders.
+  function visibleLogText(source: ProgressEntry[]): string {
+    const greens = source.filter((e) => e.msg.startsWith('✓'))
+    const blues = source.filter((e) => e.msg.startsWith('Scanning'))
+    const greys = source.filter((e) => !e.msg.startsWith('✓') && !e.msg.startsWith('Scanning'))
+    const latestGrey = greys.at(-1)
+    return [...blues, ...greens, ...(latestGrey ? [latestGrey] : [])]
+      .map((e) => e.msg)
+      .join('\n')
+  }
+
+  // Copy a log text block to the clipboard with a hidden-textarea fallback
+  // (mirrors the toast copy pattern in Notifications.tsx). Flips the
+  // feedback flag for 1.5s, mirroring the toast's checkmark timing.
+  function copyLog(text: string) {
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).catch(() => {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        try { document.execCommand('copy') } catch {}
+        document.body.removeChild(ta)
+      })
+    }
+    setLogCopied(true)
+    setTimeout(() => setLogCopied(false), 1500)
+  }
+
   async function handleScan() {
     scanActiveRef.current = true
     setScanning(true)
     setResult(null)
+    setLogSnapshot([])
     setEntries([])
     setElapsed(0)
     entriesRef.current = []
@@ -224,6 +264,7 @@ export default function ScanJobsPage() {
       })
       if (mountedRef.current) {
         setResult(r)
+        setLogSnapshot(entriesRef.current)
         setElapsed(Math.round(r.durationMs / 1000))
       }
       // Refresh health data after scan completes
@@ -460,12 +501,21 @@ export default function ScanJobsPage() {
             <p style={{ margin: 0 }}>
               {`Fetching job listings from job boards... ${formatDuration(elapsed)} elapsed`}
             </p>
-            <button
-              className="btn btn-secondary btn-sm"
-              onClick={() => { api.cancelScan() }}
-            >
-              Cancel
-            </button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => copyLog(visibleLogText(entriesRef.current))}
+                title="Copy log lines to clipboard"
+              >
+                {logCopied ? 'Copied ✓' : 'Copy log'}
+              </button>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => { api.cancelScan() }}
+              >
+                Cancel
+              </button>
+            </div>
           </div>
           <div style={{ fontSize: 12, lineHeight: 1.7, maxHeight: 320, overflowY: 'auto' }}>
             {(() => {
@@ -584,6 +634,57 @@ export default function ScanJobsPage() {
           </div>
         )
       })()}
+
+      {result && logSnapshot.length > 0 && (
+        <div className="card" style={{ maxWidth: 800, marginTop: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
+            <h3 style={{ margin: 0, fontSize: 14, color: 'var(--text-muted)', fontWeight: 600 }}>
+              Log
+            </h3>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => copyLog(visibleLogText(logSnapshot))}
+              title="Copy log lines to clipboard"
+            >
+              {logCopied ? 'Copied ✓' : 'Copy log'}
+            </button>
+          </div>
+          <div style={{ fontSize: 12, lineHeight: 1.7, maxHeight: 320, overflowY: 'auto' }}>
+            {(() => {
+              // Mirror the in-scan rendering: every blue (Scanning) + green
+              // (✓) line, plus the most recent grey line if any. The user
+              // already saw this set during the scan; the post-scan card
+              // is just so they can copy it once the live card collapses.
+              const greens = logSnapshot.filter((e) => e.msg.startsWith('✓'))
+              const blues = logSnapshot.filter((e) => e.msg.startsWith('Scanning'))
+              const greys = logSnapshot.filter((e) => !e.msg.startsWith('✓') && !e.msg.startsWith('Scanning'))
+              const latestGrey = greys.at(-1)
+              return (
+                <>
+                  {[...blues, ...greens].map((e) => (
+                    <div
+                      key={e.id}
+                      style={{
+                        color: e.msg.startsWith('✓') ? '#22c55e' : '#3b82f6'
+                      }}
+                    >
+                      {e.msg}
+                    </div>
+                  ))}
+                  {latestGrey && (
+                    <div
+                      key={latestGrey.id}
+                      style={{ color: 'var(--text-muted)' }}
+                    >
+                      {latestGrey.msg}
+                    </div>
+                  )}
+                </>
+              )
+            })()}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
