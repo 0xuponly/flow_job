@@ -8,6 +8,21 @@ import type { Job, ScanFilters, WorkType } from './types'
 
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
+// Returns a promise that resolves true as soon as the signal aborts. Used to
+// race long-running in-flight work so the cancel button feels immediate
+// rather than waiting for the current batch (up to 6 listings) to finish.
+function abortPromise(signal?: AbortSignal): Promise<true> {
+  if (!signal) return new Promise(() => {}) // never resolves
+  if (signal.aborted) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort)
+      resolve(true)
+    }
+    signal.addEventListener('abort', onAbort)
+  })
+}
+
 interface BoardConfig {
   name: string
   searchUrl: (keywords: string, location: string) => string
@@ -601,12 +616,24 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
 
       for (const batch of batches) {
         if (signal?.aborted) break
-        const results = await Promise.allSettled(
+        // Race the batch against the abort signal. If the user cancels mid-
+        // batch, we don't wait for the in-flight listings to finish; we drop
+        // whatever hasn't settled yet and bail out. The settled values for
+        // already-completed listings in this batch are discarded (since the
+        // per-listing accounting happens after the await). The outer board
+        // loop's `signal.aborted` check picks up the cancellation on the
+        // next iteration.
+        const settled = await Promise.race([
+          Promise.allSettled(
             batch.map(async (l) => {
-                progress(`Scraping ${board.name}${location ? ` (${location})` : ''} — ${decodeEntities(l.company || l.title || l.url)}`)
+              progress(`Scraping ${board.name}${location ? ` (${location})` : ''} — ${decodeEntities(l.company || l.title || l.url)}`)
               return fetchAndScore(l.url, baseCv, seenUrls, scanSeenUrls, workType, location)
-          })
-        )
+            })
+          ),
+          abortPromise(signal).then(() => null)
+        ])
+        if (settled === null) break
+        const results = settled
         for (const r of results) {
           if (r.status === 'fulfilled') {
             if (r.value.action === 'added') {

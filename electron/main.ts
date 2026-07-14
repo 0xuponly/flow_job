@@ -196,6 +196,10 @@ function registerIpc(): void {
     markScanStarted()
     try {
       const result = await scanAllBoards(filters, (msg) => {
+        // Drop progress messages that arrive after cancel — the in-flight
+        // scrapes that were racing the abort signal may still resolve and
+        // try to report, but the user has already moved on.
+        if (_scanAbortController?.signal.aborted) return
         _scanState.progress.push(msg)
         e.sender.send('scan:progress', msg)
       }, _scanAbortController.signal)
