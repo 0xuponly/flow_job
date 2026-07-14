@@ -344,10 +344,13 @@ function SalaryFilterSelect({ filter, onChange }: {
   }, [open])
 
   const active = isSalaryFilterActive(filter)
-  const label = !active
+  const fmt = (s: string) => {
+    const n = parseInt(s, 10)
+    return Number.isFinite(n) ? n.toLocaleString() : s
+  }
+  const displayLabel = !active
     ? 'Any'
-    : f => `${f.min ? `$${parseInt(f.min, 10).toLocaleString()}+` : ''}${f.min && f.max ? ' – ' : ''}${f.max ? `≤ $${parseInt(f.max, 10).toLocaleString()}` : ''}`
-  const displayLabel = !active ? 'Any' : label(filter)
+    : `${filter.min ? `$${fmt(filter.min)}+` : ''}${filter.min && filter.max ? ' – ' : ''}${filter.max ? `≤ $${fmt(filter.max)}` : ''}`
 
   return (
     <div className="filter-dropdown" ref={ref}>
@@ -1224,6 +1227,7 @@ export default function JobsPage() {
               <th>
                 <div className="filter-header">
                   <SortableLabel columnKey="salary_range" label="Salary" sortColumn={sortColumn} sortDir={sortDir} onCycle={cycleSort} />
+                  <SalaryFilterSelect filter={filterSalary} onChange={setFilterSalary} />
                 </div>
               </th>
               <th>
