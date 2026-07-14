@@ -1106,8 +1106,7 @@ export default function JobsPage() {
               </th>
               <th>
                 <div className="filter-header">
-                  <SortableLabel columnKey="source" label="Source" sortColumn={sortColumn} sortDir={sortDir} onCycle={cycleSort} />
-                  <FilterSelect options={filterOptions.sources} selected={filterSource} onChange={setFilterSource} />
+                  <SortableLabel columnKey="salary_range" label="Salary" sortColumn={sortColumn} sortDir={sortDir} onCycle={cycleSort} />
                 </div>
               </th>
               <th>
