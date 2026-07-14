@@ -1230,7 +1230,13 @@ function applyUltiPro(result: ScrapedJob, html: string): void {
 
 function extractSalaryFromText(text: string): string | undefined {
   const patterns = [
-    /(?:salary|pay|compensation|range)\s*[:\s]*([$€£¥][\d,]+(?:\.\d+)?(?:k|K)?(?:\s*(?:–|-|to)\s*[$€£¥]?[\d,]+(?:\.\d+)?(?:k|K)?)?(?:\s*(?:per|a|an|\/)\s*(?:year|yr|month|hour|hr|week|wk|day))?)/i,
+    // Keyword-prefixed (salary/pay/compensation/range) — the bridge
+    // between the keyword and the dollar amount tolerates words,
+    // numbers, and HTML tags (e.g. "Salary Information: </strong>Pay
+    // Grade RNG-091: $60.26 to $75.32 per annum" on Vancouver Jobs),
+    // up to 80 chars on a single line. "annum" is added for the
+    // British/Commonwealth convention used by BC public-sector postings.
+    /((?:salary|pay|compensation|range)\b[^<>\n]{0,80}?[\$€£¥][\d,]+(?:\.\d+)?(?:k|K)?(?:\s*(?:–|-|to)\s*[\$€£¥]?[\d,]+(?:\.\d+)?(?:k|K)?)?(?:\s*(?:per|a|an|\/)\s*(?:annum|year|yr|month|hour|hr|week|wk|day))?)/i,
     /([$€£¥][\d,]+(?:\.\d+)?(?:k|K)?\s*(?:–|-|to)\s*[$€£¥]?[\d,]+(?:\.\d+)?(?:k|K)?(?:\s*(?:per|a|an|\/)\s*(?:year|yr|month|hour|hr|week|wk|day))?)/,
     /(USD|CAD|EUR|GBP|AUD|NZD)\s*([\d,]+(?:k|K)?(?:\s*(?:–|-|to)\s*[\d,]+(?:k|K)?)(?:\s*(?:per|a|an|\/)\s*(?:year|yr|month|hour|hr|week|wk|day))?)/i
   ]
