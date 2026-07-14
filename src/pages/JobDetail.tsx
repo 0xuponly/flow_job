@@ -46,6 +46,11 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
   const [selectedSection, setSelectedSection] = useState('')
   const [regenContext, setRegenContext] = useState('')
   const [descriptionExpanded, setDescriptionExpanded] = useState(false)
+  // Measured line-height for the description card — used to decide whether
+  // to collapse (more than 10 visual lines) and to clip the collapsed body
+  // to exactly 10 lines via max-height. We measure once per text change
+  // by reading a sentinel element that mirrors the card's text styles.
+  const [descLineHeight, setDescLineHeight] = useState(0)
 
   useEffect(() => {
     load()
@@ -456,38 +461,13 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
               </div>
             </>
           ) : (
-            (() => {
-              const text = currentJob.description || 'No description.'
-              const lines = text.split('\n')
-              const COLLAPSE_AT = 10
-              const needsCollapse = lines.length > COLLAPSE_AT
-              const visibleLines = needsCollapse && !descriptionExpanded ? lines.slice(0, COLLAPSE_AT) : lines
-              const visibleText = visibleLines.join('\n') + (needsCollapse && !descriptionExpanded ? '…' : '')
-              return (
-                <div>
-                  <div className="card" style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.6 }}>
-                    {visibleText}
-                    {currentJob.notes && (
-                      <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)', color: 'var(--text-muted)' }}>
-                        <strong>Notes:</strong> {currentJob.notes}
-                      </div>
-                    )}
-                  </div>
-                  {needsCollapse && (
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 6 }}>
-                      <button
-                        type="button"
-                        className="btn-link"
-                        onClick={() => setDescriptionExpanded((v) => !v)}
-                        style={{ background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', fontSize: 12, color: 'var(--accent)' }}
-                      >
-                        {descriptionExpanded ? 'Show less' : 'Read more...'}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )
-            })()
+            <DescriptionCard
+              text={currentJob.description || 'No description.'}
+              notes={currentJob.notes}
+              expanded={descriptionExpanded}
+              onToggle={() => setDescriptionExpanded((v) => !v)}
+              onLineHeightMeasured={setDescLineHeight}
+            />
           )}
 
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 16 }}>
