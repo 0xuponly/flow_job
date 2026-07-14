@@ -466,21 +466,32 @@ textarea {
    the sticky background extends edge-to-edge of the scroll container,
    matching the table's extent on both sides. The matching positive
    padding keeps the inner content (title, toolbar buttons) at the same
-   visual position they had before. A negative `top` offset pins the
-   wrapper above its natural flow position by .page's 28px top padding,
-   so when stuck the wrapper covers the padded area too — no gap
-   showing scrolled content above the title. A subtle bottom border
-   keeps the sticky region visually distinct from the scrolling
-   table underneath. */
+   visual position they had before. A subtle bottom border keeps the
+   sticky region visually distinct from the scrolling table
+   underneath. The .jobs-page rule below removes .page's top padding
+   for the Job Board only so the wrapper sits at the very top of the
+   scroll container — this means it pins at the top of the viewport
+   immediately, with zero scroll slack before sticking. The wrapper's
+   own 28px padding-top preserves the original visual position of the
+   title. */
 .jobs-page-sticky {
   position: sticky;
-  top: -28px;
+  top: 0;
   z-index: 10;
   background: var(--bg);
   margin: 0 -32px;
   padding: 28px 32px 4px;
   border-bottom: 1px solid var(--border);
   box-sizing: border-box;
+}
+
+/* Job Board: drop .page's top padding so the sticky wrapper pins at
+   y=0 of the scroll container with no scroll slack. The wrapper's
+   own padding-top (28px) restores the original visual position of
+   the title. Left/right/bottom padding are preserved so the table
+   still sits at the same horizontal position as before. */
+.jobs-page.page {
+  padding-top: 0;
 }
 
 /* Sticky column headers on the Job Board. The `top` value is set
