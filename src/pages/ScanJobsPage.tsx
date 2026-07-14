@@ -400,7 +400,7 @@ export default function ScanJobsPage() {
               borderRadius: 6,
               border: '1px solid var(--border)'
             }}>
-              {allBoards.map((b) => {
+              {[...allBoards].sort((a, b) => a.name.localeCompare(b.name)).map((b) => {
                 const checked = selectedBoards.has(b.name)
                 const history = boardHealth[b.name] || []
                 // Red if the last 5 results were all zero/errored
