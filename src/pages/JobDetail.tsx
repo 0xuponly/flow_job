@@ -435,11 +435,11 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
         style={{
           background: `${STATUS_COLORS[job.status]}22`,
           color: STATUS_COLORS[job.status],
-          // Pull the badge up by 16px to reduce the inherited 24px gap
-          // from .page-header's margin-bottom to 8px, and tighten the
-          // space below the badge so the status sits closer to the
-          // description card.
-          marginTop: -16,
+          // Pull the badge up to sit flush with the page header (top
+          // gap 0) and add a small 8px gap below to the Description
+          // section title. The .page-header has margin-bottom: 24px;
+          // we pull the badge up by 24px to negate it.
+          marginTop: -24,
           marginBottom: 0,
           display: 'inline-block'
         }}
@@ -449,7 +449,7 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
 
       <div className="job-detail-grid">
         <div>
-          <div className="section-title" style={{ marginTop: 0 }}>Description</div>
+          <div className="section-title" style={{ marginTop: 8 }}>Description</div>
           {editing ? (
             <>
               <textarea rows={12} value={editDesc} onChange={(e) => setEditDesc(e.target.value)} style={{ width: '100%' }} />
