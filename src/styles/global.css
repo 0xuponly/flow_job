@@ -341,7 +341,7 @@ textarea {
 }
 
 .table td {
-  padding: 3px 12px;
+  padding: 3px 8px;
   line-height: 1.2;
   border-bottom: 1px solid var(--border);
 }
@@ -354,8 +354,6 @@ textarea {
 
 .table .col-check {
   text-align: center;
-  /* Tight horizontal padding so the 14px checkbox hugs the cell —
-     default 12px made the column look bloated. */
   padding-left: 4px;
   padding-right: 4px;
 }
