@@ -512,7 +512,7 @@ export function createJob(
     work_mode: de(input.work_mode ?? null),
     source: input.source ?? null,
     status: 'sourced',
-    score: input.score !== undefined ? (input.score ?? null) : 0.5,
+    score: input.score !== undefined ? (input.score ?? null) : 0.31,
     fit_rationale: input.fit_rationale ?? null,
     fit_breakdown: input.fit_breakdown ?? null,
     fit_score_version: input.fit_score_version ?? null,
