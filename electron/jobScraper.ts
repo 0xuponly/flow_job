@@ -190,6 +190,19 @@ async function fetchPageHtml(
   signal?: AbortSignal,
   opts: { skipChallengeCheck?: boolean } = {}
 ): Promise<string> {
+  // Plain `fetch` has no built-in timeout, and Indeed (and other
+  // Cloudflare-fronted sites) sometimes establishes a connection
+  // that never completes a response. Without this race, the user's
+  // add-by-link modal sits on "Fetching..." indefinitely. 30s is
+  // generous — a healthy Indeed page returns in 1-3s. If the
+  // request hasn't completed by then, fall through to the browser
+  // scraper, which has its own 90s timeout and proper challenge
+  // detection.
+  const fetchTimeoutMs = 30_000
+  const timeoutSignal = AbortSignal.timeout(fetchTimeoutMs)
+  const combinedSignal = signal
+    ? AbortSignal.any([signal, timeoutSignal])
+    : timeoutSignal
   const response = await fetch(url, {
     headers: {
       'User-Agent': USER_AGENT,
@@ -197,12 +210,17 @@ async function fetchPageHtml(
       'Accept-Language': 'en-US,en;q=0.9'
     },
     redirect: 'follow',
-    signal
+    signal: combinedSignal
   })
 
   if (response.ok) {
     const html = await response.text()
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+    if (timeoutSignal.aborted) {
+      // The request body was slow even though the headers arrived.
+      // Treat the same as a timeout — fall through to the browser path.
+      return fetchHtmlViaBrowser(url)
+    }
     if (!opts.skipChallengeCheck && isChallengePage(html)) {
       return fetchHtmlViaBrowser(url)
     }
