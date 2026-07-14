@@ -175,6 +175,10 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
 
   async function ensureDocVerified(doc: Document): Promise<Document | null> {
     const v = await api.verifyDocument(job.id, doc.id, doc.type)
+    if ('queued' in v) {
+      notify('AI is rate-limited — verification added to queue. Will retry automatically.', 'info')
+      return null
+    }
     if (v.kind === 'skip') {
       // Don't carry over a stale verification_score into a skip state — clear
       // it on the local doc so the render code falls back to "Pending review…"
@@ -197,6 +201,12 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
         document_type: doc.type,
         base_content: `Previous version had these issues: ${prevFeedback}\n\n---\n${prevContent}`
       })
+      if ('queued' in r) {
+        // AI is rate-limited; bail with the best score we've seen so far.
+        // The previous document keeps whatever score was last persisted.
+        notify('AI is rate-limited — regeneration added to queue. Will retry automatically.', 'info')
+        break
+      }
       prevContent = r.content
       bestId = r.document_id
       const app = await api.getOrCreateApplication(job.id)
@@ -204,6 +214,10 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
         [doc.type === 'cv' ? 'cv_document_id' : 'cover_letter_document_id']: bestId
       })
       const v2 = await api.verifyDocument(job.id, bestId, doc.type)
+      if ('queued' in v2) {
+        notify('AI is rate-limited — verification added to queue. Will retry automatically.', 'info')
+        break
+      }
       if (v2.kind === 'skip') {
         // Bail with the best score we've seen so far; the doc row keeps
         // whatever score was last persisted on it.
@@ -261,6 +275,10 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
       const target = type === 'cv' ? cv : coverLetter
       if (!target) return
       const result = await api.verifyDocument(job.id, target.id, type)
+      if ('queued' in result) {
+        notify('AI is rate-limited — review added to queue. Will retry automatically.', 'info')
+        return
+      }
       if (result.kind === 'skip') {
         // Clear any stale score so the UI doesn't keep showing "100/100 ✓"
         // for a doc that was just deleted, and surface the skip reason.

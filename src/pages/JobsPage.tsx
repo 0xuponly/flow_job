@@ -478,7 +478,7 @@ export default function JobsPage() {
   // Sort: null = default behavior (score DESC, nulls last). A column click
   // cycles default → asc → desc → default. Only one column is sorted at a
   // time; clicking a different column resets the previous one to default.
-  type SortColumn = 'fit' | 'company' | 'title' | 'location' | 'status' | 'date_posted' | 'last_updated' | 'salary_range'
+  type SortColumn = 'fit' | 'company' | 'title' | 'location' | 'status' | 'date_posted' | 'salary_range'
   const [sortColumn, setSortColumn] = useState<SortColumn | null>(null)
   const [sortDir, setSortDir] = useState<'asc' | 'desc' | null>(null)
 
