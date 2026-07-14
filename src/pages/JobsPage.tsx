@@ -275,7 +275,7 @@ function formatJobDate(iso: string | null | undefined): string {
   const d = new Date(iso)
   if (isNaN(d.getTime())) return '—'
   const pad = (n: number) => String(n).padStart(2, '0')
-  return `${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${String(d.getFullYear()).slice(-2)} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return `${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${String(d.getFullYear()).slice(-2)}`
 }
 
 /**
@@ -1247,12 +1247,6 @@ export default function JobsPage() {
                   <DateFilterSelect filter={filterDatePosted} onChange={setFilterDatePosted} />
                 </div>
               </th>
-              <th>
-                <div className="filter-header">
-                  <SortableLabel columnKey="last_updated" label="Last Updated" sortColumn={sortColumn} sortDir={sortDir} onCycle={cycleSort} />
-                  <DateFilterSelect filter={filterLastUpdated} onChange={setFilterLastUpdated} />
-                </div>
-              </th>
               <th></th>
             </tr>
           </thead>
@@ -1291,7 +1285,6 @@ export default function JobsPage() {
                 </td>
                 <td>{hasMeaningfulSalary(job.salary_range) ? job.salary_range : '—'}</td>
                 <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{formatJobDate(job.date_posted)}</td>
-                <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{formatJobDate(job.last_updated)}</td>
                 <td>
                   <button
                     className="icon-btn icon-btn-danger"

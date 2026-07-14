@@ -589,6 +589,19 @@ input[type="checkbox"]:disabled {
   overflow-x: hidden;
 }
 
+/* Make only the Job Board table bleed to the left/right edges of the
+   scroll container. The title and toolbar above (in .jobs-page-sticky)
+   keep their own 32px horizontal padding, so this only affects the
+   table area beneath them. The negative margin equals .page's 32px
+   horizontal padding; the matching width compensates so the table
+   still fills the page. .table already has border-collapse: separate
+   globally, which is what makes the sticky thead at .jobs-page .table
+   thead th actually stick. */
+.jobs-page .table {
+  margin: 0 -32px;
+  width: calc(100% + 64px);
+}
+
 /* Sticky column headers on the Job Board. The `top` value is set
    dynamically by JobsPage via a ResizeObserver on the sticky wrapper,
    exposed as --jobs-sticky-offset on :root. Use --bg-elevated (an
