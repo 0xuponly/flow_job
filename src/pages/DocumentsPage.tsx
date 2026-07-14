@@ -38,6 +38,8 @@ export default function DocumentsPage() {
   const [regenContext, setRegenContext] = useState('')
   const [queue, setQueue] = useState<AIQueueItem[]>([])
   const [showQueue, setShowQueue] = useState(false)
+  const [bulkSelected, setBulkSelected] = useState<Set<number>>(new Set())
+  const [bulkDeleting, setBulkDeleting] = useState(false)
 
   useEffect(() => {
     load()
@@ -132,6 +134,59 @@ export default function DocumentsPage() {
     }
   }
 
+  function toggleBulkSelect(id: number) {
+    setBulkSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function toggleSelectAll() {
+    if (bulkSelected.size === documents.length) {
+      setBulkSelected(new Set())
+    } else {
+      setBulkSelected(new Set(documents.map((d) => d.id)))
+    }
+  }
+
+  useEffect(() => {
+    // Drop selections for documents that no longer exist
+    if (bulkSelected.size === 0) return
+    const valid = new Set(documents.map((d) => d.id))
+    setBulkSelected((prev) => {
+      const next = new Set([...prev].filter((id) => valid.has(id)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [documents])
+
+  async function handleBulkDelete() {
+    const ids = [...bulkSelected]
+    if (ids.length === 0) return
+    if (!confirm(`Delete ${ids.length} document${ids.length > 1 ? 's' : ''}?`)) return
+    setBulkDeleting(true)
+    try {
+      const results = await Promise.allSettled(ids.map((id) => api.deleteDocument(id)))
+      const deleted = new Set<number>()
+      const failed: string[] = []
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled') deleted.add(ids[i])
+        else failed.push(`#${ids[i]}: ${r.reason instanceof Error ? r.reason.message : 'Unknown error'}`)
+      })
+      setDocuments((prev) => prev.filter((d) => !deleted.has(d.id)))
+      setBulkSelected(new Set())
+      if (selected && deleted.has(selected.id)) setSelected(null)
+      if (failed.length > 0) {
+        alert(`Deleted ${deleted.size}, failed ${failed.length}:\n${failed.join('\n')}`)
+      } else {
+        notify(`Deleted ${deleted.size} document${deleted.size > 1 ? 's' : ''}.`, 'info')
+      }
+    } finally {
+      setBulkDeleting(false)
+    }
+  }
+
   async function handleExportPdf() {
     if (!selected) return
     setExporting(true)
@@ -197,16 +252,54 @@ export default function DocumentsPage() {
       ) : (
         <div className="doc-editor">
           <div className="doc-list">
+            <div className="doc-list-header">
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={documents.length > 0 && bulkSelected.size === documents.length}
+                  ref={(el) => {
+                    if (el) el.indeterminate = bulkSelected.size > 0 && bulkSelected.size < documents.length
+                  }}
+                  onChange={toggleSelectAll}
+                />
+                <span>Select All</span>
+              </label>
+              {bulkSelected.size > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    {bulkSelected.size} selected
+                  </span>
+                  <button
+                    className="btn btn-danger btn-sm"
+                    onClick={handleBulkDelete}
+                    disabled={bulkDeleting}
+                  >
+                    {bulkDeleting ? 'Deleting…' : 'Delete selected'}
+                  </button>
+                </div>
+              )}
+            </div>
             {documents.map((doc) => (
               <div
                 key={doc.id}
                 className={`doc-list-item ${selected?.id === doc.id ? 'active' : ''}`}
                 onClick={() => selectDoc(doc)}
               >
-                <div className="type">{doc.type === 'cv' ? 'CV' : 'Cover Letter'}</div>
-                <div style={{ fontSize: 13, fontWeight: 500 }}>{doc.title}</div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                  {new Date(doc.updated_at).toLocaleDateString()}
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={bulkSelected.has(doc.id)}
+                    onChange={() => toggleBulkSelect(doc.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    style={{ marginTop: 2 }}
+                  />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="type">{doc.type === 'cv' ? 'CV' : 'Cover Letter'}</div>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>{doc.title}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                      {new Date(doc.updated_at).toLocaleDateString()}
+                    </div>
+                  </div>
                 </div>
               </div>
             ))}

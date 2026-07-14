@@ -540,6 +540,15 @@ textarea {
   overflow-y: auto;
 }
 
+.doc-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
 .doc-list-item {
   padding: 10px 12px;
   border-radius: 8px;
