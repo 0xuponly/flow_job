@@ -177,6 +177,7 @@ export interface ScanFilters {
   keywords?: string
   location?: string
   workType?: WorkType
+  boards?: string[]
 }
 
 export interface ScanBoardResult {
@@ -184,6 +185,7 @@ export interface ScanBoardResult {
   found: number
   added: number
   skipped: number
+  errors: number
   error?: string
 }
 
@@ -191,6 +193,7 @@ export interface ScanResult {
   totalFound: number
   totalAdded: number
   totalSkipped: number
+  totalErrors: number
   boards: ScanBoardResult[]
   errors: string[]
   startedAt: number | null
@@ -233,4 +236,19 @@ export const STATUS_COLORS: Record<JobStatus, string> = {
   offer: '#10b981',
   rejected: '#ef4444',
   withdrawn: '#6b7280'
+}
+
+export type VerificationResult =
+  | { kind: 'review'; score: number; passed: boolean; feedback: string }
+  | { kind: 'skip'; reason: 'deleted' | 'parse_failed' | 'no_ai_response'; feedback: string }
+
+export interface TailorRequest {
+  job_id: number
+  document_type: 'cv' | 'cover_letter'
+  base_content?: string
+}
+
+export interface TailorResult {
+  content: string
+  document_id: number
 }

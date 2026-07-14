@@ -4,6 +4,17 @@ import { fetchHtmlViaBrowser, isChallengePage } from './browserScraper'
 const USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
+// Hosts that are reliably Cloudflare-blocked for our headless browser.
+// For these, the browser fallback (which spins up a hidden BrowserWindow
+// and waits up to 90s for the challenge to clear) is wasted effort — the
+// challenge never clears for an automated UA. Skip the fallback and
+// surface the "blocked" error in the same <5s window the plain fetch
+// already used, instead of burning another ~70s before failing.
+const CF_BLOCKED_HOSTS: ReadonlySet<string> = new Set([
+  'indeed.com',
+  'www.indeed.com'
+])
+
 interface ScrapedJob {
   title?: string
   company?: string
@@ -222,6 +233,9 @@ async function fetchPageHtml(
       return fetchHtmlViaBrowser(url)
     }
     if (!opts.skipChallengeCheck && isChallengePage(html)) {
+      if (CF_BLOCKED_HOSTS.has(hostname)) {
+        throw new Error('This site blocked automated access (Cloudflare). Open the job in your browser and try again later.')
+      }
       return fetchHtmlViaBrowser(url)
     }
     return html
@@ -234,6 +248,9 @@ async function fetchPageHtml(
   if (!opts.skipChallengeCheck) {
     const body = await response.text().catch(() => '')
     if (isChallengePage(body)) {
+      if (CF_BLOCKED_HOSTS.has(hostname)) {
+        throw new Error('This site blocked automated access (Cloudflare). Open the job in your browser and try again later.')
+      }
       return fetchHtmlViaBrowser(url)
     }
   }

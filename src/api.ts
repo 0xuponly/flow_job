@@ -33,6 +33,8 @@ export interface Api {
   cancelScan: () => Promise<void>
   cancelImport: () => Promise<void>
   batchScore: () => Promise<void>
+  recomputeFit: (id: number) => Promise<Job>
+  retrofitLocations: () => Promise<{ updated: number; total: number }>
   backfillJobDates: () => Promise<number>
   listDocuments: (jobId?: number) => Promise<Document[]>
   createDocument: (type: 'cv' | 'cover_letter', title: string, content: string, jobId?: number) => Promise<Document>
@@ -91,17 +93,6 @@ declare global {
   interface Window {
     api: Api
   }
-}
-
-export interface TailorRequest {
-  job_id: number
-  document_type: 'cv' | 'cover_letter'
-  base_content?: string
-}
-
-export interface TailorResult {
-  content: string
-  document_id: number
 }
 
 function getBridge(): Api {
