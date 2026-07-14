@@ -435,7 +435,11 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
         style={{
           background: `${STATUS_COLORS[job.status]}22`,
           color: STATUS_COLORS[job.status],
-          marginTop: 8,
+          // Pull the badge up by 8px to reduce the inherited 24px gap
+          // from .page-header's margin-bottom to 16px, and tighten the
+          // space below the badge so the status sits closer to the
+          // description card.
+          marginTop: -8,
           marginBottom: 0,
           display: 'inline-block'
         }}
