@@ -1439,7 +1439,7 @@ export default function JobsPage() {
         </div>
         <div className="form-group">
           <label>Source</label>
-          <input value={form.source} onChange={(e) => updateField('source', e.target.value)} placeholder="LinkedIn, Indeed, etc." />
+          <input value={form.source ?? ''} onChange={(e) => updateField('source', e.target.value)} placeholder="LinkedIn, Indeed, etc." />
         </div>
         <div className="form-group">
           <label>Description</label>
