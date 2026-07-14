@@ -660,7 +660,7 @@ export default function ScanJobsPage() {
             )}
             {result.totalAdded > 0 && (
               <p style={{ marginTop: 12, fontSize: 13, color: 'var(--text-muted)' }}>
-                New jobs added. Go to <strong>Job Board</strong> to view and manage them.
+                New jobs added. Go to <strong>My Job Board</strong> to view and manage them.
               </p>
             )}
           </div>
