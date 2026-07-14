@@ -478,7 +478,6 @@ export default function JobsPage() {
     // it) is visible to the user immediately rather than hidden until
     // the next refresh.
     const data = await (search ? api.searchJobs(search) : api.listJobs())
-    console.log(`[JobsPage.handleBatchDelete] deleteJobs deleted=${result.deleted}/${result.requested}, listJobs returned ${data.length} jobs, ids in data: [${data.map((j) => j.id).join(',')}]`)
     setJobs(applyDedupe(data))
     setSelectedIds(new Set())
     if (selectedJob && ids.includes(selectedJob.id)) setSelectedJob(null)
@@ -599,7 +598,6 @@ export default function JobsPage() {
     const before = lastSeenFitErrors.current
     const data = search ? await api.searchJobs(search) : await api.listJobs()
 
-    console.log(`[JobsPage.loadJobs] fetched ${data.length} jobs (search=${JSON.stringify(search)})`)
     setJobs(applyDedupe(data))
     // Surface fit-level assessment failures that appeared since last load.
     // "New" = currently failing AND (never toasted this session, OR the
@@ -640,7 +638,6 @@ export default function JobsPage() {
       // callers bail because their captured failing set is now stale
       // (covered by a later call) or their message matches a recent toast.
       const myFailingIds = new Set(newlyFailing.map((j) => j.id))
-      const myReason = cleanedReason
       const now = Date.now()
       const wait = Math.max(0, FIT_TOAST_DEBOUNCE_MS - (now - lastFitToastAt))
       setTimeout(() => {

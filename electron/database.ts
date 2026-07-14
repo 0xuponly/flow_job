@@ -662,7 +662,6 @@ export function dedupeJobs(): { removedIds: number[]; remaining: number } {
   const keptIds = new Set(kept.map((j) => j.id))
   const idsToDelete = s.jobs.filter((j) => !keptIds.has(j.id)).map((j) => j.id)
   if (idsToDelete.length === 0) {
-    console.log(`[db.dedupeJobs] no duplicates found, ${beforeCount} jobs unchanged`)
     return { removedIds: [], remaining: beforeCount }
   }
   const idSet = new Set(idsToDelete)
@@ -677,7 +676,6 @@ export function dedupeJobs(): { removedIds: number[]; remaining: number } {
   s.follow_ups = s.follow_ups.filter((f) => !appIds.includes(f.application_id))
   s.interviews = s.interviews.filter((i) => !appIds.includes(i.application_id))
   persistStore()
-  console.log(`[db.dedupeJobs] removed ${idsToDelete.length} duplicates, ${beforeCount} -> ${s.jobs.length} jobs`)
   return { removedIds: idsToDelete, remaining: s.jobs.length }
 }
 
