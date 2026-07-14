@@ -1063,7 +1063,7 @@ export default function JobsPage() {
     <div className="page jobs-page">
       <div className="jobs-page-sticky" ref={stickyRef}>
         <div className="page-header">
-          <h1>Job Board</h1>
+          <h1>My Job Board</h1>
           <p>Source and manage job postings</p>
         </div>
 
