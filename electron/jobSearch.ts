@@ -283,6 +283,7 @@ export interface ScanBoardResult {
   found: number
   added: number
   skipped: number
+  errors: number
   error?: string
 }
 
@@ -290,6 +291,7 @@ export interface ScanResult {
   totalFound: number
   totalAdded: number
   totalSkipped: number
+  totalErrors: number
   boards: ScanBoardResult[]
   errors: string[]
 }
@@ -707,7 +709,7 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
   const scanSeenUrls = new Set<string>()
 
   const startedAt = Date.now()
-  const result: ScanResult = { totalFound: 0, totalAdded: 0, totalSkipped: 0, boards: [], errors: [], startedAt, durationMs: 0, cancelled: false }
+  const result: ScanResult = { totalFound: 0, totalAdded: 0, totalSkipped: 0, totalErrors: 0, boards: [], errors: [], startedAt, durationMs: 0, cancelled: false }
   const _seenProgress = new Set<string>()
   const progress = (msg: string) => {
     if (_seenProgress.has(msg)) return
@@ -716,6 +718,38 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
   }
 
   const LISTING_CONCURRENCY = 6
+
+  // Maximum pages to follow for paginated boards. 10 is enough to cover
+  // the long tail of any single query — going further burns time and
+  // hits the user's patience limit before adding unique jobs.
+  const MAX_PAGES = 10
+
+  /**
+   * Fetch the search-results HTML for a board, paginating if the board
+   * needs it. The default path is the original single-fetch behaviour
+   * used by every board. WorkBC is the only board that needs the SPA
+   * hash-router driven explicitly — its search uses `#/job-search;...`
+   * and `loadURL` to a new fragment would not re-render the listing.
+   * `paginateHtmlViaBrowser` handles the per-page reload + render wait.
+   */
+  async function fetchBoardListingsHtml(searchUrl: string, board: BoardConfig): Promise<string> {
+    if (board.name !== 'WorkBC') {
+      return fetchPageHtml(searchUrl, board.useBrowser)
+    }
+    // WorkBC's search-results page is `/find-job/search-jobs#/job-search;...`.
+    // The hash carries `q`, `city`, and `page`. Build the hashes for pages
+    // 2..MAX_PAGES by string-replacing the `page=N` segment.
+    const baseUrl = 'https://www.workbc.ca/find-job/search-jobs'
+    const baseHash = new URL(searchUrl).hash.replace(/^#/, '')
+    // Strip any existing ;page=N; segment from the base hash so we can
+    // append our own page numbers.
+    const baseNoPage = baseHash.replace(/;page=\d+/g, '')
+    const pageHashes: string[] = []
+    for (let p = 2; p <= MAX_PAGES; p++) {
+      pageHashes.push(`#${baseNoPage};page=${p}`)
+    }
+    return paginateHtmlViaBrowser(baseUrl, pageHashes, 3000)
+  }
 
   async function processBoard(board: BoardConfig, location: string): Promise<ScanBoardResult> {
     const br: ScanBoardResult = { board: board.name, found: 0, added: 0, skipped: 0 }
