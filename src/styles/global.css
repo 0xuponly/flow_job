@@ -456,7 +456,7 @@ input[type="checkbox"]:disabled {
 .table td.col-fit {
   text-align: center;
   padding-left: 2px;
-  padding-right: 8px;
+  padding-right: 4px;
 }
 
 .table .col-fit .fit-dot {
