@@ -205,6 +205,14 @@ export default function ScanJobsPage() {
       .join('\n')
   }
 
+  // Build the full chronological log: every entry in arrival order, blue
+  // and green and grey. The in-scan card hides all but the latest grey
+  // line in-place, but the user wants to copy the whole trace — not just
+  // what was on screen at the moment they clicked.
+  function fullLogText(source: ProgressEntry[]): string {
+    return source.map((e) => e.msg).join('\n')
+  }
+
   // Copy a log text block to the clipboard with a hidden-textarea fallback
   // (mirrors the toast copy pattern in Notifications.tsx). Flips the
   // feedback flag for 1.5s, mirroring the toast's checkmark timing.
@@ -504,7 +512,7 @@ export default function ScanJobsPage() {
             <div style={{ display: 'flex', gap: 8 }}>
               <button
                 className="btn btn-secondary btn-sm"
-                onClick={() => copyLog(visibleLogText(entriesRef.current))}
+                onClick={() => copyLog(fullLogText(entriesRef.current))}
                 title="Copy log lines to clipboard"
                 aria-label="Copy log lines to clipboard"
                 style={{
@@ -649,7 +657,7 @@ export default function ScanJobsPage() {
             </h3>
             <button
               className="btn btn-secondary btn-sm"
-              onClick={() => copyLog(visibleLogText(logSnapshot))}
+              onClick={() => copyLog(fullLogText(logSnapshot))}
               title="Copy log lines to clipboard"
               aria-label="Copy log lines to clipboard"
               style={{
