@@ -354,30 +354,32 @@ textarea {
 
 .table .col-check {
   text-align: center;
-  /* The default 12px horizontal padding on th/td makes the checkbox
-     column look wider than it needs to be. Tighten to 6px so the
-     16px checkbox sits snugly in the cell. */
-  padding-left: 6px;
-  padding-right: 6px;
+  /* Tight horizontal padding so the 14px checkbox hugs the cell —
+     default 12px made the column look bloated. */
+  padding-left: 4px;
+  padding-right: 4px;
 }
 
-/* Custom checkboxes: replace the native control with a rounded square
-   that matches the dark theme. Native checkboxes in dark mode render
-   as stark white squares that clash with the rest of the UI; the
-   accent-colored checkmark ties the state to the existing brand color.
-   `appearance: none` is required to drop the native styling on all
-   browsers. The checkmark is an inline SVG background — keeps it
-   crisp at any DPR and avoids an extra <svg> in the DOM. */
+/* Custom checkboxes: a thin, refined square that matches the dark
+   theme. The default state uses a transparent fill with a 1px subtle
+   border so the control recedes into the row until the user hovers
+   or checks it. Hover brightens the border, and the checked state
+   uses the brand accent. The checkmark is a 2px rotated border —
+   thin enough to feel precise, not chunky. `appearance: none`
+   suppresses the native control across browsers. `accent-color`
+   acts as a fallback on browsers where the custom paint doesn't
+   apply (it tints the native indicator instead of leaking white). */
 input[type="checkbox"] {
   appearance: none;
   -webkit-appearance: none;
-  width: 16px;
-  height: 16px;
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
   margin: 0;
   cursor: pointer;
   border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg-elevated);
+  border-radius: 3px;
+  background: transparent;
   display: inline-block;
   vertical-align: middle;
   position: relative;
@@ -396,12 +398,12 @@ input[type="checkbox"]:checked {
 input[type="checkbox"]:checked::after {
   content: '';
   position: absolute;
-  left: 4px;
-  top: 1px;
-  width: 5px;
-  height: 9px;
+  left: 3px;
+  top: 0px;
+  width: 4px;
+  height: 8px;
   border: solid #fff;
-  border-width: 0 2px 2px 0;
+  border-width: 0 1.5px 1.5px 0;
   transform: rotate(45deg);
 }
 
@@ -413,10 +415,10 @@ input[type="checkbox"]:indeterminate {
 input[type="checkbox"]:indeterminate::after {
   content: '';
   position: absolute;
-  left: 3px;
-  top: 6px;
+  left: 2px;
+  top: 5px;
   width: 8px;
-  height: 2px;
+  height: 1.5px;
   background: #fff;
   border-radius: 1px;
 }
