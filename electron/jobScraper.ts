@@ -383,7 +383,7 @@ async function extractFromHtmlImpl(html: string, hostname: string, pageUrl: stri
   } else if (hostname.includes('idealist.org')) {
     applyIdealist(result, html)
     result.source = 'Idealist'
-  } else if (hostname.includes('ultipro.com')) {
+  } else if (hostname.includes('ultipro.com') || hostname.includes('ultipro.ca')) {
     applyUltiPro(result, html)
     result.source = 'UltiPro'
   } else if (source) {
