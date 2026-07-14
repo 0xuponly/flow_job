@@ -295,6 +295,109 @@ function parseSalaryForSort(s: string | null | undefined): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+export interface SalaryFilter {
+  min: string  // user-typed string; empty = no lower bound
+  max: string  // user-typed string; empty = no upper bound
+}
+
+export const EMPTY_SALARY_FILTER: SalaryFilter = { min: '', max: '' }
+
+function isSalaryFilterActive(f: SalaryFilter): boolean {
+  return !!f.min || !!f.max
+}
+
+/**
+ * Match a job's salary against the active min/max filter. The filter
+ * is annual-CAD-equivalent, and we compare against the LOW end of the
+ * range (via parseSalaryForSort) — that's the most useful for
+ * "show me jobs paying at least $X". Rows with no salary are hidden
+ * when the filter is active, matching the date filter's semantics.
+ */
+export function matchesSalaryFilter(salary: string | null | undefined, f: SalaryFilter): boolean {
+  if (!isSalaryFilterActive(f)) return true
+  const n = parseSalaryForSort(salary)
+  if (n == null) return false
+  if (f.min) {
+    const lo = parseInt(f.min.replace(/[$,]/g, ''), 10)
+    if (Number.isFinite(lo) && n < lo) return false
+  }
+  if (f.max) {
+    const hi = parseInt(f.max.replace(/[$,]/g, ''), 10)
+    if (Number.isFinite(hi) && n > hi) return false
+  }
+  return true
+}
+
+function SalaryFilterSelect({ filter, onChange }: {
+  filter: SalaryFilter
+  onChange: (v: SalaryFilter) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    if (open) document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [open])
+
+  const active = isSalaryFilterActive(filter)
+  const label = !active
+    ? 'Any'
+    : f => `${f.min ? `$${parseInt(f.min, 10).toLocaleString()}+` : ''}${f.min && f.max ? ' – ' : ''}${f.max ? `≤ $${parseInt(f.max, 10).toLocaleString()}` : ''}`
+  const displayLabel = !active ? 'Any' : label(filter)
+
+  return (
+    <div className="filter-dropdown" ref={ref}>
+      <button className="filter-dropdown-btn" onClick={() => setOpen(!open)}>
+        {displayLabel}
+        <span className="filter-arrow">{open ? '▲' : '▼'}</span>
+        {active && (
+          <span
+            className="filter-clear"
+            onClick={(e) => { e.stopPropagation(); onChange(EMPTY_SALARY_FILTER) }}
+          >
+            ✕
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="filter-menu" style={{ minWidth: 220 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
+            Filter by annual salary (low end of range, in thousands)
+          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginBottom: 6 }}>
+            Min
+            <input
+              type="number"
+              min="0"
+              step="1000"
+              placeholder="e.g. 80000"
+              value={filter.min}
+              onChange={(e) => onChange({ ...filter, min: e.target.value })}
+              style={{ flex: 1 }}
+            />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+            Max
+            <input
+              type="number"
+              min="0"
+              step="1000"
+              placeholder="e.g. 150000"
+              value={filter.max}
+              onChange={(e) => onChange({ ...filter, max: e.target.value })}
+              style={{ flex: 1 }}
+            />
+          </label>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // Deduplicate jobs that share the same URL (normalized) or the same
 // company+title+location triple. Defends against rows that slipped past
 // the DB-level dedupe (e.g. before the scan-path fix landed, or rows
@@ -351,6 +454,7 @@ export default function JobsPage() {
   const [filterTitle, setFilterTitle] = useState<string[]>([])
   const [filterLocation, setFilterLocation] = useState<string[]>([])
   const [filterStatus, setFilterStatus] = useState<string[]>([])
+  const [filterSalary, setFilterSalary] = useState<SalaryFilter>(EMPTY_SALARY_FILTER)
   const [filterFit, setFilterFit] = useState<string[]>([])
   const [filterDatePosted, setFilterDatePosted] = useState<DateFilter>(EMPTY_DATE_FILTER)
   const [filterLastUpdated, setFilterLastUpdated] = useState<DateFilter>(EMPTY_DATE_FILTER)
@@ -423,6 +527,7 @@ export default function JobsPage() {
       if (filterTitle.length && !filterTitle.includes(j.title)) return false
       if (filterLocation.length && !filterLocation.includes(j.location || '—')) return false
       if (filterStatus.length && !filterStatus.includes(j.status)) return false
+      if (!matchesSalaryFilter(j.salary_range, filterSalary)) return false
       if (filterFit.length && !filterFit.includes(fitLabel(j.score))) return false
       if (!matchesDateFilter(j.date_posted, filterDatePosted)) return false
       if (!matchesDateFilter(j.last_updated, filterLastUpdated)) return false
@@ -460,7 +565,7 @@ export default function JobsPage() {
     }
     return rows.sort((a, b) => (b.score ?? -1) - (a.score ?? -1))
   },
-    [displayedJobs, filterCompany, filterTitle, filterLocation, filterStatus, filterFit, filterDatePosted, filterLastUpdated, sortColumn, sortDir])
+    [displayedJobs, filterCompany, filterTitle, filterLocation, filterStatus, filterSalary, filterFit, filterDatePosted, filterLastUpdated, sortColumn, sortDir])
 
   const allFilteredSelected = useMemo(
     () => filteredJobs.length > 0 && filteredJobs.every((j) => selectedIds.has(j.id)),
