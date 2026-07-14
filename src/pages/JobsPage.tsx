@@ -350,6 +350,10 @@ export default function JobsPage() {
           setSelectedJob(cleaned)
           setJobs((prev) => prev.map((j) => (j.id === cleaned.id ? cleaned : j)))
         }}
+        onDelete={(id) => {
+          setSelectedJob(null)
+          setJobs((prev) => prev.filter((j) => j.id !== id))
+        }}
       />
     )
   }

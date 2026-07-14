@@ -9,9 +9,10 @@ interface Props {
   job: Job
   onBack: () => void
   onUpdate: (job: Job) => void
+  onDelete: (id: number) => void
 }
 
-export default function JobDetail({ job, onBack, onUpdate }: Props) {
+export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
   const [application, setApplication] = useState<Application | null>(null)
   const [documents, setDocuments] = useState<Document[]>([])
   const [tailoring, setTailoring] = useState<'cv' | 'cover_letter' | null>(null)
@@ -300,6 +301,20 @@ export default function JobDetail({ job, onBack, onUpdate }: Props) {
         <div className="spacer" />
         <button className={editing ? 'btn btn-primary' : 'btn btn-secondary'} onClick={editing ? handleSaveEdits : () => setEditing(true)}>
           {editing ? 'Save' : 'Edit'}
+        </button>
+        <button
+          className="btn btn-danger"
+          onClick={async () => {
+            if (!confirm('Delete this job and all related data?')) return
+            try {
+              await api.deleteJob(job.id)
+              onDelete(job.id)
+            } catch (err) {
+              alert(`Delete failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+            }
+          }}
+        >
+          Delete
         </button>
         {job.url && (
           <button className="btn btn-secondary" onClick={() => api.openExternal(job.url!)}>
