@@ -435,7 +435,8 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
         style={{
           background: `${STATUS_COLORS[job.status]}22`,
           color: STATUS_COLORS[job.status],
-          marginBottom: 8,
+          marginTop: 8,
+          marginBottom: 0,
           display: 'inline-block'
         }}
       >
