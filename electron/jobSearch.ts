@@ -481,13 +481,28 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
   }
 
   try {
+    const isHeuristic = fit.source === 'heuristic'
     const job = createJob({
       ...input,
-      score: fit.score,
-      fit_rationale: fit.rationale,
-      fit_breakdown: fit.breakdown,
-      fit_score_version: getSettings().cv_version ?? 0,
-      fit_last_error: fit.source === 'heuristic' ? (fit.error || 'LLM scorer fell back to heuristic.') : null
+      // Heuristic fallbacks must NEVER be persisted as a real fit score.
+      // The team policy is: if the LLM is broken, leave score null and set
+      // fit_last_error so the user can see why. Otherwise we silently lock
+      // in a misleading keyword-overlap number and the job is never
+      // re-scored (fit_score_version bumps to current).
+      ...(isHeuristic
+        ? {
+            score: null,
+            fit_rationale: null,
+            fit_breakdown: null,
+            fit_score_version: null
+          }
+        : {
+            score: fit.score,
+            fit_rationale: fit.rationale,
+            fit_breakdown: fit.breakdown,
+            fit_score_version: getSettings().cv_version ?? 0
+          }),
+      fit_last_error: isHeuristic ? (fit.error || 'LLM scorer fell back to heuristic.') : null
     })
     // Fire-and-forget auto-generation of CV and cover letter
     onJobAdded?.(job)

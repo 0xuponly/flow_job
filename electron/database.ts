@@ -88,7 +88,8 @@ function defaultStore(): Store {
       auto_scan_enabled: true,
       auto_scan_interval_minutes: 120,
       locations_normalized: '',
-      statuses_recomputed: ''
+      statuses_recomputed: '',
+      heuristic_scores_cleared: ''
     },
     api_models: [],
     nextId: 1,
@@ -1044,6 +1045,34 @@ export function recomputeAllJobStatuses(): { updated: number; total: number } {
 
 export function hasStatusesRecomputed(): boolean {
   return loadStore().settings.statuses_recomputed === '1'
+}
+
+/**
+ * One-shot: jobs whose fit_rationale starts with the heuristic-fallback
+ * marker are silently downgraded to 'no real fit score' so they get
+ * retried on the next batch-score pass. The team policy is that heuristic
+ * data must never be persisted as a real fit score.
+ */
+export function clearHeuristicPersistedScores(): { updated: number; total: number } {
+  const s = loadStore()
+  if (s.settings.heuristic_scores_cleared === '1') return { updated: 0, total: s.jobs.length }
+  let updated = 0
+  for (const j of s.jobs) {
+    if (j.fit_rationale && j.fit_rationale.startsWith('Heuristic score based on keyword overlap')) {
+      j.score = null
+      j.fit_rationale = null
+      j.fit_breakdown = null
+      j.fit_score_version = null
+      updated++
+    }
+  }
+  s.settings.heuristic_scores_cleared = '1'
+  persistStore()
+  return { updated, total: s.jobs.length }
+}
+
+export function hasHeuristicScoresCleared(): boolean {
+  return loadStore().settings.heuristic_scores_cleared === '1'
 }
 
 export async function backfillJobPostingDates(): Promise<number> {
