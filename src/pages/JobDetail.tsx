@@ -617,7 +617,7 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
             </div>
             <div className="card" style={{ flex: '1 0 100px', padding: '8px 12px', height: 56, display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', marginTop: 0 }}>
               <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', marginBottom: 2 }}>Work mode</div>
-              <div style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{currentJob.work_mode || '—'}</div>
+              <div style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={currentJob.work_mode ?? undefined}>{currentJob.work_mode || '—'}</div>
             </div>
             <div className="card" style={{ flex: '1 0 140px', padding: '8px 12px', height: 56, display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', marginTop: 0 }}>
               <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', marginBottom: 2 }}>Hiring manager</div>
