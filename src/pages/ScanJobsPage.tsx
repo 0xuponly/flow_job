@@ -305,7 +305,7 @@ export default function ScanJobsPage() {
                   setBoardsExpanded(true)
                 }}
               >
-                Select all
+                Select All
               </button>
             )}
             {selectedBoards.size > 0 && (
@@ -317,7 +317,7 @@ export default function ScanJobsPage() {
                   setBoardsExpanded(true)
                 }}
               >
-                Deselect all
+                Deselect All
               </button>
             )}
           </div>
