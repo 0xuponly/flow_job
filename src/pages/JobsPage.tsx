@@ -1685,7 +1685,7 @@ export default function JobsPage() {
           <input value={form.source ?? ''} onChange={(e) => updateField('source', e.target.value)} placeholder="LinkedIn, Indeed, etc." />
         </div>
         <div className="form-group">
-          <label>Description</label>
+          <label>Description *</label>
           <textarea
             rows={6}
             value={form.description ?? ''}
