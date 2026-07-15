@@ -37,11 +37,25 @@ let inFlight: QueueItem | null = null
 // yet (in flight + queued). The sidebar indicator subscribes to the
 // matching `app:fit-progress` events.
 let pendingDelta = 0
+// Per-job state: a Set of jobIds that are currently in flight or
+// queued. The JobDetail button subscribes to `app:fit-pending-jobs`
+// events to know whether its own job is in the queue (drives the
+// per-button spinner and disabled state).
+const pendingJobIds = new Set<number>()
 
-function bumpPending(delta: number): void {
+function bumpPending(delta: number, jobId?: number): void {
   pendingDelta += delta
   if (pendingDelta < 0) pendingDelta = 0
+  if (jobId !== undefined) {
+    if (delta > 0) pendingJobIds.add(jobId)
+    else pendingJobIds.delete(jobId)
+  }
   window.dispatchEvent(new CustomEvent('app:fit-progress', { detail: { delta } }))
+  window.dispatchEvent(new CustomEvent('app:fit-pending-jobs'))
+}
+
+export function isJobInFitQueue(jobId: number): boolean {
+  return pendingJobIds.has(jobId)
 }
 
 async function pump(): Promise<void> {
