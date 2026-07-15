@@ -8,6 +8,16 @@ import { scanAllBoards, BOARDS } from './jobSearch'
 import { formatLocation } from './utils'
 import { startQueueProcessor, stopQueueProcessor, enqueue } from './aiQueue'
 import { scheduleNextAutoScan, cancelAutoScan, markScanStarted, markScanCompleted, restartAutoScanTimer } from './autoScan'
+
+// Pin the userData directory to the original "apply-assistant" location so
+// existing users' data (jobs, documents, settings) is found after the rename.
+// electron-builder's productName (now "FlowJob") would otherwise redirect
+// app.getPath('userData') to ~/Library/Application Support/FlowJob/, which
+// is empty. Called before app.whenReady() so the path resolves correctly
+// the first time anything reads it. Must run before any code that calls
+// app.getPath('userData') (database.ts::getStorePath, etc.).
+app.setName('apply-assistant')
+
 import type {
   ApiModelConfig,
   Application,
@@ -43,7 +53,7 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 640,
     show: false,
-    title: 'Flow Job',
+    title: 'FlowJob',
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#0f1117',
     webPreferences: {
@@ -609,6 +619,117 @@ ${htmlBody}
     if (canceled || !filePath) return null
     writeFileSync(filePath, JSON.stringify(db.exportAllData(), null, 2))
     return filePath
+  })
+
+  // --- Data backup ----------------------------------------------------
+  // Writes a timestamped zip containing the data file and encryption
+  // key to `dir`. The zip is built in a temp file then atomically
+  // renamed into place so a half-written file is never visible if the
+  // app is killed mid-write. Returns { ok, path, error }.
+  const yazl = require('yazl') as typeof import('yazl')
+  const os = require('os') as typeof import('os')
+  const { renameSync } = require('fs') as typeof import('fs')
+  const secureStore = require('./secureStore') as typeof import('./secureStore')
+
+  function backupTimestamp(): string {
+    const d = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return (
+      d.getFullYear().toString() +
+      pad(d.getMonth() + 1) +
+      pad(d.getDate()) +
+      '-' +
+      pad(d.getHours()) +
+      pad(d.getMinutes()) +
+      pad(d.getSeconds())
+    )
+  }
+
+  function runBackup(dir: string): Promise<{ ok: boolean; path?: string; error?: string }> {
+    return new Promise((resolve) => {
+      try {
+        if (!dir) {
+          resolve({ ok: false, error: 'No backup path set' })
+          return
+        }
+        if (!existsSync(dir)) {
+          resolve({ ok: false, error: `Backup path does not exist: ${dir}` })
+          return
+        }
+        const dataFile = db.getStorePath()
+        const keyFile = join(app.getPath('userData'), 'apply-assistant-key')
+        const filename = `flowjob-backup-${backupTimestamp()}.zip`
+        const destPath = join(dir, filename)
+        const tmpPath = join(os.tmpdir(), filename + '.partial')
+
+        const zipfile = new yazl.ZipFile()
+        // manifest.json first so it's at the top of the zip listing.
+        const manifest = {
+          appVersion: app.getVersion(),
+          createdAt: new Date().toISOString(),
+          schema: 1,
+          files: ['apply-assistant-data.json', 'apply-assistant-key'],
+          encryptionMode: secureStore.encryptionMode()
+        }
+        zipfile.addBuffer(
+          Buffer.from(JSON.stringify(manifest, null, 2), 'utf-8'),
+          'manifest.json'
+        )
+        if (existsSync(dataFile)) {
+          zipfile.addFile(dataFile, 'apply-assistant-data.json')
+        }
+        if (existsSync(keyFile)) {
+          zipfile.addFile(keyFile, 'apply-assistant-key')
+        }
+        zipfile.end()
+
+        const out = require('fs').createWriteStream(tmpPath)
+        zipfile.outputStream.pipe(out)
+        out.on('close', () => {
+          try {
+            renameSync(tmpPath, destPath)
+            db.updateSettings({ backup_last_success_at: new Date().toISOString() })
+            db.updateSettings({ backup_last_error: '' })
+            resolve({ ok: true, path: destPath })
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            db.updateSettings({ backup_last_error: msg })
+            resolve({ ok: false, error: msg })
+          }
+        })
+        out.on('error', (err: Error) => {
+          db.updateSettings({ backup_last_error: err.message })
+          resolve({ ok: false, error: err.message })
+        })
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        try { db.updateSettings({ backup_last_error: msg }) } catch { /* ignore */ }
+        resolve({ ok: false, error: msg })
+      }
+    })
+  }
+
+  ipcMain.handle('backup:pickFolder', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: 'Choose backup folder',
+      properties: ['openDirectory', 'createDirectory']
+    })
+    if (canceled || !filePaths || !filePaths[0]) return null
+    return filePaths[0]
+  })
+
+  ipcMain.handle('backup:run', async (_e, dir: string) => {
+    if (!dir) return { ok: false, error: 'No backup path set' }
+    return runBackup(dir)
+  })
+
+  ipcMain.handle('backup:status', () => {
+    const s = db.getSettings()
+    return {
+      path: s.backup_path || '',
+      lastSuccessAt: s.backup_last_success_at || '',
+      lastError: s.backup_last_error || ''
+    }
   })
 
   ipcMain.handle('security:status', () => db.encryptionStatus())
