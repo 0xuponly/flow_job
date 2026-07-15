@@ -1473,7 +1473,7 @@ export function exportAllData(): unknown {
   const s = loadStore()
   return {
     exportedAt: new Date().toISOString(),
-    app: 'Apply Assistant',
+    app: 'Flow Job',
     version: 2,
     data: {
       jobs: s.jobs,
