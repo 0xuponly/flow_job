@@ -87,11 +87,25 @@ export interface Api {
   listBlacklistedCompanies: () => Promise<string[]>
   addBlacklistedCompany: (name: string) => Promise<string[]>
   removeBlacklistedCompany: (name: string) => Promise<string[]>
-  pickBackupFolder: () => Promise<string | null>
-  runBackup: (dir: string) => Promise<{ ok: boolean; path?: string; error?: string }>
+  pickBackupFolder: () => Promise<{ path: string; warning: string | null } | null>
+  runBackup: (dir: string, passphrase?: string) => Promise<{ ok: boolean; path?: string; error?: string }>
   getBackupStatus: () => Promise<{ path: string; lastSuccessAt: string; lastError: string }>
   listBackups: () => Promise<{ name: string; path: string; createdAt: string }[]>
-  restoreBackup: (folderPath: string) => Promise<{ ok: boolean; path?: string; error?: string; warning?: string }>
+  restoreBackup: (folderPath: string, passphrase?: string) => Promise<{ ok: boolean; path?: string; error?: string; warning?: string }>
+  previewBackup: (folderPath: string) => Promise<{
+    error?: string
+    manifestError?: string
+    createdAt?: string
+    schema?: number
+    encryptionMode?: string
+    wrapped?: boolean
+    signed?: boolean
+    hasKdf?: boolean
+    hasWrappedKey?: boolean
+    hasLegacyKey?: boolean
+    requiresPassphrase?: boolean
+    fileCount?: number
+  } | null>
 }
 
 declare global {
