@@ -90,6 +90,8 @@ export interface Api {
   pickBackupFolder: () => Promise<string | null>
   runBackup: (dir: string) => Promise<{ ok: boolean; path?: string; error?: string }>
   getBackupStatus: () => Promise<{ path: string; lastSuccessAt: string; lastError: string }>
+  listBackups: () => Promise<{ name: string; path: string; createdAt: string }[]>
+  restoreBackup: (folderPath: string) => Promise<{ ok: boolean; path?: string; error?: string; warning?: string }>
 }
 
 declare global {

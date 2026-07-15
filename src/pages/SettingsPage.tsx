@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { ApiModelConfig, Settings } from '../types'
 import { notify } from '../components/Notifications'
+import Modal from '../components/Modal'
 
 const PRESETS: { name: string; desc: string; model: Omit<ApiModelConfig, 'id'> }[] = [
   { name: 'Big Pickle', desc: 'Free, no API key needed', model: { name: 'Big Pickle', base_url: 'https://opencode.ai/zen/v1', api_key: '', model: 'big-pickle' } },
@@ -26,6 +27,12 @@ export default function SettingsPage() {
   const [backupError, setBackupError] = useState('')
   const [backupLastSuccessAt, setBackupLastSuccessAt] = useState('')
   const [backupLastError, setBackupLastError] = useState('')
+  const [restoreOpen, setRestoreOpen] = useState(false)
+  const [restoreBackups, setRestoreBackups] = useState<{ name: string; path: string; createdAt: string }[]>([])
+  const [restoreLoading, setRestoreLoading] = useState(false)
+  const [restoreError, setRestoreError] = useState('')
+  const [restoreSelected, setRestoreSelected] = useState<{ name: string; path: string; createdAt: string } | null>(null)
+  const [restoreBusy, setRestoreBusy] = useState(false)
 
   const emptyModel = { name: '', base_url: 'https://api.deepseek.com', api_key: '', model: 'deepseek-chat' }
 
@@ -85,6 +92,51 @@ export default function SettingsPage() {
       setBackupError(err instanceof Error ? err.message : String(err))
     } finally {
       setBackupBusy(false)
+    }
+  }
+
+  async function handleOpenRestore() {
+    setRestoreOpen(true)
+    setRestoreSelected(null)
+    setRestoreError('')
+    setRestoreLoading(true)
+    try {
+      const list = await api.listBackups()
+      setRestoreBackups(list)
+    } catch (err) {
+      setRestoreError(err instanceof Error ? err.message : String(err))
+      setRestoreBackups([])
+    } finally {
+      setRestoreLoading(false)
+    }
+  }
+
+  function handleCloseRestore() {
+    if (restoreBusy) return
+    setRestoreOpen(false)
+    setRestoreSelected(null)
+    setRestoreError('')
+  }
+
+  async function handleConfirmRestore() {
+    if (!restoreSelected) return
+    setRestoreBusy(true)
+    setRestoreError('')
+    try {
+      const result = await api.restoreBackup(restoreSelected.path)
+      if (!result.ok) {
+        setRestoreError(result.error || 'Restore failed')
+        setRestoreBusy(false)
+        return
+      }
+      if (result.warning) {
+        notify(result.warning, 'warning', 8000)
+      }
+      // App will be relaunched by the main process. Don't reset
+      // restoreBusy — the page is about to be torn down.
+    } catch (err) {
+      setRestoreError(err instanceof Error ? err.message : String(err))
+      setRestoreBusy(false)
     }
   }
 
@@ -491,7 +543,94 @@ export default function SettingsPage() {
                 Note: an automatic backup on a previous app close failed — {backupLastError}
               </p>
             )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
+              <button
+                className="btn btn-secondary"
+                onClick={handleOpenRestore}
+                disabled={!settings?.backup_path}
+                title={settings?.backup_path ? 'Restore from a previous backup' : 'Set a backup folder first'}
+              >
+                Restore Backup…
+              </button>
+            </div>
           </div>
+
+          <Modal
+            open={restoreOpen}
+            title={restoreSelected ? `Restore ${restoreSelected.name}?` : 'Restore from backup'}
+            onClose={handleCloseRestore}
+            actions={
+              restoreSelected ? (
+                <>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => setRestoreSelected(null)}
+                    disabled={restoreBusy}
+                  >
+                    Back
+                  </button>
+                  <button
+                    className="btn btn-danger"
+                    onClick={handleConfirmRestore}
+                    disabled={restoreBusy}
+                  >
+                    {restoreBusy ? 'Restoring…' : 'Restore and restart'}
+                  </button>
+                </>
+              ) : (
+                <button className="btn btn-secondary" onClick={handleCloseRestore}>
+                  Close
+                </button>
+              )
+            }
+          >
+            {restoreError && (
+              <p style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 12 }}>{restoreError}</p>
+            )}
+            {!restoreSelected ? (
+              restoreLoading ? (
+                <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>Loading backups…</p>
+              ) : restoreBackups.length === 0 ? (
+                <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                  No backups found in {settings?.backup_path ? `${settings.backup_path}/flow_job_backups` : 'the backup folder'}.
+                </p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 360, overflowY: 'auto' }}>
+                  {restoreBackups.map((b) => (
+                    <button
+                      key={b.path}
+                      onClick={() => setRestoreSelected(b)}
+                      style={{
+                        textAlign: 'left',
+                        padding: '10px 12px',
+                        background: 'var(--bg-elevated)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 6,
+                        cursor: 'pointer',
+                        fontFamily: 'inherit',
+                        fontSize: 13,
+                        color: 'var(--text)'
+                      }}
+                    >
+                      <div style={{ fontWeight: 500 }}>{b.name}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                        {new Date(b.createdAt).toLocaleString()}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )
+            ) : (
+              <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+                <p style={{ marginTop: 0 }}>
+                  This will <strong>overwrite your current data file and encryption key</strong> with the contents of this backup. Any jobs, documents, applications, follow-ups, and interviews created after the backup will be lost. The app will restart automatically.
+                </p>
+                <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 0 }}>
+                  Backup from {new Date(restoreSelected.createdAt).toLocaleString()}
+                </p>
+              </div>
+            )}
+          </Modal>
 
           <div className="section-title">Scan memory</div>
 
