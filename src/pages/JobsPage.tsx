@@ -507,6 +507,8 @@ function SalaryFilterSelect({ filter, onChange }: {
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const placement = useFilterPlacement(ref, menuRef, open)
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -540,7 +542,7 @@ function SalaryFilterSelect({ filter, onChange }: {
         )}
       </button>
       {open && (
-        <div className="filter-menu" style={{ minWidth: 220 }}>
+        <div className="filter-menu" ref={menuRef} style={{ ...placement, minWidth: 220 }}>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
             Filter by annual salary (low end of range, in thousands)
           </div>
