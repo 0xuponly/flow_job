@@ -39,6 +39,7 @@ export default function SettingsPage() {
     hasKdf?: boolean
     hasWrappedKey?: boolean
     hasLegacyKey?: boolean
+    requiresPassphrase?: boolean
     schema?: number
     encryptionMode?: string
     createdAt?: string
@@ -100,9 +101,37 @@ export default function SettingsPage() {
 
   function handleBackupNow() {
     if (!settings?.backup_path) return
-    setPassphraseInput(settings.passphrase || '')
+    // If a passphrase is already configured, run the backup
+    // immediately with it — no prompt. The user can change the
+    // passphrase via the auto-backup banner's "Disable" + a new
+    // "Backup now" flow, or by clearing settings.
+    if (settings.passphrase) {
+      void runBackupWithPassphrase(settings.passphrase)
+      return
+    }
+    setPassphraseInput('')
     setPassphraseConfirm('')
     setPassphraseModalOpen(true)
+  }
+
+  async function runBackupWithPassphrase(passphrase: string) {
+    if (!settings?.backup_path) return
+    setBackupBusy(true)
+    setBackupError('')
+    try {
+      const result = await api.runBackup(settings.backup_path, passphrase)
+      if (result.ok) {
+        setBackupLastSuccessAt(new Date().toISOString())
+        setBackupLastError('')
+        notify('Backup complete.', 'success', 2500)
+      } else {
+        setBackupError(result.error || 'Backup failed')
+      }
+    } catch (err) {
+      setBackupError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBackupBusy(false)
+    }
   }
 
   async function handleConfirmBackup() {
