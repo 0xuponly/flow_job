@@ -256,6 +256,13 @@ textarea {
   padding: 5px 8px;
 }
 
+.table th:last-child,
+.table td:last-child {
+  /* Keep the rightmost column's content from sliding under a vertical
+     scrollbar that may appear when the table overflows horizontally. */
+  padding-right: 12px;
+}
+
 .table th.col-check {
   text-align: center;
 }
