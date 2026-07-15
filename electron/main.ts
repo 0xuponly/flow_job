@@ -12,6 +12,29 @@ import {
 import { tailorDocument, generateFollowUpMessage, regenerateSection, verifyDocumentContent, scoreJobFit, RateLimitError } from './ai'
 import { scrapeJobFromUrl } from './jobScraper'
 import { scanAllBoards, BOARDS } from './jobSearch'
+
+// Small helpers used by the backup flow. Defined at module scope
+// (not inside registerIpc) so the audit logger can call them.
+function basename(p: string): string {
+  const parts = p.split(/[\\/]/)
+  return parts[parts.length - 1] || p
+}
+
+function stripHmac(manifest: Record<string, unknown>): Record<string, unknown> {
+  // Deep-clone without the hmac field. The HMAC is computed over
+  // every other field so the verifier can re-derive it from the
+  // manifest-on-disk minus the stored signature.
+  if (Array.isArray(manifest)) return manifest.map(stripHmac) as unknown as Record<string, unknown>
+  if (manifest && typeof manifest === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(manifest)) {
+      if (k === 'hmac') continue
+      out[k] = stripHmac(v as Record<string, unknown>)
+    }
+    return out
+  }
+  return manifest
+}
 import { formatLocation } from './utils'
 import { startQueueProcessor, stopQueueProcessor, enqueue } from './aiQueue'
 import { scheduleNextAutoScan, cancelAutoScan, markScanStarted, markScanCompleted, restartAutoScanTimer } from './autoScan'
@@ -761,9 +784,9 @@ ${htmlBody}
     return filePaths[0]
   })
 
-  ipcMain.handle('backup:run', async (_e, dir: string) => {
+  ipcMain.handle('backup:run', async (_e, dir: string, passphrase?: string) => {
     if (!dir) return { ok: false, error: 'No backup path set' }
-    return runBackup(dir)
+    return runBackup(dir, passphrase)
   })
 
   ipcMain.handle('backup:status', () => {
