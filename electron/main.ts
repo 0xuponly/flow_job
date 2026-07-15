@@ -629,11 +629,6 @@ ${htmlBody}
   // key to `dir`. The zip is built in a temp file then atomically
   // renamed into place so a half-written file is never visible if the
   // app is killed mid-write. Returns { ok, path, error }.
-  const yazl = require('yazl') as typeof import('yazl')
-  const os = require('os') as typeof import('os')
-  const { renameSync } = require('fs') as typeof import('fs')
-  const secureStore = require('./secureStore') as typeof import('./secureStore')
-
   function backupTimestamp(): string {
     const d = new Date()
     const pad = (n: number) => String(n).padStart(2, '0')
@@ -686,7 +681,7 @@ ${htmlBody}
         }
         zipfile.end()
 
-        const out = require('fs').createWriteStream(tmpPath)
+        const out = createWriteStream(tmpPath)
         zipfile.outputStream.pipe(out)
         out.on('close', () => {
           try {
