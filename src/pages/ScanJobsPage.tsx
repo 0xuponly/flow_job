@@ -586,7 +586,7 @@ export default function ScanJobsPage() {
           }
         }
         const rows = Array.from(merged.values()).filter(
-          (b) => b.found > 0 || b.added > 0 || b.skipped > 0 || b.errors > 0 || !!b.error
+          (b) => b.found > 0 || b.added > 0 || b.skipped > 0 || b.errors > 0 || (b.found - b.skipped - b.errors) > 0 || !!b.error
         )
         if (rows.length === 0) return null
         const ranAt = result.startedAt
