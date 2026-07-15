@@ -29,6 +29,8 @@ function FilterSelect({ options, selected, onChange, displayMap }: {
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const placement = useFilterPlacement(ref, menuRef, open)
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -51,7 +53,7 @@ function FilterSelect({ options, selected, onChange, displayMap }: {
         )}
       </button>
       {open && (
-        <div className="filter-menu">
+        <div className="filter-menu" ref={menuRef} style={placement}>
           {options.map((opt) => {
             const checked = selSet.has(opt)
             return (
