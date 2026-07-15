@@ -775,13 +775,23 @@ ${htmlBody}
       const msg = err instanceof Error ? err.message : String(err)
       return { ok: false, error: msg }
     }
+    // Mark the next launch as a post-restore boot BEFORE we exit.
+    // The new process will read this, clear it after it's safely
+    // up, and (critically) the close-time backup hook checks this
+    // flag and skips the backup during the relaunch — otherwise the
+    // old process's runBackup fires concurrently with the new
+    // process loading the restored store, producing a blank UI and
+    // potentially a partially-overwritten data file.
+    db.updateSettings({ restore_pending: '1' })
     // Relaunch the app so the next start reads the restored data.
-    // app.relaunch + app.quit is the documented pattern for a clean
-    // restart; the renderer's in-memory state is intentionally
-    // discarded to avoid showing stale jobs after a restore.
+    // app.relaunch + app.exit is more reliable than app.quit here
+    // because app.quit fires before-quit (which we now skip) and
+    // can race with the renderer's pending IPC replies. app.exit
+    // tears down the process immediately, which is what we want
+    // after a successful restore — there's nothing left to save.
     try {
       app.relaunch()
-      app.quit()
+      app.exit(0)
     } catch (err) {
       // Relaunch failed (e.g. running outside of a packaged app in
       // dev). Surface the error so the user can restart manually
