@@ -1096,6 +1096,26 @@ export default function JobsPage() {
     return () => window.removeEventListener('app:refresh', onRefresh)
   }, [])
 
+  // Background fit-score updates from the main process. After a manual
+  // add or import-from-link, the main process kicks off `scoreJobFit`
+  // in the background and emits `job:scoreUpdated` with the final row
+  // state. Patch the matching row in place so the dot updates without
+  // forcing a full list reload.
+  useEffect(() => {
+    return api.onJobScoreUpdated((updated) => {
+      setJobs((prev) => {
+        const idx = prev.findIndex((j) => j.id === updated.id)
+        if (idx === -1) {
+          // New job (just added via the manual modal) — prepend it.
+          return [updated, ...prev]
+        }
+        const next = prev.slice()
+        next[idx] = updated
+        return next
+      })
+    })
+  }, [])
+
   async function handleImportFromLink() {
     if (!linkUrl.trim()) {
       setLinkError('Paste a job posting URL.')

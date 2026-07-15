@@ -84,10 +84,11 @@ function registerIpc(): void {
     const baseCv = settings.base_cv || ''
     const currentVersion = settings.cv_version ?? 0
     if (!baseCv) {
-      // No CV configured — keep the row at neutral and stamp the version
-      // so we don't retry on every subsequent add.
+      // No CV configured — leave the row at the neutral 0.31 default
+      // (matches the createJob placeholder) and stamp the CV version so
+      // we don't retry on every subsequent add.
       db.updateJob(jobId, {
-        score: 0.5,
+        score: 0.31,
         fit_rationale: 'No base CV configured.',
         fit_breakdown: { matched_skills: [], missing_skills: [], experience_years_match: null },
         fit_score_version: currentVersion

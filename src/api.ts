@@ -74,6 +74,7 @@ export interface Api {
   clearScanResult: () => Promise<void>
   onScanProgress: (cb: (msg: string) => void) => () => void
   onScanComplete: (cb: (result: ScanResult) => void) => () => void
+  onJobScoreUpdated: (cb: (job: Job) => void) => () => void
   clearSeenUrls: () => Promise<void>
   clearAllData: () => Promise<void>
   exportAllData: () => Promise<string | null>

@@ -74,6 +74,7 @@ export interface Api {
   cancelImport: () => Promise<void>
   onScanProgress: (cb: (msg: string) => void) => () => void
   onScanComplete: (cb: (result: ScanResult) => void) => () => void
+  onJobScoreUpdated: (cb: (job: Job) => void) => () => void
   clearSeenUrls: () => Promise<void>
   clearAllData: () => Promise<void>
   exportAllData: () => Promise<string | null>
@@ -118,6 +119,11 @@ const api: Api = {
     const handler = (_e: Electron.IpcRendererEvent, result: ScanResult) => cb(result)
     ipcRenderer.on('scan:complete', handler)
     return () => ipcRenderer.removeListener('scan:complete', handler)
+  },
+  onJobScoreUpdated: (cb: (job: Job) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, job: Job) => cb(job)
+    ipcRenderer.on('job:scoreUpdated', handler)
+    return () => ipcRenderer.removeListener('job:scoreUpdated', handler)
   },
   listDocuments: (jobId) => ipcRenderer.invoke('documents:list', jobId),
   createDocument: (type, title, content, jobId) =>
