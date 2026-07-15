@@ -652,13 +652,26 @@ export default function SettingsPage() {
                   marginBottom: 10,
                   display: 'flex',
                   alignItems: 'center',
-                  justifyContent: 'space-between'
+                  justifyContent: 'space-between',
+                  gap: 8
                 }}
               >
                 <span>Close-time auto-backup is enabled.</span>
-                <button className="btn btn-secondary btn-sm" onClick={handleClearPassphrase}>
-                  Disable
-                </button>
+                <span style={{ display: 'flex', gap: 6 }}>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => {
+                      setPassphraseInput('')
+                      setPassphraseConfirm('')
+                      setPassphraseModalOpen(true)
+                    }}
+                  >
+                    Change passphrase
+                  </button>
+                  <button className="btn btn-secondary btn-sm" onClick={handleClearPassphrase}>
+                    Disable
+                  </button>
+                </span>
               </div>
             )}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
