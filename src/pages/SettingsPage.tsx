@@ -594,8 +594,44 @@ export default function SettingsPage() {
 
           <div className="card" style={{ maxWidth: 600, marginBottom: 12 }}>
             <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
-              Choose a folder where backups of your data and encryption key are saved. A new backup zip is created automatically every time the app closes.
+              Choose a folder where backups of your data and encryption key are saved. Backups are passphrase-protected; the passphrase is required to restore.
             </p>
+            {settings?.backup_path && !settings.passphrase && (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: 'var(--text)',
+                  background: 'rgba(234, 179, 8, 0.1)',
+                  border: '1px solid rgba(234, 179, 8, 0.4)',
+                  borderRadius: 6,
+                  padding: '8px 10px',
+                  marginBottom: 10
+                }}
+              >
+                Close-time auto-backup is <strong>disabled</strong> because no passphrase is set. Click "Backup now" to create a passphrase-protected backup and enable auto-backup.
+              </div>
+            )}
+            {settings?.passphrase && (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: 'var(--text-muted)',
+                  background: 'var(--bg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  padding: '8px 10px',
+                  marginBottom: 10,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between'
+                }}
+              >
+                <span>Close-time auto-backup is enabled.</span>
+                <button className="btn btn-secondary btn-sm" onClick={handleClearPassphrase}>
+                  Disable
+                </button>
+              </div>
+            )}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
               <input
                 type="text"
@@ -655,6 +691,48 @@ export default function SettingsPage() {
               </button>
             </div>
           </div>
+
+          <Modal
+            open={passphraseModalOpen}
+            title="Passphrase for backup"
+            onClose={handleCancelPassphrase}
+            actions={
+              <>
+                <button className="btn btn-secondary" onClick={handleCancelPassphrase} disabled={backupBusy}>
+                  Cancel
+                </button>
+                <button className="btn btn-primary" onClick={handleConfirmBackup} disabled={backupBusy}>
+                  Backup
+                </button>
+              </>
+            }
+          >
+            <p style={{ fontSize: 13, marginTop: 0 }}>
+              The backup will be encrypted with this passphrase. You will need it to restore.
+            </p>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+              The passphrase is stored in your local settings (encrypted with the OS keychain) so the app can auto-back up on close. Use a strong passphrase you can remember — if you lose it, the backups cannot be recovered.
+            </p>
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 500, marginBottom: 4 }}>
+              Passphrase (min 8 characters)
+            </label>
+            <input
+              type="password"
+              value={passphraseInput}
+              onChange={(e) => setPassphraseInput(e.target.value)}
+              autoFocus
+              style={{ width: '100%', marginBottom: 12 }}
+            />
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 500, marginBottom: 4 }}>
+              Confirm passphrase
+            </label>
+            <input
+              type="password"
+              value={passphraseConfirm}
+              onChange={(e) => setPassphraseConfirm(e.target.value)}
+              style={{ width: '100%' }}
+            />
+          </Modal>
 
           <Modal
             open={restoreOpen}
