@@ -77,9 +77,11 @@ function registerIpc(): void {
   // background scorer (fired after createJob) and the explicit
   // recomputeFit handler. Emits 'job:scoreUpdated' on success so the
   // renderer can refresh the affected row without a full re-list.
-  async function scoreOneJobInBackground(jobId: number): Promise<void> {
+  // Returns the post-update row, or null if the job was deleted
+  // between the call and the read.
+  async function scoreOneJobInBackground(jobId: number): Promise<Job | null> {
     const job = db.getJob(jobId)
-    if (!job) return
+    if (!job) return null
     const settings = db.getSettings()
     const baseCv = settings.base_cv || ''
     const currentVersion = settings.cv_version ?? 0
@@ -87,14 +89,14 @@ function registerIpc(): void {
       // No CV configured — leave the row at the neutral 0.31 default
       // (matches the createJob placeholder) and stamp the CV version so
       // we don't retry on every subsequent add.
-      db.updateJob(jobId, {
+      const updated = db.updateJob(jobId, {
         score: 0.31,
         fit_rationale: 'No base CV configured.',
         fit_breakdown: { matched_skills: [], missing_skills: [], experience_years_match: null },
         fit_score_version: currentVersion
       })
       emitJobScoreUpdated(jobId)
-      return
+      return updated
     }
     try {
       const fit = await scoreJobFit({
@@ -105,11 +107,11 @@ function registerIpc(): void {
       })
       if (fit.source === 'heuristic') {
         // Don't pretend a heuristic fallback is a real fit score.
-        db.updateJob(jobId, { fit_last_error: fit.error || 'LLM scorer fell back to heuristic.' })
+        const updated = db.updateJob(jobId, { fit_last_error: fit.error || 'LLM scorer fell back to heuristic.' })
         emitJobScoreUpdated(jobId)
-        return
+        return updated
       }
-      db.updateJob(jobId, {
+      const updated = db.updateJob(jobId, {
         score: fit.score,
         fit_rationale: fit.rationale,
         fit_breakdown: fit.breakdown,
@@ -117,11 +119,13 @@ function registerIpc(): void {
         fit_last_error: null
       })
       emitJobScoreUpdated(jobId)
+      return updated
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error'
       console.warn(`[fit] job ${jobId} (${job.company} — ${job.title}): ${msg}`)
-      db.updateJob(jobId, { fit_last_error: msg })
+      const updated = db.updateJob(jobId, { fit_last_error: msg })
       emitJobScoreUpdated(jobId)
+      return updated
     }
   }
 
