@@ -147,6 +147,8 @@ function DateFilterSelect({ filter, onChange }: {
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const placement = useFilterPlacement(ref, menuRef, open)
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -188,7 +190,7 @@ function DateFilterSelect({ filter, onChange }: {
         )}
       </button>
       {open && (
-        <div className="filter-menu" style={{ minWidth: 220 }}>
+        <div className="filter-menu" ref={menuRef} style={{ ...placement, minWidth: 220 }}>
           {DATE_BUCKETS.map((b) => {
             const checked = bucketSet.has(b)
             return (
