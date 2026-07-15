@@ -73,6 +73,65 @@ function createWindow(): void {
 function registerIpc(): void {
   ipcMain.handle('dashboard:stats', () => db.getDashboardStats())
 
+  // Score a single job against the current base CV. Shared by the manual
+  // background scorer (fired after createJob) and the explicit
+  // recomputeFit handler. Emits 'job:scoreUpdated' on success so the
+  // renderer can refresh the affected row without a full re-list.
+  async function scoreOneJobInBackground(jobId: number): Promise<void> {
+    const job = db.getJob(jobId)
+    if (!job) return
+    const settings = db.getSettings()
+    const baseCv = settings.base_cv || ''
+    const currentVersion = settings.cv_version ?? 0
+    if (!baseCv) {
+      // No CV configured — keep the row at neutral and stamp the version
+      // so we don't retry on every subsequent add.
+      db.updateJob(jobId, {
+        score: 0.5,
+        fit_rationale: 'No base CV configured.',
+        fit_breakdown: { matched_skills: [], missing_skills: [], experience_years_match: null },
+        fit_score_version: currentVersion
+      })
+      emitJobScoreUpdated(jobId)
+      return
+    }
+    try {
+      const fit = await scoreJobFit({
+        title: job.title,
+        description: job.description,
+        requirements: job.requirements,
+        baseCv
+      })
+      if (fit.source === 'heuristic') {
+        // Don't pretend a heuristic fallback is a real fit score.
+        db.updateJob(jobId, { fit_last_error: fit.error || 'LLM scorer fell back to heuristic.' })
+        emitJobScoreUpdated(jobId)
+        return
+      }
+      db.updateJob(jobId, {
+        score: fit.score,
+        fit_rationale: fit.rationale,
+        fit_breakdown: fit.breakdown,
+        fit_score_version: currentVersion,
+        fit_last_error: null
+      })
+      emitJobScoreUpdated(jobId)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown error'
+      console.warn(`[fit] job ${jobId} (${job.company} — ${job.title}): ${msg}`)
+      db.updateJob(jobId, { fit_last_error: msg })
+      emitJobScoreUpdated(jobId)
+    }
+  }
+
+  function emitJobScoreUpdated(jobId: number): void {
+    const job = db.getJob(jobId)
+    if (!job) return
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('job:scoreUpdated', job)
+    }
+  }
+
   ipcMain.handle('jobs:list', (_e, status?: JobStatus) => db.listJobs(status))
   ipcMain.handle('jobs:get', (_e, id: number) => db.getJob(id))
   ipcMain.handle('jobs:create', (_e, input: CreateJobInput) => {
@@ -84,6 +143,10 @@ function registerIpc(): void {
     // `wasBlacklisted` is returned so the renderer can prompt the
     // user to confirm.
     const { job, wasBlacklisted } = db.createJob(input, { skipDuplicateCheck: true, force: true })
+    // Fire-and-forget background fit scoring. The job is created with a
+    // neutral placeholder (0.31) and the score is replaced in place when
+    // the LLM call resolves. Errors surface as fit_last_error in the row.
+    void scoreOneJobInBackground(job.id)
     return { job, wasBlacklisted }
   })
   ipcMain.handle('jobs:update', (_e, id: number, fields: Partial<CreateJobInput & { status: JobStatus }>) =>
@@ -104,6 +167,8 @@ function registerIpc(): void {
       // (so the scanner won't auto-re-add it) and `wasBlacklisted` is
       // returned so the renderer can prompt the user to confirm.
       const { job, wasBlacklisted } = db.createJob(input, { skipDuplicateCheck: true, force: true })
+      // Fire-and-forget background fit scoring for the imported job.
+      void scoreOneJobInBackground(job.id)
       return { job, wasBlacklisted }
     } finally {
       _importAbortController = null
@@ -175,39 +240,11 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('jobs:recomputeFit', async (_e, id: number) => {
-    const job = db.getJob(id)
-    if (!job) throw new Error('Job not found')
-    const settings = db.getSettings()
-    const baseCv = settings.base_cv || ''
-    const currentVersion = settings.cv_version ?? 0
-    if (!baseCv) {
-      return db.updateJob(id, {
-        score: 0.5,
-        fit_rationale: 'No base CV configured.',
-        fit_breakdown: { matched_skills: [], missing_skills: [], experience_years_match: null },
-        fit_score_version: currentVersion,
-        fit_last_error: null
-      })
-    }
-    const fit = await scoreJobFit({
-      title: job.title,
-      description: job.description,
-      requirements: job.requirements,
-      baseCv
-    })
-    if (fit.source === 'heuristic') {
-      // Don't pretend a heuristic fallback is a real fit score.
-      const errMsg = fit.error || 'LLM scorer fell back to heuristic.'
-      console.warn(`[fit] job ${id}: ${errMsg}`)
-      return db.updateJob(id, { fit_last_error: errMsg })
-    }
-    return db.updateJob(id, {
-      score: fit.score,
-      fit_rationale: fit.rationale,
-      fit_breakdown: fit.breakdown,
-      fit_score_version: currentVersion,
-      fit_last_error: null
-    })
+    // The shared background scorer handles the no-CV fallback, the
+    // heuristic-fallback (don't overwrite), the error path, and emits
+    // job:scoreUpdated. The handler just returns the final row state.
+    await scoreOneJobInBackground(id)
+    return db.getJob(id)
   })
 
   ipcMain.handle('jobs:backfillDates', () => db.backfillJobPostingDates())
