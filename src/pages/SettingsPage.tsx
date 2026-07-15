@@ -98,15 +98,45 @@ export default function SettingsPage() {
     setSettings(updated)
   }
 
-  async function handleBackupNow() {
+  function handleBackupNow() {
     if (!settings?.backup_path) return
+    setPassphraseInput(settings.passphrase || '')
+    setPassphraseConfirm('')
+    setPassphraseModalOpen(true)
+  }
+
+  async function handleConfirmBackup() {
+    if (!settings?.backup_path) return
+    if (passphraseInput.length < 8) {
+      notify('Passphrase must be at least 8 characters.', 'warning')
+      return
+    }
+    if (passphraseInput !== passphraseConfirm) {
+      notify('Passphrases do not match.', 'warning')
+      return
+    }
+    setPassphraseModalOpen(false)
     setBackupBusy(true)
     setBackupError('')
     try {
-      const result = await api.runBackup(settings.backup_path)
+      const result = await api.runBackup(settings.backup_path, passphraseInput)
       if (result.ok) {
+        // Persist the passphrase for close-time auto-backup. It
+        // lives in the encrypted store file under the same DEK
+        // that protects the rest of the data, so storing it
+        // alongside other settings is acceptable: the on-disk
+        // threat model is "attacker who can read the data file
+        // can also read the passphrase", which they could
+        // already do via an un-wrapped backup. The protection
+        // we offer is against a stolen backup file on its own.
+        await api.updateSettings({ passphrase: passphraseInput })
+        const refreshed = await api.getSettings()
+        setSettings(refreshed)
         setBackupLastSuccessAt(new Date().toISOString())
         setBackupLastError('')
+        setPassphraseInput('')
+        setPassphraseConfirm('')
+        notify('Backup complete. Close-time auto-backup is now enabled.', 'success', 4000)
       } else {
         setBackupError(result.error || 'Backup failed')
       }
@@ -115,6 +145,18 @@ export default function SettingsPage() {
     } finally {
       setBackupBusy(false)
     }
+  }
+
+  function handleCancelPassphrase() {
+    setPassphraseModalOpen(false)
+    setPassphraseInput('')
+    setPassphraseConfirm('')
+  }
+
+  async function handleClearPassphrase() {
+    if (!window.confirm('Disable close-time auto-backup? Manual backups will still work but you will be asked for a passphrase each time.')) return
+    const updated = await api.updateSettings({ passphrase: '' })
+    setSettings(updated)
   }
 
   async function handleOpenRestore() {
