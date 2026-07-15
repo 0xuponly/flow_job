@@ -101,10 +101,9 @@ export default function Notifications() {
     setTimeout(() => startDismiss(id), 1500)
   }
 
-  function handleClick(id: number, onClick: (() => void) | undefined) {
-    if (onClick) {
-      onClick()
-    }
+  function handleActionClick(id: number, action: Toast['action']) {
+    if (!action) return
+    action.onClick()
     startDismiss(id)
   }
 
@@ -123,11 +122,13 @@ export default function Notifications() {
     }}>
       {toasts.map((t) => {
         const borderColor = t.type === 'error' ? 'var(--danger)' : t.type === 'success' ? '#22c55e' : 'var(--accent)'
+        // Reserve space on the right for the action button when
+        // present; the copy button always sits in the top-right
+        // corner at 8/8/24/24.
+        const hasAction = !!t.action
         return (
           <div
             key={t.id}
-            onClick={() => handleClick(t.id, t.onClick)}
-            title={t.onClick ? 'Click to open' : undefined}
             style={{
               padding: '12px 44px 12px 20px',
               borderRadius: 10,
