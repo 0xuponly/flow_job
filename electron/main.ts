@@ -611,22 +611,10 @@ ${htmlBody}
   ipcMain.handle('blacklist:add', (_e, name: string) => db.addBlacklistedCompany(name))
   ipcMain.handle('blacklist:remove', (_e, name: string) => db.removeBlacklistedCompany(name))
 
-  ipcMain.handle('db:exportAll', async () => {
-    const { canceled, filePath } = await dialog.showSaveDialog({
-      title: 'Export all data',
-      defaultPath: join(app.getPath('userData'), `apply-assistant-export-${new Date().toISOString().slice(0, 10)}.json`),
-      filters: [{ name: 'JSON', extensions: ['json'] }]
-    })
-    if (canceled || !filePath) return null
-    writeFileSync(filePath, JSON.stringify(db.exportAllData(), null, 2))
-    return filePath
-  })
-
   // --- Data backup ----------------------------------------------------
-  // Writes a timestamped zip containing the data file and encryption
-  // key to `dir`. The zip is built in a temp file then atomically
-  // renamed into place so a half-written file is never visible if the
-  // app is killed mid-write. Returns { ok, path, error }.
+  // Writes a timestamped folder containing the data file, encryption
+  // key, and a manifest into a `flow_job_backups` subdirectory under
+  // the user's chosen backup path. Returns { ok, path, error }.
   function backupTimestamp(): string {
     const d = new Date()
     const pad = (n: number) => String(n).padStart(2, '0')
