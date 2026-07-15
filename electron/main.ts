@@ -43,7 +43,7 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 640,
     show: false,
-    title: 'FlowJob',
+    title: 'Flow Job',
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#0f1117',
     webPreferences: {
