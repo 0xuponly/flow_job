@@ -1155,7 +1155,7 @@ export default function JobsPage() {
   }
 
   async function handleCreateManual() {
-    if (!form.title || !form.company) return
+    if (!form.title || !form.company || !form.url || !form.description) return
     setSaving(true)
     try {
       const { job: rawJob, wasBlacklisted } = await api.createJob(form)
