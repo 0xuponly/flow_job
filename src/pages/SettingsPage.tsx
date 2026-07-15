@@ -619,7 +619,7 @@ export default function SettingsPage() {
 
       {tab === 'data' && (
         <>
-          <div className="section-title">Data backup</div>
+          <div className="section-title">Data Backup</div>
 
           <div className="card" style={{ maxWidth: 600, marginBottom: 12 }}>
             <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
