@@ -151,6 +151,7 @@ export interface Settings {
   backup_path: string
   backup_last_success_at: string
   backup_last_error: string
+  restore_pending: string
 }
 
 export interface DashboardStats {

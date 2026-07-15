@@ -798,15 +798,22 @@ ${htmlBody}
   // closing the app. We only attempt it if a backup_path is set, and
   // we re-check it inside runBackup so a stale or removed path
   // surfaces as a stored backup_last_error rather than a crash.
+  //
+  // Skip the backup when a restore is in progress. The new instance
+  // is about to read the restored data file, and racing it with an
+  // automatic backup on the old process can corrupt the on-disk
+  // store (the "blank app on relaunch" symptom) and double-writes
+  // the encryption key.
   let lastAutoBackupAttempt = 0
   app.on('before-quit', () => {
+    const s = db.getSettings()
+    if (s.restore_pending) return
     const now = Date.now()
     // Debounce: if multiple before-quit events fire in quick
     // succession (e.g. user hits Cmd+Q then confirms a dialog),
     // only run the backup once.
     if (now - lastAutoBackupAttempt < 5000) return
     lastAutoBackupAttempt = now
-    const s = db.getSettings()
     if (!s.backup_path) return
     runBackup(s.backup_path).catch((err) => {
       const msg = err instanceof Error ? err.message : String(err)
