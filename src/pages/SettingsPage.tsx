@@ -778,7 +778,7 @@ export default function SettingsPage() {
                   {restoreBackups.map((b) => (
                     <button
                       key={b.path}
-                      onClick={() => setRestoreSelected(b)}
+                      onClick={() => handleSelectBackup(b)}
                       style={{
                         textAlign: 'left',
                         padding: '10px 12px',
@@ -802,11 +802,59 @@ export default function SettingsPage() {
             ) : (
               <div style={{ fontSize: 13, lineHeight: 1.5 }}>
                 <p style={{ marginTop: 0 }}>
-                  This will <strong>overwrite your current data file and encryption key</strong> with the contents of this backup. Any jobs, documents, applications, follow-ups, and interviews created after the backup will be lost. The app will restart automatically.
+                  This will <strong>overwrite your current data file</strong> with the contents of this backup. Anything created after the backup will be lost. The app will reload automatically.
                 </p>
-                <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 0 }}>
+                <p style={{ color: 'var(--text-muted)', fontSize: 12 }}>
                   Backup from {new Date(restoreSelected.createdAt).toLocaleString()}
                 </p>
+                {restorePreview ? (
+                  <div
+                    style={{
+                      fontSize: 12,
+                      background: 'var(--bg)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 6,
+                      padding: '8px 10px',
+                      marginTop: 12,
+                      marginBottom: 12
+                    }}
+                  >
+                    {restorePreview.manifestError ? (
+                      <p style={{ margin: 0, color: 'var(--danger)' }}>
+                        Could not read manifest: {restorePreview.manifestError}
+                      </p>
+                    ) : (
+                      <>
+                        <div><strong>Format:</strong> {restorePreview.wrapped ? 'Passphrase-wrapped' : 'Legacy (un-wrapped)'}</div>
+                        <div><strong>Signature:</strong> {restorePreview.signed ? 'HMAC-SHA256 (verified on restore)' : 'Not signed'}</div>
+                        <div><strong>Encryption:</strong> {restorePreview.encryptionMode || 'unknown'}</div>
+                        <div><strong>Schema:</strong> {restorePreview.schema ?? 'unknown'}</div>
+                        <div><strong>Files in backup:</strong> {restorePreview.fileCount ?? '?'}</div>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <p style={{ color: 'var(--text-muted)', fontSize: 12 }}>Loading backup details…</p>
+                )}
+                {restorePreview?.hasLegacyKey && !restorePreview.requiresPassphrase && (
+                  <p style={{ color: 'var(--warning, #eab308)', fontSize: 12, marginTop: 0 }}>
+                    Warning: this is a legacy (un-wrapped) backup. Continuing will restore the encryption key as-is.
+                  </p>
+                )}
+                {restorePreview?.requiresPassphrase && (
+                  <>
+                    <label style={{ display: 'block', fontSize: 12, fontWeight: 500, marginTop: 12, marginBottom: 4 }}>
+                      Passphrase
+                    </label>
+                    <input
+                      type="password"
+                      value={restorePassphrase}
+                      onChange={(e) => setRestorePassphrase(e.target.value)}
+                      autoFocus
+                      style={{ width: '100%' }}
+                    />
+                  </>
+                )}
               </div>
             )}
           </Modal>
