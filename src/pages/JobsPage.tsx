@@ -998,10 +998,12 @@ export default function JobsPage() {
     // failed job no longer has an error, mark its toast entry as null so
     // a later re-occurrence counts as new (text-change re-arm). Jobs that
     // are still failing keep their existing toast record untouched, so the
-    // session-scoped no-re-fire rule holds.
+    // session-scoped no-re-fire rule holds. Persist the cleared marker to
+    // DB so a later re-appearance arms correctly on the next app open.
     for (const j of data) {
       if (!j.fit_last_error && toastedFitErrors.has(j.id)) {
         toastedFitErrors.set(j.id, null)
+        void api.updateJob(j.id, { fit_error_toasted: null })
       }
     }
   }
