@@ -1688,7 +1688,17 @@ export default function JobsPage() {
         </div>
         <div className="form-group">
           <label>URL *</label>
-          <input value={form.url ?? ''} onChange={(e) => updateField('url', e.target.value)} placeholder="https://..." />
+          <input
+            value={form.url ?? ''}
+            onChange={(e) => updateField('url', e.target.value)}
+            placeholder="https://..."
+            style={form.url && form.url.length > 0 && !isValidUrl(form.url) ? { borderColor: 'var(--danger)' } : undefined}
+          />
+          {form.url && form.url.length > 0 && !isValidUrl(form.url) && (
+            <div style={{ color: 'var(--danger)', fontSize: 12, marginTop: 4 }}>
+              Enter a valid http(s) URL.
+            </div>
+          )}
         </div>
         <div className="form-group">
           <label>Source</label>
