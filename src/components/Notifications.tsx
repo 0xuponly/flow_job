@@ -147,11 +147,35 @@ export default function Notifications() {
               transform: t.dismissing ? 'translateY(10px)' : 'translateY(0)',
               whiteSpace: 'pre-line',
               pointerEvents: 'auto',
-              cursor: t.onClick ? 'pointer' : 'default',
+              cursor: 'default',
               position: 'relative'
             }}
           >
-            {t.message}
+            <div style={{ paddingRight: hasAction ? 56 : 0 }}>{t.message}</div>
+            {t.action && (
+              <button
+                onClick={() => handleActionClick(t.id, t.action)}
+                title={t.action.label}
+                style={{
+                  position: 'absolute',
+                  bottom: 8,
+                  right: 8,
+                  height: 24,
+                  padding: '0 10px',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  background: 'rgba(255,255,255,0.1)',
+                  border: '1px solid rgba(255,255,255,0.3)',
+                  color: '#fff',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  borderRadius: 6,
+                  cursor: 'pointer'
+                }}
+              >
+                {t.action.label}
+              </button>
+            )}
             <button
               onClick={(e) => handleCopy(t.id, t.message, e)}
               title={t.copied ? 'Copied' : 'Copy to clipboard'}
