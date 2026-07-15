@@ -7,17 +7,24 @@ interface Toast {
   ttl: number
   dismissing?: boolean
   copied?: boolean
+  // Optional click handler. When set, clicking the toast runs this
+  // callback INSTEAD of dismissing — useful for "fit computed for
+  // [job]. Click to open it" toasts. If the user has a copy button
+  // on the toast, the copy button still stops propagation. The toast
+  // is dismissed after the callback resolves.
+  onClick?: () => void
 }
 
 let nextId = 0
 let listeners: ((toast: Toast) => void)[] = []
 
-export function notify(message: string, type: Toast['type'] = 'info', ttl?: number): void {
+export function notify(message: string, type: Toast['type'] = 'info', ttl?: number, onClick?: () => void): void {
   const toast: Toast = {
     id: nextId++,
     message,
     type,
-    ttl: ttl ?? (type === 'error' ? 8000 : 4000)
+    ttl: ttl ?? (type === 'error' ? 8000 : 4000),
+    onClick
   }
   for (const l of listeners) l(toast)
 }
