@@ -79,8 +79,9 @@ jobs three ways:
    (with optional browser fallback for JS-rendered pages).
 3. **By scan** — anything new from a board scan is added automatically.
 
-Each row shows a fit dot (green ≥ 0.7, amber ≥ 0.4, red < 0.4, with a
-dashed ring for the neutral 0.5 default), the source board, the post date,
+Each row shows a fit dot (green ≥ 0.6, amber ≥ 0.3, red < 0.3) — jobs
+newly created from a scan start at the neutral default of 0.31, above the
+red cutoff. The dot is hidden until the job has a real score.
 the salary, the job title, and a quick status badge. Filters at the top
 let you narrow by status, source, work mode, employment type, location,
 and salary range; a free-text search box queries title + company. Column
