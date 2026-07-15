@@ -22,6 +22,9 @@ interface ProgressEntry {
 
 let _nextId = 0
 
+// Module-scope so the toggle survives the result being reset on the next scan.
+let _showAllScanColumns = false
+
 export default function ScanJobsPage() {
   const [keywords, setKeywords] = useState('')
   const [location, setLocation] = useState('')
@@ -631,10 +634,11 @@ export default function ScanJobsPage() {
               <thead>
                 <tr>
                   <th>Board</th>
+                  <th>Scraped</th>
                   <th>Found</th>
-                  <th>Added</th>
-                  <th>Skipped</th>
-                  <th>Errors</th>
+                  {_showAllScanColumns && <th>Added</th>}
+                  {_showAllScanColumns && <th>Skipped</th>}
+                  {_showAllScanColumns && <th>Errors</th>}
                   <th></th>
                 </tr>
               </thead>
@@ -642,10 +646,11 @@ export default function ScanJobsPage() {
                 {rows.map((b) => (
                   <tr key={b.board}>
                     <td><strong>{b.board}</strong></td>
+                    <td>{b.found - b.skipped - b.errors}</td>
                     <td>{b.found}</td>
-                    <td style={{ color: '#22c55e', fontWeight: 600 }}>{b.added}</td>
-                    <td>{b.skipped}</td>
-                    <td style={{ color: b.errors > 0 ? '#ef4444' : undefined }}>{b.errors}</td>
+                    {_showAllScanColumns && <td style={{ color: '#22c55e', fontWeight: 600 }}>{b.added}</td>}
+                    {_showAllScanColumns && <td>{b.skipped}</td>}
+                    {_showAllScanColumns && <td style={{ color: b.errors > 0 ? '#ef4444' : undefined }}>{b.errors}</td>}
                     <td>
                       {b.error && <span style={{ color: '#ef4444', fontSize: 12 }}>{b.error}</span>}
                     </td>
@@ -653,6 +658,15 @@ export default function ScanJobsPage() {
                 ))}
               </tbody>
             </table>
+            <div style={{ marginTop: 8 }}>
+              <button
+                type="button"
+                className="btn btn-sm btn-secondary"
+                onClick={() => { _showAllScanColumns = !_showAllScanColumns; setResult({ ...result }) }}
+              >
+                {_showAllScanColumns ? '− Hide columns' : '+ Show all columns'}
+              </button>
+            </div>
             {result.errors.length > 0 && (
               <div style={{ marginTop: 8, fontSize: 12, color: '#ef4444' }}>
                 {Array.from(new Set(result.errors)).map((e, i) => <div key={i}>{e}</div>)}
