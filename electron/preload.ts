@@ -91,6 +91,8 @@ export interface Api {
   pickBackupFolder: () => Promise<string | null>
   runBackup: (dir: string) => Promise<{ ok: boolean; path?: string; error?: string }>
   getBackupStatus: () => Promise<{ path: string; lastSuccessAt: string; lastError: string }>
+  listBackups: () => Promise<{ name: string; path: string; createdAt: string }[]>
+  restoreBackup: (folderPath: string) => Promise<{ ok: boolean; path?: string; error?: string; warning?: string }>
 }
 
 const api: Api = {
@@ -174,7 +176,9 @@ const api: Api = {
   removeBlacklistedCompany: (name) => ipcRenderer.invoke('blacklist:remove', name),
   pickBackupFolder: () => ipcRenderer.invoke('backup:pickFolder'),
   runBackup: (dir) => ipcRenderer.invoke('backup:run', dir),
-  getBackupStatus: () => ipcRenderer.invoke('backup:status')
+  getBackupStatus: () => ipcRenderer.invoke('backup:status'),
+  listBackups: () => ipcRenderer.invoke('backup:list'),
+  restoreBackup: (folderPath) => ipcRenderer.invoke('backup:restore', folderPath)
 }
 
 contextBridge.exposeInMainWorld('api', api)

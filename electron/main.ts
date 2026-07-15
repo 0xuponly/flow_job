@@ -629,6 +629,18 @@ ${htmlBody}
     )
   }
 
+  // Reverse of backupTimestamp: parses `YYYYMMDD-HHmmss` into an ISO
+  // string. Returns '' on any parse failure so the caller can fall
+  // back to the folder mtime.
+  function parseBackupTimestamp(ts: string): string {
+    const m = ts.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/)
+    if (!m) return ''
+    const [, y, mo, d, h, mi, s] = m
+    const dt = new Date(`${y}-${mo}-${d}T${h}:${mi}:${s}`)
+    if (isNaN(dt.getTime())) return ''
+    return dt.toISOString()
+  }
+
   function runBackup(dir: string): Promise<{ ok: boolean; path?: string; error?: string }> {
     return new Promise((resolve) => {
       try {
