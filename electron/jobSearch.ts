@@ -1241,7 +1241,7 @@ export async function scanAllBoards(
         // way; this path was missed on the original landing.
         if (scanSeenUrls.has(dk)) {
           br.skipped++
-          result.totalSkipped++
+          bump('totalSkipped')
           return false
         }
         scanSeenUrls.add(dk)
@@ -1254,7 +1254,7 @@ export async function scanAllBoards(
           const tcKey = (`${l.company  }||${  l.title}`).toLowerCase()
           if (seenTitleCompany.has(tcKey)) {
             br.skipped++
-            result.totalSkipped++
+            bump('totalSkipped')
             return false
           }
           seenTitleCompany.add(tcKey)
