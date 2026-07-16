@@ -191,6 +191,9 @@ export interface ScanBoardResult {
   added: number
   skipped: number
   errors: number
+  // Listings that passed extraction but were rejected by the
+  // workType/location/score filters.
+  incompatible: number
   error?: string
 }
 

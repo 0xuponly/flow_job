@@ -216,6 +216,10 @@ export interface ScanBoardResult {
   found: number
   added: number
   skipped: number
+  // Listings that passed extraction but were rejected by the
+  // workType/location/score filters. Surfaced in the scan results
+  // table so the user can tell "0 added" apart from "0 found".
+  incompatible: number
   error?: string
 }
 
