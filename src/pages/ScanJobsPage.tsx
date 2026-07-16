@@ -596,13 +596,15 @@ export default function ScanJobsPage() {
             })}
           </div>
           {boardsExpanded && (() => {
-            const frequentErrors = new Set(findFrequentErrorBoards(allBoards, boardHealth))
+            const frequentErrors = new Set(findFrequentErrorBoards(enabledBoards, boardHealth))
             // Hidden frequent-error boards don't render in the grid —
             // the user can't see them, can't click them, and the
             // checkbox can't be flipped. Reveal via the 👁 button
             // above to interact with them. Sorting and check-state
             // stay the same as before; only the filter changes.
-            const visibleBoards = [...allBoards]
+            // Disabled-by-Settings boards are also dropped here — they
+            // can't be selected regardless of their health.
+            const visibleBoards = [...enabledBoards]
               .filter((b) => showFrequentErrors || !frequentErrors.has(b.name))
               .sort((a, b) => a.name.localeCompare(b.name))
             return (
