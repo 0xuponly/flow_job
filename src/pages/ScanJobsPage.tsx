@@ -327,6 +327,13 @@ export default function ScanJobsPage() {
     setTimeout(() => setLogCopied(false), 1500)
   }
 
+  // Disabled-by-Settings boards are filtered out of every picker
+  // surface below. The main process also drops them (defence in
+  // depth), so a stale persisted selection or hand-crafted IPC
+  // payload can't bypass the user-visible toggle.
+  const enabledBoards = allBoards.filter((b) => b.enabled)
+  const enabledBoardNames = new Set(enabledBoards.map((b) => b.name))
+
   async function handleScan() {
     scanActiveRef.current = true
     setScanning(true)
@@ -369,7 +376,7 @@ export default function ScanJobsPage() {
         keywords: keywords || undefined,
         location: location || undefined,
         workType,
-        boards: selectedBoards.size < allBoards.length ? Array.from(selectedBoards) : undefined
+        boards: selectedBoards.size < enabledBoards.length ? Array.from(selectedBoards) : undefined
       })
       if (mountedRef.current) {
         setResult(r)
