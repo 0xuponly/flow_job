@@ -860,7 +860,7 @@ export default function SettingsPage() {
       {tab === 'companies' && (
         <>
           <div className="section-title">Blacklisted Companies</div>
-          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, maxWidth: 700 }}>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
             Jobs from these companies are never added by the scanner, and won't be re-added on future scans. You can also blacklist a company directly from any job's page.
           </p>
 
