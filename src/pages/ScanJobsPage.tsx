@@ -654,7 +654,7 @@ export default function ScanJobsPage() {
           <div className="card" style={{ maxWidth: 800, marginTop: 16 }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 4 }}>
               <h3 style={{ margin: 0 }}>
-                Scraped {totalScraped} postings - added {result.totalAdded}
+                Found {result.totalFound} - Added {result.totalAdded} - Skipped {result.totalSkipped} - Incompatible {result.totalIncompatible ?? 0} - Errors {result.totalErrors}
                 {result.cancelled && (
                   <span style={{ marginLeft: 8, fontSize: 12, color: 'var(--text-muted)', fontWeight: 400 }}>
                     (cancelled)
