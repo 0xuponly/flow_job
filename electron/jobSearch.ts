@@ -1169,8 +1169,8 @@ export async function scanAllBoards(
           if (signal?.aborted) break
           const dk = input.url ? dedupKey(input.url) : null
           if (dk) {
-            if (seenUrls.has(dk)) { br.skipped++; emitCounters(); continue }
-            if (scanSeenUrls.has(dk)) { br.skipped++; emitCounters(); continue }
+            if (seenUrls.has(dk)) { br.skipped++; result.totalSkipped++; emitCounters(); continue }
+            if (scanSeenUrls.has(dk)) { br.skipped++; result.totalSkipped++; emitCounters(); continue }
           }
           if (findDuplicateJob(input)) {
             if (dk) seenUrls.add(dk)
