@@ -1119,7 +1119,7 @@ app.whenReady().then(() => {
         log.startup.info(`Normalized ${result.updated}/${result.total} job locations.`)
       }
     } catch (err) {
-      console.error('[startup] Location retrofit failed:', err)
+      log.startup.error('Location retrofit failed:', err)
     }
   }
 
