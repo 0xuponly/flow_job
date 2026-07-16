@@ -142,7 +142,6 @@ export interface AtsBoard {
   token: string
   enabled: boolean
 }
-}
 
 export interface DashboardStats {
   total_jobs: number

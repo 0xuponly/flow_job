@@ -314,6 +314,27 @@ export default function SettingsPage() {
     setModels((prev) => [...prev, { id: '', ...preset.model }])
   }
 
+  function addAtsBoard() {
+    setSettings((prev) => prev ? {
+      ...prev,
+      ats_boards: [...(prev.ats_boards ?? []), { id: `ats-${Date.now()}`, name: '', platform: 'greenhouse', token: '', enabled: true }]
+    } : prev)
+  }
+
+  function updateAtsBoard(id: string, fields: Partial<AtsBoard>) {
+    setSettings((prev) => prev ? {
+      ...prev,
+      ats_boards: (prev.ats_boards ?? []).map((b) => b.id === id ? { ...b, ...fields } : b)
+    } : prev)
+  }
+
+  function removeAtsBoard(id: string) {
+    setSettings((prev) => prev ? {
+      ...prev,
+      ats_boards: (prev.ats_boards ?? []).filter((b) => b.id !== id)
+    } : prev)
+  }
+
   async function handleAddBlacklist() {
     const name = newBlacklistCompany.trim()
     if (!name) return
