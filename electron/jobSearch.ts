@@ -1054,6 +1054,21 @@ export async function scanAllBoards(
       })
     }
   }
+  // Same shape as `bump` but for the board-level totalFound, which is
+  // set once per board (not per listing). Emits so the live "Found"
+  // counter ticks up at the same moment "Scraping …" is shown.
+  const bumpFound = (n: number) => {
+    result.totalFound += n
+    if (onCounters) {
+      onCounters({
+        totalFound: result.totalFound,
+        totalAdded: result.totalAdded,
+        totalSkipped: result.totalSkipped,
+        totalIncompatible: result.totalIncompatible,
+        totalErrors: result.totalErrors
+      })
+    }
+  }
 
   const LISTING_CONCURRENCY = 6
 
@@ -1331,7 +1346,8 @@ export async function scanAllBoards(
         }
       }
 
-      result.totalFound += br.found
+      result.totalFound = 0
+      bumpFound(br.found)
     } catch (err) {
       br.error = err instanceof Error ? err.message : 'Unknown error'
       result.errors.push(`${board.name}: ${br.error}`)
