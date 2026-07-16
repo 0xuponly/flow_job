@@ -636,7 +636,7 @@ export default function ScanJobsPage() {
           }
         }
         const rows = Array.from(merged.values()).filter(
-          (b) => b.added > 0 || b.errors > 0 || (b.found - b.skipped - b.errors) > 0 || !!b.error
+          (b) => b.added > 0 || b.errors > 0 || (b.found - b.skipped - b.errors) > 0 || b.incompatible > 0 || !!b.error
         )
         const totalScraped = rows.reduce((s, b) => s + (b.found - b.skipped - b.errors), 0)
         if (rows.length === 0) return null
