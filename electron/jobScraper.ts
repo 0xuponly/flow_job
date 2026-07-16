@@ -252,8 +252,6 @@ async function fetchPageHtml(
   const combinedSignal = signal
     ? AbortSignal.any([signal, timeoutSignal])
     : timeoutSignal
-  log.info(`fetch start ${url} (${hostname}, skipChallenge=${opts.skipChallengeCheck ?? false})`)
-  const startedAt = Date.now()
   const response = await fetch(url, {
     headers: {
       'User-Agent': USER_AGENT,
@@ -263,12 +261,6 @@ async function fetchPageHtml(
     redirect: 'follow',
     signal: combinedSignal
   })
-  const elapsedMs = Date.now() - startedAt
-  log.info(
-    `fetch response ${url} status=${response.status} ` +
-    `finalUrl=${response.url} bytes=${response.headers.get('content-length') ?? '?'} ` +
-    `ct=${response.headers.get('content-type') ?? '?'} elapsedMs=${elapsedMs}`
-  )
 
   if (response.ok) {
     const html = await response.text()
@@ -276,15 +268,12 @@ async function fetchPageHtml(
     if (timeoutSignal.aborted) {
       // The request body was slow even though the headers arrived.
       // Treat the same as a timeout — fall through to the browser path.
-      log.info(`fetch body timeout ${url} after ${elapsedMs}ms — falling back to browser`)
       return fetchHtmlViaBrowser(url)
     }
     if (!opts.skipChallengeCheck && isChallengePage(html)) {
       if (CF_BLOCKED_HOSTS.has(hostname)) {
-        log.info(`challenge page detected for ${url} but ${hostname} is in CF_BLOCKED_HOSTS — refusing to fall back`)
         throw new Error('This site blocked automated access (Cloudflare). Open the job in your browser and try again later.')
       }
-      log.info(`challenge page detected for ${url} — falling back to browser`)
       return fetchHtmlViaBrowser(url)
     }
     return html
@@ -298,10 +287,8 @@ async function fetchPageHtml(
     const body = await response.text().catch(() => '')
     if (isChallengePage(body)) {
       if (CF_BLOCKED_HOSTS.has(hostname)) {
-        log.info(`${response.status} body was a challenge page for ${url} but ${hostname} is in CF_BLOCKED_HOSTS — refusing to fall back`)
         throw new Error('This site blocked automated access (Cloudflare). Open the job in your browser and try again later.')
       }
-      log.info(`${response.status} body was a challenge page for ${url} — falling back to browser`)
       return fetchHtmlViaBrowser(url)
     }
   }
@@ -415,8 +402,6 @@ async function extractFromHtmlImpl(html: string, hostname: string, pageUrl: stri
   if (jobPosting) {
     applyJobPosting(result, jobPosting)
   }
-  // (Per-stage diagnostic logging removed: only errors are logged now.
-  // See logger.ts — successful extracts don't write to scraper.log.)
 
   if (hostname.includes('linkedin.com')) {
     applyLinkedIn(result, html)
@@ -502,18 +487,15 @@ async function extractFromHtmlImpl(html: string, hostname: string, pageUrl: stri
   } else if (source) {
     result.source = source
   }
-  logExtractedFields(`site(${result.source ?? 'unknown'})`, result)
 
   // Generic fallback for unrecognized job sites — tries common patterns
   if (!result.title || !result.company || !result.description) {
     applyGeneric(result, html, pageUrl)
   }
-  logExtractedFields('generic', result)
 
   // Always run post-processing to extract salary + metadata from raw HTML
   extractSalaryAndMetadata(result, html)
   extractPostingDateFromHtml(result, html)
-  logExtractedFields('metadata', result)
 
   // Vancouver Jobs: BC public-sector pay grades (Pay Grade RNG-, EXM-,
   // etc.) quote an hourly rate but suffix it with "per annum" —
@@ -541,7 +523,6 @@ async function extractFromHtmlImpl(html: string, hostname: string, pageUrl: stri
     result.title = cleanTitle(result.title, result.company, result.source)
   }
 
-  logExtractedFields('final', result)
   return result
 }
 
