@@ -965,19 +965,28 @@ function applyVancouverJobs(result: ScrapedJob, html: string): void {
   }
 
   if (!result.description) {
-    // The job body is wrapped in <span itemprop="description"><span
-    // class="jobdescription">...</span></span>. Anchor on itemprop to
-    // get the full body — a naked `class="jobdescription"` match
-    // non-greedily stops at the first inner `</span>` (a style span)
-    // and captures only "Requisition ID: 46601 ", which trips the
-    // 80-char length check and falls through to applyGeneric, which
-    // then picks up the "Language English (United States)" header.
-    const descMatch = html.match(
-      /itemprop=["']description["'][\s\S]*?class=["']jobdescription["'][^>]*>([\s\S]*?)<\/span>\s*<\/span>/i
-    )
-    if (descMatch) {
-      const desc = stripHtml(descMatch[1]).trim()
-      if (desc.length > 80) result.description = desc
+    // The job body is wrapped in a paired structure of
+    // <span itemprop="description">…<span class="jobdescription">…</span></span>
+    // OR the reverse nesting
+    // <div class="jobdescription">…<span itemprop="description">…</span></div> —
+    // Vancouver has shipped both orderings, so try each. Anchoring on
+    // either wrapper alone non-greedily stops at the first inner close
+    // (a style span) and captures only "Requisition ID: 46601 ", which
+    // trips the 80-char length check and falls through to applyGeneric,
+    // which then picks up the "Language English (United States)" header.
+    const descPatterns: RegExp[] = [
+      /itemprop=["']description["'][\s\S]*?class=["']jobdescription["'][^>]*>([\s\S]*?)<\/span>\s*<\/span>/i,
+      /class=["']jobdescription["'][\s\S]*?itemprop=["']description["'][^>]*>([\s\S]*?)<\/span>/i
+    ]
+    for (const pat of descPatterns) {
+      const descMatch = html.match(pat)
+      if (descMatch) {
+        const desc = stripHtml(descMatch[1]).trim()
+        if (desc.length > 80) {
+          result.description = desc
+          break
+        }
+      }
     }
   }
 
