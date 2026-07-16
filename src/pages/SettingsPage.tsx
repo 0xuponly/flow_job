@@ -522,7 +522,7 @@ export default function SettingsPage() {
           </div>
 
           <div className="section-title">Base CV</div>
-          <div className="card" style={{ maxWidth: 800 }}>
+          <div className="card">
             <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
               Paste your master CV here. It will be used as the source material when tailoring for specific jobs.
             </p>
