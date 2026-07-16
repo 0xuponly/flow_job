@@ -502,9 +502,9 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
           </select>
           {/* Hidden measure node: same typography as the <select>, so
               getBoundingClientRect reports the exact pixel width needed
-              to fit the widest option without clipping. We render every
-              option side-by-side and let the browser pick the widest.
-              Absolutely positioned off-screen so it never affects layout. */}
+              to fit the current label (and any longer option the user
+              could pick) without clipping. Absolutely positioned
+              off-screen so it never affects layout. */}
           <span
             ref={statusMeasureRef}
             aria-hidden="true"
@@ -523,10 +523,13 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
             }}
           >
             {(() => {
-              const labels = (Object.keys(STATUS_LABELS) as JobStatus[])
+              const visible = (Object.keys(STATUS_LABELS) as JobStatus[])
                 .filter((s) => s !== 'tailoring' && s !== 'follow_up' && s !== 'withdrawn')
-                .map((s) => STATUS_LABELS[s])
-              return labels.reduce((a, b) => (a.length >= b.length ? a : b), '')
+              const longest = visible.reduce((a, b) => (STATUS_LABELS[a].length >= STATUS_LABELS[b].length ? a : b), visible[0])
+              // Render the longer of (current selection, longest option)
+              // side-by-side so the measured width fits the current
+              // label while still leaving room for a longer pick.
+              return `${STATUS_LABELS[job.status]}${STATUS_LABELS[longest]}`
             })()}
           </span>
         </span>
