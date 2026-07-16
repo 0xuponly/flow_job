@@ -1152,8 +1152,8 @@ app.whenReady().then(() => {
     try {
       const result = db.retrofitEmploymentTypeNormalization()
       if (result.updated > 0 || result.nulled > 0) {
-        console.log(
-          `[startup] Standardized ${result.updated} employment_type values, ` +
+        log.startup.info(
+          `Standardized ${result.updated} employment_type values, ` +
           `nulled ${result.nulled} unmappable.`
         )
       }
