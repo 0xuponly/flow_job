@@ -864,7 +864,7 @@ export default function SettingsPage() {
             Jobs from these companies are never added by the scanner, and won't be re-added on future scans. You can also blacklist a company directly from any job's page.
           </p>
 
-          <div className="card" style={{ maxWidth: 700, marginBottom: 16 }}>
+          <div className="card" style={{ marginBottom: 16 }}>
             <div style={{ display: 'flex', gap: 8 }}>
               <input
                 value={newBlacklistCompany}
