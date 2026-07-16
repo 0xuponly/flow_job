@@ -228,6 +228,7 @@ export interface ScanResult {
   startedAt: number | null
   durationMs: number
   cancelled: boolean
+  addedJobs: { id: number; title: string; company: string }[]
 }
 
 export interface ScanStatus {
