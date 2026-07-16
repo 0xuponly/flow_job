@@ -481,7 +481,23 @@ export default function ScanJobsPage() {
         <div className="form-group">
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
             <label>
-              Job boards ({selectedBoards.size} of {enabledBoards.length} selected)
+              {/* Header count is over the "selectable" set: enabled
+                  boards minus frequent errors when those are hidden.
+                  The user can only pick from boards they can see in
+                  the grid, so the denominator has to match. Hidden
+                  frequent-error boards are still in `selectedBoards`
+                  if the user picked them before toggling visibility
+                  off, but the numerator counts only selectable ones
+                  — otherwise the label could show "N of M selected"
+                  with N > M. */}
+              {(() => {
+                const hiddenFrequentErrors = showFrequentErrors
+                  ? new Set<string>()
+                  : new Set(findFrequentErrorBoards(enabledBoards, boardHealth))
+                const selectableBoards = enabledBoards.filter((b) => !hiddenFrequentErrors.has(b.name))
+                const selectedSelectable = selectableBoards.filter((b) => selectedBoards.has(b.name)).length
+                return `Job boards (${selectedSelectable} of ${selectableBoards.length} selected)`
+              })()}
             </label>
             <div style={{ display: 'flex', gap: 6 }}>
               {(() => {
