@@ -1133,7 +1133,7 @@ app.whenReady().then(() => {
     try {
       const result = db.retrofitSalaryNormalization()
       if (result.updated > 0) {
-        console.log(`[startup] Annualized ${result.updated}/${result.total} job salaries.`)
+        log.startup.info(`Annualized ${result.updated}/${result.total} job salaries.`)
       }
       db.markSalaryNormalized()
     } catch (err) {
