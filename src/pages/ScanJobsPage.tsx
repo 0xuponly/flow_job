@@ -235,8 +235,13 @@ export default function ScanJobsPage() {
         // Only apply the default if no selection has been persisted
         // yet — once the user customizes, their choice sticks.
         if (selectedBoardsRaw === null) {
-          const frequentErrors = new Set(findFrequentErrorBoards(boards, health))
-          setSelectedBoardsRaw(boards.map((b) => b.name).filter((n) => !frequentErrors.has(n)))
+          // First-run default: all enabled boards minus frequent
+          // errors. Disabled boards are excluded so the default
+          // selection doesn't include them. Once the user
+          // customizes, their choice sticks.
+          const enabledBoardsFirstLoad = boards.filter((b) => b.enabled)
+          const frequentErrors = new Set(findFrequentErrorBoards(enabledBoardsFirstLoad, health))
+          setSelectedBoardsRaw(enabledBoardsFirstLoad.map((b) => b.name).filter((n) => !frequentErrors.has(n)))
         }
       })
       .catch((err) => {
