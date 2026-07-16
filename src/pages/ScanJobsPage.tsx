@@ -452,7 +452,7 @@ export default function ScanJobsPage() {
                 // would just be clutter (per the project's
                 // "hide-toggle-when-empty" rule). Icon-only to keep
                 // the row compact; the tooltip carries the meaning.
-                const frequentErrors = findFrequentErrorBoards(allBoards, boardHealth)
+                const frequentErrors = findFrequentErrorBoards(enabledBoards, boardHealth)
                 if (frequentErrors.length === 0) return null
                 return (
                   <button
