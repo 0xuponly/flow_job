@@ -1793,6 +1793,16 @@ export default function JobsPage() {
             <input value={form.source ?? ''} onChange={(e) => updateField('source', e.target.value)} placeholder="LinkedIn, Indeed, etc." />
           </div>
         </div>
+        <div className="form-row">
+          <div className="form-group">
+            <label>Application deadline</label>
+            <input
+              type="date"
+              value={form.application_deadline ? form.application_deadline.slice(0, 10) : ''}
+              onChange={(e) => updateField('application_deadline', e.target.value)}
+            />
+          </div>
+        </div>
         <div className="form-group">
           <label>Description *</label>
           <textarea

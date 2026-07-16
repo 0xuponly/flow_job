@@ -39,6 +39,7 @@ export interface Job {
   fit_error_toasted: string | null
   notes: string | null
   date_posted: string | null
+  application_deadline: string | null
   last_updated: string | null
   created_at: string
   updated_at: string
@@ -172,6 +173,7 @@ export interface CreateJobInput {
   score?: number | null
   notes?: string | null
   date_posted?: string | null
+  application_deadline?: string | null
 }
 
 export type Page =

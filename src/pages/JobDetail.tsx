@@ -41,6 +41,10 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
   const [editHiringManager, setEditHiringManager] = useState(job.hiring_manager ?? '')
   const [editEmploymentType, setEditEmploymentType] = useState(job.employment_type ?? '')
   const [editWorkMode, setEditWorkMode] = useState(job.work_mode ?? '')
+  const [editSource, setEditSource] = useState(job.source ?? '')
+  const [editApplicationDeadline, setEditApplicationDeadline] = useState(
+    job.application_deadline ? job.application_deadline.slice(0, 10) : ''
+  )
   const [editUrl, setEditUrl] = useState(job.url ?? '')
   const [viewDoc, setViewDoc] = useState<Document | null>(null)
   const [docTitle, setDocTitle] = useState('')
@@ -115,6 +119,8 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
       setEditHiringManager(job.hiring_manager ?? '')
       setEditEmploymentType(job.employment_type ?? '')
       setEditWorkMode(job.work_mode ?? '')
+      setEditSource(job.source ?? '')
+      setEditApplicationDeadline(job.application_deadline ? job.application_deadline.slice(0, 10) : '')
       setEditUrl(job.url ?? '')
     }
   }, [job, editing])
@@ -437,6 +443,8 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
         hiring_manager: editHiringManager || null,
         employment_type: editEmploymentType || null,
         work_mode: editWorkMode || null,
+        source: editSource || null,
+        application_deadline: editApplicationDeadline || null,
         url: editUrl || null
       })
       setCurrentJob(updated)
@@ -619,7 +627,26 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
               </div>
               <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                 <input value={editHiringManager} onChange={(e) => setEditHiringManager(e.target.value)} placeholder="Hiring manager" style={{ flex: 1 }} />
+                <input value={editSource} onChange={(e) => setEditSource(e.target.value)} placeholder="Source (e.g. LinkedIn, Indeed)" style={{ flex: 1 }} />
                 <input value={editApplicationRequirements} onChange={(e) => setEditApplicationRequirements(e.target.value)} placeholder="Resume only / Resume + cover letter / etc." style={{ flex: 2 }} />
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
+                <label style={{ fontSize: 12, color: 'var(--text-muted)', minWidth: 140 }}>Application deadline</label>
+                <input
+                  type="date"
+                  value={editApplicationDeadline}
+                  onChange={(e) => setEditApplicationDeadline(e.target.value)}
+                  style={{ flex: 1 }}
+                />
+                {editApplicationDeadline && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => setEditApplicationDeadline('')}
+                  >
+                    Clear
+                  </button>
+                )}
               </div>
               <textarea rows={4} value={editRequirements} onChange={(e) => setEditRequirements(e.target.value)} placeholder="Requirements (skills, experience, education needed)..." style={{ width: '100%', marginTop: 8 }} />
               <div className="actions-row">
@@ -757,6 +784,14 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
             <div className="card" style={{ flex: '1 0 140px', padding: '8px 12px', height: 56, display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', marginTop: 0 }}>
               <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', marginBottom: 2 }}>Hiring manager</div>
               <div style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{currentJob.hiring_manager || '—'}</div>
+            </div>
+            <div className="card" style={{ flex: '1 0 120px', padding: '8px 12px', height: 56, display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', marginTop: 0 }}>
+              <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', marginBottom: 2 }}>Source</div>
+              <div style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={currentJob.source ?? undefined}>{currentJob.source || '—'}</div>
+            </div>
+            <div className="card" style={{ flex: '1 0 140px', padding: '8px 12px', height: 56, display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', marginTop: 0 }}>
+              <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', marginBottom: 2 }}>Application deadline</div>
+              <div style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{formatJobDate(currentJob.application_deadline)}</div>
             </div>
           </div>
 

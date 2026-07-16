@@ -33,6 +33,7 @@ interface ScrapedJob {
   employment_type?: string
   work_mode?: string
   date_posted?: string
+  application_deadline?: string
 }
 
 export async function scrapeJobFromUrl(rawUrl: string, signal?: AbortSignal): Promise<CreateJobInput> {
@@ -146,7 +147,8 @@ function finalizeScrapedJob(scraped: ScrapedJob, url: string): CreateJobInput {
     hiring_manager: scraped.hiring_manager,
     employment_type: normalizeEmploymentType(scraped.employment_type) ?? undefined,
     work_mode: normalizeWorkMode(scraped.work_mode) ?? undefined,
-    date_posted: scraped.date_posted
+    date_posted: scraped.date_posted,
+    application_deadline: scraped.application_deadline
   }
 }
 

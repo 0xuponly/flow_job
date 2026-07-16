@@ -270,6 +270,10 @@ function loadStore(): Store {
         j.date_posted = null
         jobsMigrated = true
       }
+      if (j.application_deadline === undefined) {
+        j.application_deadline = null
+        jobsMigrated = true
+      }
       if (j.last_updated === undefined || j.last_updated === null) {
         j.last_updated = j.created_at
         jobsMigrated = true
@@ -580,6 +584,7 @@ export function createJob(
     fit_error_toasted: null,
     notes: de(input.notes ?? null),
     date_posted: input.date_posted ?? null,
+    application_deadline: input.application_deadline ?? null,
     last_updated: now(),
     created_at: now(),
     updated_at: now()
@@ -666,6 +671,7 @@ export function updateJob(
     fit_error_toasted: fields.fit_error_toasted !== undefined ? (fields.fit_error_toasted ?? null) : existing.fit_error_toasted,
     notes: fields.notes !== undefined ? de(fields.notes ?? null) : existing.notes,
     date_posted: fields.date_posted !== undefined ? (fields.date_posted ?? null) : existing.date_posted,
+    application_deadline: fields.application_deadline !== undefined ? (fields.application_deadline ?? null) : existing.application_deadline,
     last_updated: fields.last_updated !== undefined ? (fields.last_updated ?? null) : existing.last_updated,
     updated_at: now()
   }
@@ -680,7 +686,7 @@ export function updateJob(
     const CONTENT_FIELDS = [
       'title', 'company', 'location', 'description', 'salary_range',
       'employment_type', 'work_mode', 'hiring_manager', 'requirements',
-      'application_requirements', 'url', 'source'
+      'application_requirements', 'url', 'source', 'application_deadline'
     ] as const
     const changed = CONTENT_FIELDS.some(
       (k) => s.jobs[idx][k] !== existing[k]
