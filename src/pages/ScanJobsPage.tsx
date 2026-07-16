@@ -713,8 +713,8 @@ export default function ScanJobsPage() {
                 {rows.map((b) => (
                   <tr key={b.board}>
                     <td><strong>{b.board}</strong></td>
-                    <td>{b.added}</td>
-                    <td style={{ color: '#22c55e', fontWeight: 600 }}>{b.added > 0 ? `+${b.added}` : '—'}</td>
+                    <td>{b.found - b.skipped - b.errors - b.incompatible}</td>
+                    <td style={{ color: '#22c55e', fontWeight: 600 }}>{b.added}</td>
                     {_showAllScanColumns && <td>{b.found}</td>}
                     {_showAllScanColumns && <td>{b.skipped}</td>}
                     {_showAllScanColumns && <td>{b.incompatible}</td>}
