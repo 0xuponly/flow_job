@@ -27,6 +27,26 @@ function clean(s: string | null | undefined): string {
   return (s || '').replace(/&nbsp;/g, ' ').trim()
 }
 
+// Read a string field from a record-of-unknown. Returns undefined
+// when the value is missing, null, or not a string. Avoids the
+// `Property 'x' does not exist on type 'unknown'` errors we'd get
+// from `j.x` directly.
+function str(j: Record<string, unknown>, key: string): string | undefined {
+  const v = j[key]
+  return typeof v === 'string' ? v : undefined
+}
+
+// Same, but for a nested path. `nested(j, 'location', 'name')` reads
+// `j.location.name` when both levels are objects.
+function nested(j: Record<string, unknown>, ...keys: string[]): string | undefined {
+  let cur: unknown = j
+  for (const k of keys) {
+    if (cur == null || typeof cur !== 'object') return undefined
+    cur = (cur as Record<string, unknown>)[k]
+  }
+  return typeof cur === 'string' ? cur : undefined
+}
+
 async function fetchGreenhouse(tenant: string, keywords: string, opts: CommonOpts): Promise<CreateJobInput[]> {
   const params = new URLSearchParams({ content: 'true' })
   if (keywords) params.set('query', keywords)
@@ -37,17 +57,17 @@ async function fetchGreenhouse(tenant: string, keywords: string, opts: CommonOpt
   if (!payload.jobs) return []
   const out: CreateJobInput[] = []
   for (const j of payload.jobs) {
-    const title = clean(typeof j.title === 'string' ? j.title : null)
-    const company = clean(typeof (j.company_name as string) === 'string' ? (j.company_name as string) : null) || tenant
+    const title = clean(str(j, 'title'))
+    const company = clean(str(j, 'company_name')) || tenant
     // Greenhouse returns the body as HTML in `content`; strip tags
     // lightly so createJob's required `description` check passes.
-    const raw = clean(typeof j.content === 'string' ? j.content : null).replace(/<[^>]+>/g, ' ')
+    const raw = clean(str(j, 'content')).replace(/<[^>]+>/g, ' ')
     if (!title || !raw) continue
     out.push({
       title,
       company,
-      location: clean(typeof j.location?.name === 'string' ? j.location.name : null) || null,
-      url: typeof j.absolute_url === 'string' ? j.absolute_url : null,
+      location: clean(nested(j, 'location', 'name')),
+      url: str(j, 'absolute_url') ?? null,
       description: raw,
       salary_range: null,
       source: 'greenhouse',
@@ -72,21 +92,22 @@ async function fetchLever(site: string, keywords: string, opts: CommonOpts): Pro
   if (!Array.isArray(payload)) return []
   const out: CreateJobInput[] = []
   for (const j of payload) {
-    const title = clean(typeof j.text === 'string' ? j.text : null)
-    const company = clean(typeof j.categories?.team === 'string' ? j.categories.team : null) || site
+    const title = clean(str(j, 'text'))
+    const company = clean(nested(j, 'categories', 'team')) || site
     // Lever's `description` and `lists` are HTML; flatten to text.
-    const html = [
-      typeof j.description === 'string' ? j.description : '',
-      typeof j.lists === 'object' && Array.isArray((j.lists as { text?: string }).text) ? (j.lists as { text: string[] }).text.join('\n') : '',
-      typeof j.additional === 'string' ? j.additional : ''
-    ].join('\n')
+    const listText = (() => {
+      const lists = j.lists as { text?: unknown } | undefined
+      if (!lists || !Array.isArray(lists.text)) return ''
+      return (lists.text as unknown[]).filter((t): t is string => typeof t === 'string').join('\n')
+    })()
+    const html = [str(j, 'description') || '', listText, str(j, 'additional') || ''].join('\n')
     const raw = clean(html).replace(/<[^>]+>/g, ' ')
     if (!title || !raw) continue
     out.push({
       title,
       company,
-      location: clean(typeof j.categories?.location === 'string' ? j.categories.location : null) || null,
-      url: typeof j.hostedUrl === 'string' ? j.hostedUrl : null,
+      location: clean(nested(j, 'categories', 'location')),
+      url: str(j, 'hostedUrl') ?? null,
       description: raw,
       salary_range: null,
       source: 'lever',
@@ -110,17 +131,17 @@ async function fetchAshby(board: string, keywords: string, opts: CommonOpts): Pr
   const needle = keywords.toLowerCase()
   const out: CreateJobInput[] = []
   for (const j of payload.jobs) {
-    const title = clean(typeof j.title === 'string' ? j.title : null)
-    const company = clean(typeof j.companyName === 'string' ? j.companyName : null) || board
-    const raw = clean(typeof j.descriptionHtml === 'string' ? j.descriptionHtml : '').replace(/<[^>]+>/g, ' ')
+    const title = clean(str(j, 'title'))
+    const company = clean(str(j, 'companyName')) || board
+    const raw = clean(str(j, 'descriptionHtml')).replace(/<[^>]+>/g, ' ')
     if (!title || !raw) continue
     // Ashby's endpoint has no query param; filter client-side.
     if (needle && !`${title} ${raw}`.toLowerCase().includes(needle)) continue
     out.push({
       title,
       company,
-      location: clean(typeof j.location === 'string' ? j.location : null) || clean(typeof j.locationName === 'string' ? j.locationName : null) || null,
-      url: typeof j.applyUrl === 'string' ? j.applyUrl : null,
+      location: clean(str(j, 'location')) || clean(str(j, 'locationName')),
+      url: str(j, 'applyUrl') ?? null,
       description: raw,
       salary_range: null,
       source: 'ashby',
@@ -145,15 +166,16 @@ async function fetchSmartRecruiters(companyId: string, keywords: string, opts: C
   if (!payload.content) return []
   const out: CreateJobInput[] = []
   for (const j of payload.content) {
-    const title = clean(typeof j.name === 'string' ? j.name : null)
-    const company = clean(typeof j.company?.name === 'string' ? j.company.name : null) || companyId
-    const raw = clean(typeof j.jobAd?.sections?.companyDescription?.text === 'string' ? j.jobAd.sections.companyDescription.text : '').replace(/<[^>]+>/g, ' ')
+    const title = clean(str(j, 'name'))
+    const company = clean(nested(j, 'company', 'name')) || companyId
+    const raw = clean(nested(j, 'jobAd', 'sections', 'companyDescription', 'text')).replace(/<[^>]+>/g, ' ')
     if (!title || !raw) continue
+    const ref = str(j, 'ref')
     out.push({
       title,
       company,
-      location: clean(typeof j.location?.city === 'string' ? j.location.city : null) || null,
-      url: typeof j.ref === 'string' ? `https://jobs.smartrecruiters.com/${companyId}/${j.ref}` : null,
+      location: clean(nested(j, 'location', 'city')),
+      url: ref ? `https://jobs.smartrecruiters.com/${companyId}/${ref}` : null,
       description: raw,
       salary_range: null,
       source: 'smartrecruiters',
@@ -190,13 +212,14 @@ async function fetchWorkday(tenantPath: string, keywords: string, opts: CommonOp
   if (!payload.jobPostings) return []
   const out: CreateJobInput[] = []
   for (const j of payload.jobPostings) {
-    const title = clean(typeof j.title === 'string' ? j.title : null)
+    const title = clean(str(j, 'title'))
     if (!title) continue
+    const externalPath = str(j, 'externalPath')
     out.push({
       title,
       company: tenantPath.split('/').pop() || tenantPath,
-      location: clean(typeof j.locationsText === 'string' ? j.locationsText : null) || null,
-      url: typeof j.externalPath === 'string' ? `https://${tenantPath}${j.externalPath}` : null,
+      location: clean(str(j, 'locationsText')),
+      url: externalPath ? `https://${tenantPath}${externalPath}` : null,
       // Workday's job list endpoint doesn't return full descriptions;
       // skip these for now and let the per-job endpoint handle the
       // detail page (added to BOARDS scrape path elsewhere).
