@@ -1179,7 +1179,7 @@ app.whenReady().then(() => {
       }
       db.markWorkModeNormalized()
     } catch (err) {
-      console.error('[startup] Work mode retrofit failed:', err)
+      log.startup.error('Work mode retrofit failed:', err)
     }
   }
 
