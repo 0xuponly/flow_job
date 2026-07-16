@@ -1147,7 +1147,16 @@ ${htmlBody}
   // AI Queue
   ipcMain.handle('aiQueue:list', () => db.getAIQueue())
 
-  ipcMain.handle('boards:list', () => BOARDS.map((b) => ({ name: b.name, useBrowser: b.useBrowser })))
+  ipcMain.handle('boards:list', () => {
+    // Per-board enabled flag, sourced from settings.disabled_boards.
+    // The Settings > Boards tab maintains that list; the scan page
+    // reads `enabled` to decide which boards to render in the picker
+    // and the main-process scan loop applies the same filter as a
+    // defence-in-depth check (the renderer's filter alone is a UX
+    // concern; this is the actual enforcement).
+    const disabled = new Set(db.getSettings().disabled_boards || [])
+    return BOARDS.map((b) => ({ name: b.name, useBrowser: b.useBrowser, enabled: !disabled.has(b.name) }))
+  })
   ipcMain.handle('boards:health', () => db.getBoardHealth())
   ipcMain.handle('aiQueue:retry', (_e, id: number) => {
     db.updateAIQueueItem(id, { status: 'pending', nextRetryAt: Date.now(), lastError: undefined })

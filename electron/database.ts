@@ -251,6 +251,13 @@ function loadStore(): Store {
     if (typeof store.settings.auto_scan_interval_minutes !== 'number' || store.settings.auto_scan_interval_minutes <= 0) {
       store.settings.auto_scan_interval_minutes = 120
     }
+    if (!Array.isArray(store.settings.disabled_boards)) {
+      // Per-board on/off list, populated by the Settings > Boards tab.
+      // Empty array = all boards enabled (current default for users
+      // upgrading to this version). Strings are board names matching
+      // `BOARDS[].name` in `electron/jobSearch.ts`.
+      store.settings.disabled_boards = []
+    }
     let jobsMigrated = false
     for (const j of store.jobs) {
       if (j.url) {

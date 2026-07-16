@@ -131,6 +131,10 @@ export interface Settings {
   aggregator_jobicy_enabled: boolean
   aggregator_himalayas_enabled: boolean
   ats_boards: AtsBoard[]
+  // Names of job boards the user has disabled. Boards in this list
+  // are hidden from the scan page picker AND skipped by the main-
+  // process scan loop. Empty array = all boards enabled.
+  disabled_boards: string[]
 }
 
 export type AtsPlatform = 'greenhouse' | 'lever' | 'ashby' | 'workday' | 'smartrecruiters'

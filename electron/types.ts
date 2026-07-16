@@ -159,6 +159,7 @@ export interface Settings {
   aggregator_jobicy_enabled: boolean
   aggregator_himalayas_enabled: boolean
   ats_boards: AtsBoard[]
+  disabled_boards: string[]
 }
 
 export type AtsPlatform = 'greenhouse' | 'lever' | 'ashby' | 'workday' | 'smartrecruiters'
