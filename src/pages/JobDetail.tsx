@@ -583,7 +583,7 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
           )}
 
           <div style={{ marginTop: 16 }}>
-            <div className="card" style={{ padding: '8px 12px', display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', minHeight: 56, width: 'fit-content' }}>
+            <div className="card" style={{ padding: '8px 12px', minHeight: 56 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
                 <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)' }}>Fit</div>
                 <button
