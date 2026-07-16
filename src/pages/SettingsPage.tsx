@@ -700,6 +700,7 @@ export default function SettingsPage() {
                 const categoryLabel = allEnabled
                   ? `− ${t.label}`
                   : `+ ${t.label}`
+                const enabledCount = inCategory.length - inCategory.filter((n) => disabled.has(n)).length
                 return (
                   <div key={t.label} className="card" style={{ maxWidth: 700, marginBottom: 12, padding: 0 }}>
                     <div style={{
@@ -712,7 +713,7 @@ export default function SettingsPage() {
                       <div>
                         <strong style={{ fontSize: 14 }}>{t.label}</strong>
                         <span style={{ marginLeft: 8, fontSize: 12, color: 'var(--text-muted)' }}>
-                          {anyEnabled ? `${inCategory.length - inCategory.filter((n) => disabled.has(n)).length} of ${inCategory.length} enabled` : 'all disabled'}
+                          {anyEnabled ? `${enabledCount} of ${inCategory.length} enabled` : 'all disabled'}
                         </span>
                       </div>
                       <button
@@ -723,49 +724,52 @@ export default function SettingsPage() {
                         {categoryLabel}
                       </button>
                     </div>
-                    {[...boards]
-                      .filter((b) => inCategory.includes(b.name))
-                      .sort((a, b) => a.name.localeCompare(b.name))
-                      .map((b, i, arr) => {
-                        const isOn = !disabled.has(b.name)
-                        return (
-                          <div
-                            key={b.name}
-                            style={{
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              alignItems: 'center',
-                              padding: '8px 16px',
-                              borderBottom: i < arr.length - 1 ? '1px solid var(--border)' : 'none',
-                              opacity: isOn ? 1 : 0.55
-                            }}
-                          >
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <span style={{ fontSize: 13 }}>{b.name}</span>
-                              <span style={{
-                                fontSize: 10,
-                                color: 'var(--text-muted)',
-                                textTransform: 'uppercase',
-                                letterSpacing: 0.5,
-                                border: '1px solid var(--border)',
-                                borderRadius: 3,
-                                padding: '1px 5px'
-                              }} title={b.useBrowser ? 'Uses a browser session to scrape' : 'HTTP-only'}>
-                                {b.useBrowser ? 'browser' : 'http'}
-                              </span>
-                            </div>
-                            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
+                    {/*
+                      Compact multi-column checkbox grid, mirroring the
+                      scan page board picker. Each board is a single
+                      label in the grid; the checkbox state is the
+                      only on/off indicator (no "Enabled/Disabled" text,
+                      no per-row border). Disabled boards fade to ~55%
+                      opacity so the user can see them but they're
+                      visually de-emphasized.
+                    */}
+                    <div style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+                      gap: 4,
+                      padding: 8
+                    }}>
+                      {[...boards]
+                        .filter((b) => inCategory.includes(b.name))
+                        .sort((a, b) => a.name.localeCompare(b.name))
+                        .map((b) => {
+                          const isOn = !disabled.has(b.name)
+                          return (
+                            <label
+                              key={b.name}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 6,
+                                fontSize: 13,
+                                cursor: 'pointer',
+                                minWidth: 0,
+                                opacity: isOn ? 1 : 0.55
+                              }}
+                            >
                               <input
                                 type="checkbox"
                                 checked={isOn}
                                 disabled={boardsSaving}
                                 onChange={(e) => toggleBoard(b.name, e.target.checked)}
                               />
-                              {isOn ? 'Enabled' : 'Disabled'}
+                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {b.name}
+                              </span>
                             </label>
-                          </div>
-                        )
-                      })}
+                          )
+                        })}
+                    </div>
                   </div>
                 )
               })}
@@ -785,48 +789,42 @@ export default function SettingsPage() {
                     }}>
                       <strong style={{ fontSize: 14 }}>Other</strong>
                     </div>
-                    {uncategorized
-                      .sort((a, b) => a.name.localeCompare(b.name))
-                      .map((b, i, arr) => {
-                        const isOn = !disabled.has(b.name)
-                        return (
-                          <div
-                            key={b.name}
-                            style={{
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              alignItems: 'center',
-                              padding: '8px 16px',
-                              borderBottom: i < arr.length - 1 ? '1px solid var(--border)' : 'none',
-                              opacity: isOn ? 1 : 0.55
-                            }}
-                          >
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <span style={{ fontSize: 13 }}>{b.name}</span>
-                              <span style={{
-                                fontSize: 10,
-                                color: 'var(--text-muted)',
-                                textTransform: 'uppercase',
-                                letterSpacing: 0.5,
-                                border: '1px solid var(--border)',
-                                borderRadius: 3,
-                                padding: '1px 5px'
-                              }} title={b.useBrowser ? 'Uses a browser session to scrape' : 'HTTP-only'}>
-                                {b.useBrowser ? 'browser' : 'http'}
-                              </span>
-                            </div>
-                            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
+                    <div style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+                      gap: 4,
+                      padding: 8
+                    }}>
+                      {uncategorized
+                        .sort((a, b) => a.name.localeCompare(b.name))
+                        .map((b) => {
+                          const isOn = !disabled.has(b.name)
+                          return (
+                            <label
+                              key={b.name}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 6,
+                                fontSize: 13,
+                                cursor: 'pointer',
+                                minWidth: 0,
+                                opacity: isOn ? 1 : 0.55
+                              }}
+                            >
                               <input
                                 type="checkbox"
                                 checked={isOn}
                                 disabled={boardsSaving}
                                 onChange={(e) => toggleBoard(b.name, e.target.checked)}
                               />
-                              {isOn ? 'Enabled' : 'Disabled'}
+                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {b.name}
+                              </span>
                             </label>
-                          </div>
-                        )
-                      })}
+                          )
+                        })}
+                    </div>
                   </div>
                 )
               })()}
