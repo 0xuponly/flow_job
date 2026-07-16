@@ -675,12 +675,12 @@ export default function SettingsPage() {
       {tab === 'boards' && (
         <>
           <div className="section-title">Job Boards</div>
-          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, maxWidth: 700 }}>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
             Toggle individual boards or entire categories on or off. Disabled boards won't appear in the scan page picker and won't be scraped, even if they're in your saved selection.
           </p>
 
           {boards.length === 0 ? (
-            <div className="card" style={{ maxWidth: 700, padding: 16, fontSize: 13, color: 'var(--text-muted)', textAlign: 'center', fontStyle: 'italic' }}>
+            <div className="card" style={{ padding: 16, fontSize: 13, color: 'var(--text-muted)', textAlign: 'center', fontStyle: 'italic' }}>
               {boardsSaving ? 'Saving…' : 'Loading boards…'}
             </div>
           ) : (
