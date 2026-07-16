@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import type { ScanResult, WorkType } from '../types'
 import { BOARD_TYPES } from '../boardTypes'
+import { usePersistedState } from '../persistedState'
 
 function formatDuration(s: number): string {
   const h = Math.floor(s / 3600)
@@ -42,11 +43,23 @@ let _nextId = 0
 let _showAllScanColumns = false
 
 export default function ScanJobsPage() {
-  const [keywords, setKeywords] = useState('')
-  const [location, setLocation] = useState('')
-  const [workType, setWorkType] = useState<WorkType>('any')
+  const [keywords, setKeywords, resetKeywords] = usePersistedState<string>('scan:keywords', '')
+  const [location, setLocation, resetLocation] = usePersistedState<string>('scan:location', '')
+  const [workType, setWorkType, resetWorkType] = usePersistedState<WorkType>('scan:workType', 'any')
   const [allBoards, setAllBoards] = useState<{ name: string; useBrowser: boolean }[]>([])
-  const [selectedBoards, setSelectedBoards] = useState<Set<string>>(new Set())
+  // Stored as a string[] in localStorage. `null` means "no saved
+  // selection yet" — the boards-load effect will compute the default
+  // (all minus frequent errors) and persist it. Once the user
+  // changes the selection, their value sticks across reloads.
+  const [selectedBoardsRaw, setSelectedBoardsRaw, resetSelectedBoards] = usePersistedState<string[] | null>('scan:selected', null)
+  const selectedBoards = new Set(selectedBoardsRaw ?? [])
+  const setSelectedBoards = (next: Set<string> | ((prev: Set<string>) => Set<string>)) => {
+    setSelectedBoardsRaw((prev) => {
+      const prevSet = new Set(prev ?? [])
+      const nextSet = typeof next === 'function' ? next(prevSet) : next
+      return Array.from(nextSet)
+    })
+  }
   const [boardsExpanded, setBoardsExpanded] = useState(false)
   const [boardHealth, setBoardHealth] = useState<Record<string, number[]>>({})
   const [scanning, setScanning] = useState(false)
