@@ -667,8 +667,8 @@ export default function ScanJobsPage() {
                     type="button"
                     className="btn btn-secondary btn-sm"
                     onClick={() => { _showAllScanColumns = !_showAllScanColumns; setResult({ ...result }) }}
-                    title={_showAllScanColumns ? 'Hide added/skipped/errors columns' : 'Show added/skipped/errors columns'}
-                    aria-label={_showAllScanColumns ? 'Hide added/skipped/errors columns' : 'Show added/skipped/errors columns'}
+                    title={_showAllScanColumns ? 'Hide added/skipped/incompatible/errors columns' : 'Show added/skipped/incompatible/errors columns'}
+                    aria-label={_showAllScanColumns ? 'Hide added/skipped/incompatible/errors columns' : 'Show added/skipped/incompatible/errors columns'}
                     style={{ width: 28, height: 28, minWidth: 28, padding: 0, justifyContent: 'center' }}
                   >
                     {_showAllScanColumns ? '−' : '+'}
@@ -703,6 +703,7 @@ export default function ScanJobsPage() {
                   <th>Added</th>
                   {_showAllScanColumns && <th>Found</th>}
                   {_showAllScanColumns && <th>Skipped</th>}
+                  {_showAllScanColumns && <th>Incompatible</th>}
                   {_showAllScanColumns && <th>Errors</th>}
                   <th></th>
                 </tr>
@@ -715,6 +716,7 @@ export default function ScanJobsPage() {
                     <td style={{ color: '#22c55e', fontWeight: 600 }}>{b.added}</td>
                     {_showAllScanColumns && <td>{b.found}</td>}
                     {_showAllScanColumns && <td>{b.skipped}</td>}
+                    {_showAllScanColumns && <td>{b.incompatible}</td>}
                     {_showAllScanColumns && <td style={{ color: b.errors > 0 ? '#ef4444' : undefined }}>{b.errors}</td>}
                     <td>
                       {b.error && <span style={{ color: '#ef4444', fontSize: 12 }}>{b.error}</span>}
