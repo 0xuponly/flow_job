@@ -1181,14 +1181,14 @@ export async function scanAllBoards(
           }
           if (findDuplicateJob(input)) {
             if (dk) seenUrls.add(dk)
-            br.skipped++; result.totalSkipped++
+            br.skipped++; bump('totalSkipped')
             continue
           }
           if (!matchesWorkType(`${input.title} ${input.description ?? ''}`, workType)) {
-            br.incompatible++; result.totalIncompatible++; continue
+            br.incompatible++; bump('totalIncompatible'); continue
           }
           if (!matchesLocation(input.location ?? null, location)) {
-            br.incompatible++; result.totalIncompatible++; continue
+            br.incompatible++; bump('totalIncompatible'); continue
           }
           try {
             const heuristicScore = scoreCompatibility(input.title, input.description ?? '', baseCv)
@@ -1201,13 +1201,13 @@ export async function scanAllBoards(
             if (dk) { seenUrls.add(dk); scanSeenUrls.add(dk) }
             added++
             br.added++
-            result.totalAdded++
+            bump('totalAdded')
             result.addedJobs.push({ id: job.id, title: decodeEntities(job.title), company: decodeEntities(job.company) })
             progress(`✓ Added ${decodeEntities(job.company)} — ${decodeEntities(job.title)}`)
           } catch (err) {
-            if (err instanceof JobBlacklistedError) { br.skipped++; result.totalSkipped++ }
-            else if (err instanceof JobDuplicateError) { br.skipped++; result.totalSkipped++ }
-            else { br.errors++; result.totalErrors++ }
+            if (err instanceof JobBlacklistedError) { br.skipped++; bump('totalSkipped') }
+            else if (err instanceof JobDuplicateError) { br.skipped++; bump('totalSkipped') }
+            else { br.errors++; bump('totalErrors') }
           }
         }
         result.boards.push(br)
