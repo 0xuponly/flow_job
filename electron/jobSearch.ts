@@ -1037,15 +1037,22 @@ export async function scanAllBoards(
   // re-derives the per-board view from the final result on scan:complete.
   // Cheap to call: it's a reference, and the renderer throttles its own
   // re-renders via setState batching.
-  const emitCounters = () => {
-    if (!onCounters) return
-    onCounters({
-      totalFound: result.totalFound,
-      totalAdded: result.totalAdded,
-      totalSkipped: result.totalSkipped,
-      totalIncompatible: result.totalIncompatible,
-      totalErrors: result.totalErrors
-    })
+  //
+  // `bump()` is the only sanctioned way to mutate the totals — every
+  // counter site uses it so the live emit can never be skipped. Falls
+  // back to a direct mutation when no onCounters callback is wired
+  // (e.g. the existing direct callers / unit tests).
+  const bump = (field: 'totalAdded' | 'totalSkipped' | 'totalIncompatible' | 'totalErrors') => {
+    result[field]++
+    if (onCounters) {
+      onCounters({
+        totalFound: result.totalFound,
+        totalAdded: result.totalAdded,
+        totalSkipped: result.totalSkipped,
+        totalIncompatible: result.totalIncompatible,
+        totalErrors: result.totalErrors
+      })
+    }
   }
 
   const LISTING_CONCURRENCY = 6
