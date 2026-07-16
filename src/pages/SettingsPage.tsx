@@ -737,7 +737,7 @@ export default function SettingsPage() {
                     */}
                     <div style={{
                       display: 'grid',
-                      gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+                      gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
                       gap: 4,
                       padding: 8
                     }}>
@@ -805,7 +805,7 @@ export default function SettingsPage() {
                     </div>
                     <div style={{
                       display: 'grid',
-                      gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+                      gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
                       gap: 4,
                       padding: 8
                     }}>
