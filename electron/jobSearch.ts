@@ -436,7 +436,15 @@ const BOARD_NAV_TEXT_PATTERNS: Readonly<Record<string, readonly RegExp[]>> = {
     /^browse jobs?$/i,
     /^all jobs?$/i,
     /^salary$/i,
-    /^companies?$/i
+    /^companies?$/i,
+    // Career-advice / resource category pages that share a
+    // /career-... path with real jobs but aren't listings.
+    /^resume guides?$/i,
+    /^cover letter guides?$/i,
+    /^interview guides?$/i,
+    /^job search guides?$/i,
+    /^career path guides?$/i,
+    /^salary (tools?|guide|calculator)$/i
   ],
   LinkedIn: [
     /^skip to (content|main)/i,
