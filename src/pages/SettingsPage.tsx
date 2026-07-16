@@ -453,7 +453,7 @@ export default function SettingsPage() {
       </div>
 
       {encryptionMode === 'plaintext-fallback' && (
-        <div className="alert alert-warning" style={{ maxWidth: 800 }}>
+        <div className="alert alert-warning">
           <strong>Encryption unavailable.</strong> Your OS keyring is not accessible, so your data (CV, contacts, applications) is being stored <strong>encrypted with a key sitting in plaintext next to it</strong>. This is better than nothing, but treat this machine as untrusted.
         </div>
       )}
