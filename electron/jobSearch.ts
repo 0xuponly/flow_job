@@ -1,6 +1,10 @@
 import { createJob, findDuplicateJob, getSeenUrls, getSettings, listJobs, recordBoardResults, JobBlacklistedError, JobDuplicateError } from './database'
 import { decodeEntities } from './utils'
 import { scrapeJobFromUrl } from './jobScraper'
+import { createLogger } from './logger'
+
+// File-backed category logger. Writes to <userData>/logs/scanner.log.
+const log = createLogger('scanner')
 import { fetchHtmlViaBrowser, isChallengePage, paginateHtmlViaBrowser } from './browserScraper'
 import { scoreJobFit } from './ai'
 export { scoreCompatibility } from './fitHeuristic'
@@ -883,7 +887,7 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
           // pagination, or page N doesn't exist (server returns a
           // short error page that the < 500-byte check already
           // catches, but this is a belt for unusual statuses).
-          console.warn(`[scanner] ${board.name} page ${url} failed:`, err)
+          log.warn(`${board.name} page ${url} failed:`, err)
           break
         }
       }
