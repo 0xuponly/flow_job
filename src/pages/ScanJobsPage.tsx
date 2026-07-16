@@ -7,10 +7,27 @@ function formatDuration(s: number): string {
   const h = Math.floor(s / 3600)
   const m = Math.floor((s % 3600) / 60)
   const sec = s % 60
-  const parts: string[] = []  if (h) parts.push(`${h}h`)
+  const parts: string[] = []
+  if (h) parts.push(`${h}h`)
   if (m) parts.push(`${m}m`)
   parts.push(`${sec}s`)
   return parts.join(' ')
+}
+
+// A board is a "Frequent Error" if its last 5+ health entries are all
+// `<= 0` (i.e. it consistently returns no jobs or errors). Used both
+// to (a) deselect these boards by default in the picker, and
+// (b) render the "Select/Deselect Frequent Errors" toggle button.
+function findFrequentErrorBoards(
+  boards: { name: string }[],
+  boardHealth: Record<string, number[]>
+): string[] {
+  return boards
+    .filter((b) => {
+      const history = boardHealth[b.name] || []
+      return history.length >= 5 && history.every((h) => h <= 0)
+    })
+    .map((b) => b.name)
 }
 
 interface ProgressEntry {
