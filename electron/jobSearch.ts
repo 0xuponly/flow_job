@@ -6,6 +6,11 @@ import { createLogger } from './logger'
 // File-backed category logger. Writes to <userData>/logs/scanner.log.
 const log = createLogger('scanner')
 import { fetchHtmlViaBrowser, isChallengePage, paginateHtmlViaBrowser } from './browserScraper'
+import { fetchAdzunaJobs } from './adzuna'
+import { fetchArbeitnowJobs, fetchHimalayasJobs, fetchJobicyJobs, fetchRemotiveJobs } from './aggregatorApis'
+import { fetchAtsJobs } from './atsAdapter'
+import { fetchJobBankJobs, fetchWorkBcSearchJobs } from './govApis'
+import { fetchRssFeed } from './rssFetcher'
 import { scoreJobFit } from './ai'
 import { scoreCompatibility } from './fitHeuristic'
 export { scoreCompatibility } from './fitHeuristic'
@@ -407,6 +412,62 @@ export const BOARDS: BoardConfig[] = [
       const rewritten = u.pathname.replace(/-(\d+)-\d+$/, () => `-${page}-0`)
       return `${u.origin}${rewritten}`
     }
+  },
+  // Aggregator API boards. Each of these is a separate BOARDS entry
+  // so the per-board stats in the scan results card are accurate
+  // (Remotive vs Arbeitnow overlap a lot but we want the user to
+  // see each one independently). All four are gated on the matching
+  // settings.aggregator_*_enabled flag.
+  {
+    name: 'Remotive (API)',
+    searchUrl: () => 'https://remotive.com/remote-jobs',
+    useBrowser: false,
+    apiFetcher: (k, _l, signal) => fetchRemotiveJobs({ keywords: k, location: '', signal })
+  },
+  {
+    name: 'Arbeitnow (API)',
+    searchUrl: () => 'https://arbeitnow.com',
+    useBrowser: false,
+    apiFetcher: (k, _l, signal) => fetchArbeitnowJobs({ keywords: k, location: '', signal })
+  },
+  {
+    name: 'Jobicy (API)',
+    searchUrl: () => 'https://jobicy.com',
+    useBrowser: false,
+    apiFetcher: (k, _l, signal) => fetchJobicyJobs({ keywords: k, location: '', signal })
+  },
+  {
+    name: 'Himalayas (API)',
+    searchUrl: () => 'https://himalayas.app',
+    useBrowser: false,
+    apiFetcher: (k, _l, signal) => fetchHimalayasJobs({ keywords: k, location: '', signal })
+  },
+  {
+    name: 'ATS boards',
+    searchUrl: () => '',
+    useBrowser: false,
+    // Pulls from the user's configured ats_boards in Settings.
+    apiFetcher: (k, l, signal) => fetchAtsJobs(k, l, signal)
+  },
+  {
+    name: 'We Work Remotely (RSS)',
+    searchUrl: () => 'https://weworkremotely.com/categories/remote-programming-jobs.rss',
+    useBrowser: false,
+    apiFetcher: (_k, _l, signal) => fetchRssFeed('https://weworkremotely.com/categories/remote-programming-jobs.rss', 'weworkremotely', { signal })
+  },
+  {
+    name: 'Authentic Jobs (RSS)',
+    searchUrl: () => 'https://authenticjobs.com/?feed=job_feed',
+    useBrowser: false,
+    apiFetcher: (_k, _l, signal) => fetchRssFeed('https://authenticjobs.com/?feed=job_feed', 'authenticjobs', { signal })
+  },
+  {
+    name: 'Job Bank GC (API)',
+    // First-party JSON-LD search endpoint. Replaces the legacy
+    // scrape path that was the most-fragile board in the list.
+    searchUrl: () => 'https://www.jobbank.gc.ca/jobsearch/search',
+    useBrowser: false,
+    apiFetcher: (k, l, signal) => fetchJobBankJobs(k, l, { signal })
   }
 ]
 
@@ -1056,6 +1117,64 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
     try {
       const locTag = location ? ` (${location})` : ''
       progress(`Scanning ${board.name}${locTag}...`)
+
+      // First-party API path. When a board exposes a structured
+      // API (Adzuna, Greenhouse, etc.), the fetcher returns ready-
+      // to-insert jobs that skip the listing/scrape/score funnel
+      // entirely. We still apply the same work-type/location/dup
+      // guards and the LLM scoreJobFit heuristic pre-filter via
+      // createJob's path; the difference is that the listing page
+      // and the per-job scrape are gone.
+      if (board.apiFetcher) {
+        const tApi0 = Date.now()
+        const apiJobs = await board.apiFetcher(keywords, location, signal)
+        if (process.env.FLOW_JOB_SCAN_TIMING) {
+          console.error(`[scan] stage=api board=${board.name} jobs=${apiJobs.length} ms=${Date.now() - tApi0}`)
+        }
+        br.found = apiJobs.length
+        let added = 0
+        for (const input of apiJobs) {
+          if (signal?.aborted) break
+          const dk = input.url ? dedupKey(input.url) : null
+          if (dk) {
+            if (seenUrls.has(dk)) { br.skipped++; result.totalSkipped++; continue }
+            if (scanSeenUrls.has(dk)) { br.skipped++; result.totalSkipped++; continue }
+          }
+          if (findDuplicateJob(input)) {
+            if (dk) seenUrls.add(dk)
+            br.skipped++; result.totalSkipped++
+            continue
+          }
+          if (!matchesWorkType(`${input.title} ${input.description ?? ''}`, workType)) {
+            br.incompatible++; result.totalIncompatible++; continue
+          }
+          if (!matchesLocation(input.location ?? null, location)) {
+            br.incompatible++; result.totalIncompatible++; continue
+          }
+          try {
+            const heuristicScore = scoreCompatibility(input.title, input.description ?? '', baseCv)
+            const { job } = createJob({
+              ...input,
+              ...(baseCv && heuristicScore < 0.15
+                ? { score: null, fit_rationale: 'Pre-filtered by heuristic (low keyword overlap)', fit_breakdown: null, fit_score_version: null, fit_last_error: null }
+                : { score: null, fit_rationale: null, fit_breakdown: null, fit_score_version: null, fit_last_error: null })
+            })
+            if (dk) { seenUrls.add(dk); scanSeenUrls.add(dk) }
+            added++
+            br.added++
+            result.totalAdded++
+            result.addedJobs.push({ id: job.id, title: decodeEntities(job.title), company: decodeEntities(job.company) })
+            progress(`✓ Added ${decodeEntities(job.company)} — ${decodeEntities(job.title)}`)
+          } catch (err) {
+            if (err instanceof JobBlacklistedError) { br.skipped++; result.totalSkipped++ }
+            else if (err instanceof JobDuplicateError) { br.skipped++; result.totalSkipped++ }
+            else { br.errors++; result.totalErrors++ }
+          }
+        }
+        result.boards.push(br)
+        return br
+      }
+
       const searchUrl = board.searchUrl(keywords, location)
       const tFetch0 = Date.now()
       const html = await fetchBoardListingsHtml(searchUrl, board)

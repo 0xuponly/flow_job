@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
-import type { ApiModelConfig, Settings } from '../types'
+import type { ApiModelConfig, AtsBoard, Settings } from '../types'
 import { notify } from '../components/Notifications'
 import Modal from '../components/Modal'
 
@@ -618,6 +618,128 @@ export default function SettingsPage() {
               ))}
             </div>
           )}
+
+          <div className="section-title">Data Sources</div>
+          <div className="card" style={{ maxWidth: 600, marginBottom: 12 }}>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+              Adzuna replaces the scrape of <code>adzuna.com</code> with structured JSON.
+              Get a free API key at <a href="https://developer.adzuna.com/" target="_blank" rel="noreferrer">developer.adzuna.com</a>.
+            </p>
+            <div className="form-row">
+              <div className="form-group">
+                <label>Adzuna app_id</label>
+                <input
+                  value={settings.adzuna_app_id ?? ''}
+                  onChange={(e) => update('adzuna_app_id', e.target.value)}
+                  placeholder="app_id"
+                />
+              </div>
+              <div className="form-group">
+                <label>Adzuna app_key</label>
+                <input
+                  type="password"
+                  value={settings.adzuna_app_key ?? ''}
+                  onChange={(e) => update('adzuna_app_key', e.target.value)}
+                  placeholder="app_key"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="card" style={{ maxWidth: 600, marginBottom: 12 }}>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+              Free public job APIs for remote work. No keys required.
+            </p>
+            <div className="form-group">
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={settings.aggregator_remotive_enabled ?? false}
+                  onChange={(e) => update('aggregator_remotive_enabled', e.target.checked)}
+                />
+                Remotive
+              </label>
+            </div>
+            <div className="form-group">
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={settings.aggregator_arbeitnow_enabled ?? false}
+                  onChange={(e) => update('aggregator_arbeitnow_enabled', e.target.checked)}
+                />
+                Arbeitnow
+              </label>
+            </div>
+            <div className="form-group">
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={settings.aggregator_jobicy_enabled ?? false}
+                  onChange={(e) => update('aggregator_jobicy_enabled', e.target.checked)}
+                />
+                Jobicy
+              </label>
+            </div>
+            <div className="form-group">
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={settings.aggregator_himalayas_enabled ?? false}
+                  onChange={(e) => update('aggregator_himalayas_enabled', e.target.checked)}
+                />
+                Himalayas
+              </label>
+            </div>
+          </div>
+
+          <div className="card" style={{ maxWidth: 600 }}>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+              Add company career pages hosted on Greenhouse, Lever, Ashby, Workday, or SmartRecruiters.
+              The token is the company's slug (e.g. <code>stripe</code> for Greenhouse).
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+              {(settings.ats_boards ?? []).map((b) => (
+                <div key={b.id} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <input
+                    value={b.name}
+                    onChange={(e) => updateAtsBoard(b.id, { name: e.target.value })}
+                    placeholder="Display name"
+                    style={{ flex: 1 }}
+                  />
+                  <select
+                    value={b.platform}
+                    onChange={(e) => updateAtsBoard(b.id, { platform: e.target.value as typeof b.platform })}
+                    style={{ flex: 1 }}
+                  >
+                    <option value="greenhouse">Greenhouse</option>
+                    <option value="lever">Lever</option>
+                    <option value="ashby">Ashby</option>
+                    <option value="workday">Workday</option>
+                    <option value="smartrecruiters">SmartRecruiters</option>
+                  </select>
+                  <input
+                    value={b.token}
+                    onChange={(e) => updateAtsBoard(b.id, { token: e.target.value })}
+                    placeholder="company slug or workday path"
+                    style={{ flex: 2 }}
+                  />
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <input
+                      type="checkbox"
+                      checked={b.enabled !== false}
+                      onChange={(e) => updateAtsBoard(b.id, { enabled: e.target.checked })}
+                    />
+                  </label>
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => removeAtsBoard(b.id)}>
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={addAtsBoard}>
+              + Add ATS board
+            </button>
+          </div>
         </>
       )}
 
