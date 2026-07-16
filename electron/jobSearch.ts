@@ -572,7 +572,13 @@ function extractJobUrls(html: string, baseUrl: string, boardName: string): { url
     if (NAV_PATHS.test(pathname)) continue
 
     if (boardLower.includes('linkedin')) {
-      if (!pathname.includes('/jobs/')) continue
+      // Real LinkedIn job URLs have shape
+      // /jobs/view/{slug}-at-{company}-{numericId}. The category
+      // sub-index pages (e.g. /jobs/engineering-jobs,
+      // /jobs/13,000-finance-jobs-in-north-york) also start with
+      // /jobs/ but are not real jobs. Requiring /jobs/view/ is the
+      // tightest path-level filter that catches both.
+      if (!pathname.includes('/jobs/view/')) continue
     } else if (boardLower.includes('indeed')) {
       if (!pathname.includes('/viewjob') && !pathname.includes('/rc/')) continue
     } else if (boardLower.includes('web3.career')) {
