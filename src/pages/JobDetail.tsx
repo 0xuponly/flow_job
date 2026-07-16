@@ -14,6 +14,17 @@ interface Props {
   onDelete: (id: number) => void
 }
 
+// Format an ISO date string as MM/DD/YY for the Application deadline
+// card. Mirrors formatJobDate in JobsPage.tsx — kept local until a
+// third caller shows up, at which point a shared util is justified.
+function formatJobDate(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return '—'
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${String(d.getFullYear()).slice(-2)}`
+}
+
 export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
   const [application, setApplication] = useState<Application | null>(null)
   const [documents, setDocuments] = useState<Document[]>([])
