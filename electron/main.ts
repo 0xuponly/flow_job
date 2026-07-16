@@ -1206,7 +1206,7 @@ app.whenReady().then(() => {
     try {
       const result = db.clearHeuristicPersistedScores()
       if (result.updated > 0) {
-        console.log(`[startup] Cleared heuristic-persisted fit on ${result.updated}/${result.total} jobs.`)
+        log.startup.info(`Cleared heuristic-persisted fit on ${result.updated}/${result.total} jobs.`)
       }
     } catch (err) {
       console.error('[startup] Heuristic-clear failed:', err)
