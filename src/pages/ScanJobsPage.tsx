@@ -658,7 +658,7 @@ export default function ScanJobsPage() {
         </div>
         <div style={{ marginTop: 12 }}>
           <button className="btn btn-primary" onClick={handleScan} disabled={scanning || selectedBoards.size === 0}>
-            {scanning ? 'Scanning boards...' : selectedBoards.size < allBoards.length
+            {scanning ? 'Scanning boards...' : selectedBoards.size < enabledBoards.length
               ? `Scan ${selectedBoards.size} selected board${selectedBoards.size === 1 ? '' : 's'}`
               : 'Scan all boards'}
           </button>
