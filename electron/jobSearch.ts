@@ -818,11 +818,16 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
     if (board.paginate) {
       const firstPage = await fetchPageHtml(searchUrl, board.useBrowser)
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-      const nextUrls = board.paginate(searchUrl)
-      if (nextUrls.length === 0) return firstPage
       const chunks: string[] = [firstPage]
-      for (const url of nextUrls) {
+      // Start at page 1 (the searchUrl was page 0). Loop until the
+      // driver returns '' (signaling "no more pages"), the fetch
+      // returns a short page (< 500 bytes = empty/error), the
+      // driver throws, or the user aborts. No hard cap on iteration
+      // count — the empty-page check is the natural terminator.
+      for (let p = 1; p < 10_000; p++) {
         if (signal?.aborted) break
+        const url = board.paginate(searchUrl, p)
+        if (!url) break
         try {
           const html = await fetchPageHtml(url, board.useBrowser)
           if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
@@ -833,9 +838,9 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
           chunks.push(html)
         } catch (err) {
           // A single page failure shouldn't kill the whole scan —
-          // log and keep going. Common causes: the site rate-limits
-          // mid-pagination, or page N doesn't exist (server returns
-          // a short error page that the < 500-byte check already
+          // log and stop. Common causes: site rate-limits mid-
+          // pagination, or page N doesn't exist (server returns a
+          // short error page that the < 500-byte check already
           // catches, but this is a belt for unusual statuses).
           console.warn(`[scanner] ${board.name} page ${url} failed:`, err)
           break
