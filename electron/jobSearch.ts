@@ -27,6 +27,15 @@ interface BoardConfig {
   name: string
   searchUrl: (keywords: string, location: string) => string
   useBrowser: boolean
+  /**
+   * Optional pagination driver. If set, the board driver fetches the
+   * search URL, then iterates the URLs returned here, concatenating the
+   * HTML of each page. The driver should keep producing URLs until
+   * the caller breaks the loop (the driver itself decides when to
+   * stop — typically by detecting an empty page or no more pages).
+   * If omitted, the board is treated as single-page.
+   */
+  paginate?: (searchUrl: string) => string[]
 }
 
 export const BOARDS: BoardConfig[] = [
@@ -770,36 +779,72 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
 
   const LISTING_CONCURRENCY = 6
 
-  // Maximum pages to follow for paginated boards. 10 is enough to cover
-  // the long tail of any single query — going further burns time and
-  // hits the user's patience limit before adding unique jobs.
-  const MAX_PAGES = 10
+  // Maximum pages to follow for paginated boards. 50 covers the long
+  // tail of a single search query on boards that paginate via a fixed
+  // page-number URL (e.g. NH/IH, which list ~1.7k jobs ≈ 170 pages at
+  // 10 per page). Boards that define their own `paginate` driver ignore
+  // this cap and stop on empty-page detection or signal abort instead.
+  const MAX_PAGES = 50
 
   /**
    * Fetch the search-results HTML for a board, paginating if the board
-   * needs it. The default path is the original single-fetch behaviour
-   * used by every board. WorkBC is the only board that needs the SPA
-   * hash-router driven explicitly — its search uses `#/job-search;...`
-   * and `loadURL` to a new fragment would not re-render the listing.
-   * `paginateHtmlViaBrowser` handles the per-page reload + render wait.
+   * needs it.
+   *
+   *   - WorkBC: hash-routed SPA, driven by `paginateHtmlViaBrowser` with
+   *     `MAX_PAGES` cap (the SPA needs a real browser to re-render on
+   *     hash change).
+   *   - Boards with a custom `paginate` driver (e.g. NH/IH): each URL
+   *     is plain-fetched and concatenated. The driver decides when to
+   *     stop; this loop breaks on empty page or signal abort.
+   *   - Default: single fetch, same as before.
    */
   async function fetchBoardListingsHtml(searchUrl: string, board: BoardConfig): Promise<string> {
-    if (board.name !== 'WorkBC') {
-      return fetchPageHtml(searchUrl, board.useBrowser)
+    if (board.name === 'WorkBC') {
+      // WorkBC's search-results page is `/find-job/search-jobs#/job-search;...`.
+      // The hash carries `q`, `city`, and `page`. Build the hashes for pages
+      // 2..MAX_PAGES by string-replacing the `page=N` segment.
+      const baseUrl = 'https://www.workbc.ca/find-job/search-jobs'
+      const baseHash = new URL(searchUrl).hash.replace(/^#/, '')
+      // Strip any existing ;page=N; segment from the base hash so we can
+      // append our own page numbers.
+      const baseNoPage = baseHash.replace(/;page=\d+/g, '')
+      const pageHashes: string[] = []
+      for (let p = 2; p <= MAX_PAGES; p++) {
+        pageHashes.push(`#${baseNoPage};page=${p}`)
+      }
+      return paginateHtmlViaBrowser(baseUrl, pageHashes, 3000)
     }
-    // WorkBC's search-results page is `/find-job/search-jobs#/job-search;...`.
-    // The hash carries `q`, `city`, and `page`. Build the hashes for pages
-    // 2..MAX_PAGES by string-replacing the `page=N` segment.
-    const baseUrl = 'https://www.workbc.ca/find-job/search-jobs'
-    const baseHash = new URL(searchUrl).hash.replace(/^#/, '')
-    // Strip any existing ;page=N; segment from the base hash so we can
-    // append our own page numbers.
-    const baseNoPage = baseHash.replace(/;page=\d+/g, '')
-    const pageHashes: string[] = []
-    for (let p = 2; p <= MAX_PAGES; p++) {
-      pageHashes.push(`#${baseNoPage};page=${p}`)
+
+    if (board.paginate) {
+      const firstPage = await fetchPageHtml(searchUrl, board.useBrowser)
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+      const nextUrls = board.paginate(searchUrl)
+      if (nextUrls.length === 0) return firstPage
+      const chunks: string[] = [firstPage]
+      for (const url of nextUrls) {
+        if (signal?.aborted) break
+        try {
+          const html = await fetchPageHtml(url, board.useBrowser)
+          if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+          // Stop on empty page: a page with no listings means we've
+          // reached the end. This is what makes "as many pages as
+          // possible" work without a total-page count.
+          if (html.length < 500) break
+          chunks.push(html)
+        } catch (err) {
+          // A single page failure shouldn't kill the whole scan —
+          // log and keep going. Common causes: the site rate-limits
+          // mid-pagination, or page N doesn't exist (server returns
+          // a short error page that the < 500-byte check already
+          // catches, but this is a belt for unusual statuses).
+          console.warn(`[scanner] ${board.name} page ${url} failed:`, err)
+          break
+        }
+      }
+      return chunks.join('\n')
     }
-    return paginateHtmlViaBrowser(baseUrl, pageHashes, 3000)
+
+    return fetchPageHtml(searchUrl, board.useBrowser)
   }
 
   async function processBoard(board: BoardConfig, location: string): Promise<ScanBoardResult> {
