@@ -12,7 +12,7 @@ const PRESETS: { name: string; desc: string; model: Omit<ApiModelConfig, 'id'> }
   { name: 'North Mini Code Free', desc: 'Free, no API key needed', model: { name: 'North Mini Code', base_url: 'https://opencode.ai/zen/v1', api_key: '', model: 'north-mini-code-free' } }
 ]
 
-type Tab = 'profile' | 'models' | 'companies' | 'scan' | 'data'
+type Tab = 'profile' | 'models' | 'boards' | 'companies' | 'scan' | 'data'
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<Tab>('profile')

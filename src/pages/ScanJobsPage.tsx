@@ -242,6 +242,17 @@ export default function ScanJobsPage() {
           const enabledBoardsFirstLoad = boards.filter((b) => b.enabled)
           const frequentErrors = new Set(findFrequentErrorBoards(enabledBoardsFirstLoad, health))
           setSelectedBoardsRaw(enabledBoardsFirstLoad.map((b) => b.name).filter((n) => !frequentErrors.has(n)))
+        } else {
+          // User already has a persisted selection. Strip any names
+          // that correspond to now-disabled boards so the selection
+          // matches what's actually selectable. Done silently (no
+          // toast) because disabling a board in Settings is itself
+          // the explicit user action — a notification would be noise.
+          const disabledNames = new Set(boards.filter((b) => !b.enabled).map((b) => b.name))
+          const cleaned = selectedBoardsRaw.filter((n) => !disabledNames.has(n))
+          if (cleaned.length !== selectedBoardsRaw.length) {
+            setSelectedBoardsRaw(cleaned)
+          }
         }
       })
       .catch((err) => {
@@ -259,6 +270,16 @@ export default function ScanJobsPage() {
         .then(([boards, health]) => {
           setAllBoards(boards)
           setBoardHealth(health)
+          // Strip now-disabled boards from the persisted selection.
+          // The user just toggled a board in Settings and hit
+          // refresh — they expect the picker to reflect that. No
+          // toast: the Settings tab already confirms the toggle.
+          setSelectedBoardsRaw((prev) => {
+            if (!prev) return prev
+            const disabledNames = new Set(boards.filter((b) => !b.enabled).map((b) => b.name))
+            const cleaned = prev.filter((n) => !disabledNames.has(n))
+            return cleaned.length === prev.length ? prev : cleaned
+          })
         })
         .catch((err) => {
           console.error('Failed to refresh boards/health:', err)
