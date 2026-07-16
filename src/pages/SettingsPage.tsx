@@ -672,6 +672,169 @@ export default function SettingsPage() {
         </>
       )}
 
+      {tab === 'boards' && (
+        <>
+          <div className="section-title">Job Boards</div>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, maxWidth: 700 }}>
+            Toggle individual boards or entire categories on or off. Disabled boards won't appear in the scan page picker and won't be scraped, even if they're in your saved selection.
+          </p>
+
+          {boards.length === 0 ? (
+            <div className="card" style={{ maxWidth: 700, padding: 16, fontSize: 13, color: 'var(--text-muted)', textAlign: 'center', fontStyle: 'italic' }}>
+              {boardsSaving ? 'Saving…' : 'Loading boards…'}
+            </div>
+          ) : (
+            <>
+              {BOARD_TYPES.map((t) => {
+                // Filter to boards the user can actually toggle —
+                // boards in the category that exist in the loaded
+                // list. A category that ends up empty (every board
+                // renamed/removed) is hidden entirely.
+                const inCategory = t.boards.filter((n) => boards.some((b) => b.name === n))
+                if (inCategory.length === 0) return null
+                const allEnabled = inCategory.every((n) => !disabled.has(n))
+                const anyEnabled = inCategory.some((n) => !disabled.has(n))
+                // Two-state label per project convention: "+" adds,
+                // "−" removes. When everything in the category is
+                // already on, the button flips to "− All <Category>".
+                const categoryLabel = allEnabled
+                  ? `− ${t.label}`
+                  : `+ ${t.label}`
+                return (
+                  <div key={t.label} className="card" style={{ maxWidth: 700, marginBottom: 12, padding: 0 }}>
+                    <div style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      padding: '10px 16px',
+                      borderBottom: '1px solid var(--border)'
+                    }}>
+                      <div>
+                        <strong style={{ fontSize: 14 }}>{t.label}</strong>
+                        <span style={{ marginLeft: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+                          {anyEnabled ? `${inCategory.length - inCategory.filter((n) => disabled.has(n)).length} of ${inCategory.length} enabled` : 'all disabled'}
+                        </span>
+                      </div>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        disabled={boardsSaving}
+                        onClick={() => toggleCategory(inCategory, allEnabled)}
+                      >
+                        {categoryLabel}
+                      </button>
+                    </div>
+                    {[...boards]
+                      .filter((b) => inCategory.includes(b.name))
+                      .sort((a, b) => a.name.localeCompare(b.name))
+                      .map((b, i, arr) => {
+                        const isOn = !disabled.has(b.name)
+                        return (
+                          <div
+                            key={b.name}
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              padding: '8px 16px',
+                              borderBottom: i < arr.length - 1 ? '1px solid var(--border)' : 'none',
+                              opacity: isOn ? 1 : 0.55
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <span style={{ fontSize: 13 }}>{b.name}</span>
+                              <span style={{
+                                fontSize: 10,
+                                color: 'var(--text-muted)',
+                                textTransform: 'uppercase',
+                                letterSpacing: 0.5,
+                                border: '1px solid var(--border)',
+                                borderRadius: 3,
+                                padding: '1px 5px'
+                              }} title={b.useBrowser ? 'Uses a browser session to scrape' : 'HTTP-only'}>
+                                {b.useBrowser ? 'browser' : 'http'}
+                              </span>
+                            </div>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
+                              <input
+                                type="checkbox"
+                                checked={isOn}
+                                disabled={boardsSaving}
+                                onChange={(e) => toggleBoard(b.name, e.target.checked)}
+                              />
+                              {isOn ? 'Enabled' : 'Disabled'}
+                            </label>
+                          </div>
+                        )
+                      })}
+                  </div>
+                )
+              })}
+
+              {(() => {
+                // Boards not classified under any BOARD_TYPES category.
+                // These still need toggles — they appear in the scan
+                // picker too, just without a category header.
+                const classified = new Set(BOARD_TYPES.flatMap((t) => t.boards))
+                const uncategorized = boards.filter((b) => !classified.has(b.name))
+                if (uncategorized.length === 0) return null
+                return (
+                  <div className="card" style={{ maxWidth: 700, padding: 0 }}>
+                    <div style={{
+                      padding: '10px 16px',
+                      borderBottom: '1px solid var(--border)'
+                    }}>
+                      <strong style={{ fontSize: 14 }}>Other</strong>
+                    </div>
+                    {uncategorized
+                      .sort((a, b) => a.name.localeCompare(b.name))
+                      .map((b, i, arr) => {
+                        const isOn = !disabled.has(b.name)
+                        return (
+                          <div
+                            key={b.name}
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              padding: '8px 16px',
+                              borderBottom: i < arr.length - 1 ? '1px solid var(--border)' : 'none',
+                              opacity: isOn ? 1 : 0.55
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <span style={{ fontSize: 13 }}>{b.name}</span>
+                              <span style={{
+                                fontSize: 10,
+                                color: 'var(--text-muted)',
+                                textTransform: 'uppercase',
+                                letterSpacing: 0.5,
+                                border: '1px solid var(--border)',
+                                borderRadius: 3,
+                                padding: '1px 5px'
+                              }} title={b.useBrowser ? 'Uses a browser session to scrape' : 'HTTP-only'}>
+                                {b.useBrowser ? 'browser' : 'http'}
+                              </span>
+                            </div>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
+                              <input
+                                type="checkbox"
+                                checked={isOn}
+                                disabled={boardsSaving}
+                                onChange={(e) => toggleBoard(b.name, e.target.checked)}
+                              />
+                              {isOn ? 'Enabled' : 'Disabled'}
+                            </label>
+                          </div>
+                        )
+                      })}
+                  </div>
+                )
+              })()}
+            </>
+          )}
+        </>
+      )}
+
       {tab === 'companies' && (
         <>
           <div className="section-title">Blacklisted Companies</div>

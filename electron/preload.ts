@@ -80,7 +80,7 @@ export interface Api {
   clearAllData: () => Promise<void>
   retrofitLocations: () => Promise<{ updated: number; total: number }>
   listAIQueue: () => Promise<AIQueueItem[]>
-  listBoards: () => Promise<{ name: string; useBrowser: boolean }[]>
+  listBoards: () => Promise<{ name: string; useBrowser: boolean; enabled: boolean }[]>
   getBoardHealth: () => Promise<Record<string, number[]>>
   retryAIQueueItem: (id: number) => Promise<AIQueueItem[]>
   removeAIQueueItem: (id: number) => Promise<AIQueueItem[]>
