@@ -293,6 +293,27 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
   }
 
   const [statusBusy, setStatusBusy] = useState(false)
+  const statusMeasureRef = useRef<HTMLSpanElement | null>(null)
+  const [statusWidth, setStatusWidth] = useState<number | null>(null)
+  useLayoutEffect(() => {
+    // Width-fit the status <select> to the widest option label. A
+    // native <select> can't auto-size to its current value, so we
+    // measure a hidden span of the same typography and pin the
+    // visible <select> to that width. Re-measures on font load and
+    // window resize so the pill never clips when the user picks a
+    // longer status.
+    const measure = () => {
+      const el = statusMeasureRef.current
+      if (!el) return
+      setStatusWidth(el.getBoundingClientRect().width)
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    if (document.fonts && typeof document.fonts.ready?.then === 'function') {
+      document.fonts.ready.then(measure).catch(() => { /* ignore */ })
+    }
+    return () => window.removeEventListener('resize', measure)
+  }, [job.status])
   async function handleStatusChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const next = e.target.value as JobStatus
     if (next === job.status || statusBusy) return
@@ -467,7 +488,8 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
               letterSpacing: '0.04em',
               padding: '8px 28px 8px 16px',
               cursor: statusBusy ? 'wait' : 'pointer',
-              outline: 'none'
+              outline: 'none',
+              width: statusWidth != null ? `${statusWidth}px` : undefined
             }}
           >
             {(Object.keys(STATUS_LABELS) as JobStatus[])
@@ -478,6 +500,30 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
                 </option>
               ))}
           </select>
+          {/* Hidden measure node: same typography as the <select>, so
+              getBoundingClientRect reports the exact pixel width needed
+              to fit the widest option without clipping. Absolutely
+              positioned off-screen so it never affects layout. */}
+          <span
+            ref={statusMeasureRef}
+            aria-hidden="true"
+            style={{
+              position: 'absolute',
+              visibility: 'hidden',
+              whiteSpace: 'nowrap',
+              pointerEvents: 'none',
+              fontWeight: 500,
+              fontSize: 13,
+              textTransform: 'uppercase',
+              letterSpacing: '0.04em',
+              padding: '8px 28px 8px 16px'
+            }}
+          >
+            {(Object.keys(STATUS_LABELS) as JobStatus[])
+              .filter((s) => s !== 'tailoring' && s !== 'follow_up' && s !== 'withdrawn')
+              .reduce((widest, s) => (STATUS_LABELS[s].length > STATUS_LABELS[widest as JobStatus].length ? s : widest), 'sourced' as JobStatus)
+              && STATUS_LABELS['ready']}
+          </span>
         </span>
         <div className="spacer" />
         <button
