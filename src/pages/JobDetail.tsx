@@ -470,11 +470,13 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
               outline: 'none'
             }}
           >
-            {(Object.keys(STATUS_LABELS) as JobStatus[]).map((s) => (
-              <option key={s} value={s} style={{ color: 'var(--text)', background: 'var(--bg)' }}>
-                {STATUS_LABELS[s]}
-              </option>
-            ))}
+            {(Object.keys(STATUS_LABELS) as JobStatus[])
+              .filter((s) => s !== 'tailoring' && s !== 'follow_up' && s !== 'withdrawn')
+              .map((s) => (
+                <option key={s} value={s} style={{ color: 'var(--text)', background: 'var(--bg)' }}>
+                  {STATUS_LABELS[s]}
+                </option>
+              ))}
           </select>
         </span>
         <div className="spacer" />
