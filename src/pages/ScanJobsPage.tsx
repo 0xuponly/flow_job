@@ -625,6 +625,7 @@ export default function ScanJobsPage() {
         const rows = Array.from(merged.values()).filter(
           (b) => b.added > 0 || b.errors > 0 || (b.found - b.skipped - b.errors) > 0 || !!b.error
         )
+        const totalScraped = rows.reduce((s, b) => s + (b.found - b.skipped - b.errors), 0)
         if (rows.length === 0) return null
         const ranAt = result.startedAt
           ? `${new Date(result.startedAt).toLocaleString('en-US', { timeZone: 'America/New_York', dateStyle: 'medium', timeStyle: 'medium' })  } EST`
@@ -640,7 +641,7 @@ export default function ScanJobsPage() {
           <div className="card" style={{ maxWidth: 800, marginTop: 16 }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 4 }}>
               <h3 style={{ margin: 0 }}>
-                Scraped {result.totalFound} postings - added {result.totalAdded}
+                Scraped {totalScraped} postings - added {result.totalAdded}
                 {result.cancelled && (
                   <span style={{ marginLeft: 8, fontSize: 12, color: 'var(--text-muted)', fontWeight: 400 }}>
                     (cancelled)
