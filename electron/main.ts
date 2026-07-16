@@ -1137,7 +1137,7 @@ app.whenReady().then(() => {
       }
       db.markSalaryNormalized()
     } catch (err) {
-      console.error('[startup] Salary normalization retrofit failed:', err)
+      log.startup.error('Salary normalization retrofit failed:', err)
     }
   }
 
