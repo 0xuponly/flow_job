@@ -556,15 +556,14 @@ export default function SettingsPage() {
           </div>
 
           <div className="section-title">Base CV</div>
-          <div className="card">
+          <div className="card" style={{ display: 'flex', flexDirection: 'column', minHeight: 'calc(100vh - 420px)' }}>
             <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
               Paste your master CV here. It will be used as the source material when tailoring for specific jobs.
             </p>
             <textarea
-              rows={12}
               value={settings.base_cv}
               onChange={(e) => update('base_cv', e.target.value)}
-              style={{ width: '100%', fontFamily: 'monospace', fontSize: 13 }}
+              style={{ flex: 1, width: '100%', minHeight: 200, fontFamily: 'monospace', fontSize: 13, resize: 'vertical' }}
               placeholder="Paste your full CV text here..."
             />
           </div>
