@@ -671,7 +671,7 @@ export function updateJob(
   }
   // Bump last_updated on real content edits (title, company, location,
   // description, salary, type, work mode, hiring manager, requirements,
-  // application requirements). Status / fit / notes / url / source
+  // application requirements, url, source). Status / fit / notes
   // changes are intentionally NOT tracked here — those are bookkeeping
   // moves, not content edits. Skip if the caller already passed an
   // explicit last_updated (backfill, createJob) so we don't overwrite
@@ -680,7 +680,7 @@ export function updateJob(
     const CONTENT_FIELDS = [
       'title', 'company', 'location', 'description', 'salary_range',
       'employment_type', 'work_mode', 'hiring_manager', 'requirements',
-      'application_requirements'
+      'application_requirements', 'url', 'source'
     ] as const
     const changed = CONTENT_FIELDS.some(
       (k) => s.jobs[idx][k] !== existing[k]
