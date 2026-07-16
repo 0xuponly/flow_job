@@ -145,7 +145,7 @@ export default function ScanJobsPage() {
         })
         unsubRef.current = unsub
       } else if (status.result) {
-        setResult(status.result)
+        setResult(normalizeScanResult(status.result))
         const initialEntries = status.progress.map((msg) => ({ id: _nextId++, msg, timestamp: Date.now() }))
         setEntries(initialEntries)
         entriesRef.current = initialEntries
