@@ -18,7 +18,7 @@ function formatDuration(s: number): string {
 // A board is a "Frequent Error" if its last 5+ health entries are all
 // `<= 0` (i.e. it consistently returns no jobs or errors). Used both
 // to (a) deselect these boards by default in the picker, and
-// (b) render the "Select/Deselect Frequent Errors" toggle button.
+// (b) render the "+/- Frequent Errors" toggle button.
 function findFrequentErrorBoards(
   boards: { name: string }[],
   boardHealth: Record<string, number[]>
