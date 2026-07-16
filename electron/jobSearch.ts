@@ -601,8 +601,13 @@ function dedupKey(url: string): string {
 }
 
 function extractJobUrls(html: string, baseUrl: string, boardName: string): { url: string; title?: string; company?: string }[] {
+  // JSON-LD and HTML anchors are complementary, not exclusive. Some
+  // boards embed a single org-level `JobPosting` block on a listing
+  // page that has nothing to do with the actual list of openings;
+  // earlier this short-circuit silently returned just that one
+  // bogus posting and dropped every HTML card. Merge both sources
+  // and dedup by URL below.
   const jsonLd = extractJsonLdListings(html, baseUrl)
-  if (jsonLd.length > 0) return jsonLd
 
   const pageTitle = html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]
   if (isNonListingPage(html, pageTitle)) return []
