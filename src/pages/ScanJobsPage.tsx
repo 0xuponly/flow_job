@@ -670,7 +670,7 @@ export default function ScanJobsPage() {
                   the user recognizes the format. Smaller / muted so it
                   reads as a status line, not a headline. */}
               <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--text-muted)' }}>
-                {`Found ${liveCounters.totalFound} · Added ${liveCounters.totalAdded} · Skipped ${liveCounters.totalSkipped} · Incompatible ${liveCounters.totalIncompatible} · Errors ${liveCounters.totalErrors}`}
+                {`Found ${liveCounters.totalFound} · Added ${liveCounters.totalAdded}`}
               </p>
             </div>
             <div style={{ display: 'flex', gap: 8 }}>

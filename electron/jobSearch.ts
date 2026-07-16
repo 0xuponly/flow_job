@@ -1277,6 +1277,14 @@ export async function scanAllBoards(
         scanSeenUrls.add(dk)
         if (seenUrls.has(dk)) {
           br.skipped++
+          // Mirror the API-path behaviour (line 1203): every per-listing
+          // skip must go through bump() so the live counters sum to
+          // br.found. This branch was missed when the listing filter
+          // was first given a counter increment — the user-visible
+          // symptom was "Found grows faster than Skipped" on scans
+          // where many URLs are already in the persistent seen-URLs
+          // set from previous runs.
+          bump('totalSkipped')
           return false
         }
         // Dedup by company+title within the same board
@@ -1364,6 +1372,19 @@ export async function scanAllBoards(
     } catch (err) {
       br.error = err instanceof Error ? err.message : 'Unknown error'
       result.errors.push(`${board.name}: ${br.error}`)
+      // Board-level error: the per-listing loop threw before
+      // categorizing every listing. totalFound was already bumped
+      // (bumpFound fires at the start of the pass, before the loop),
+      // so the per-listing counters are missing whatever the loop
+      // didn't get to. Count those as errors so Found / Added /
+      // Skipped / Incompatible / Errors still sums to Found at scan
+      // end. Without this, a board that errors mid-loop leaves a
+      // permanent gap in the live tally.
+      const uncategorized = br.found - (br.added + br.skipped + br.incompatible + br.errors)
+      if (uncategorized > 0) {
+        br.errors += uncategorized
+        bump('totalErrors')
+      }
     }
     result.boards.push(br)
     return br
