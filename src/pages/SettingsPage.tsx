@@ -460,7 +460,7 @@ export default function SettingsPage() {
 
       <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--border)', marginBottom: 20 }}>
         {([
-          { id: 'profile', label: 'Profile & CV' },
+          { id: 'profile', label: 'My Profile' },
           { id: 'models', label: 'Models' },
           { id: 'boards', label: 'Boards' },
           { id: 'companies', label: 'Companies' },
