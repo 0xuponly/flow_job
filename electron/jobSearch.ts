@@ -442,7 +442,18 @@ const BOARD_NAV_TEXT_PATTERNS: Readonly<Record<string, readonly RegExp[]>> = {
     /^skip to (content|main)/i,
     /^sign in$/i,
     /^join now$/i,
-    /^for business$/i
+    /^for business$/i,
+    // Category sub-index titles: "1,000+ Engineering Jobs in North York",
+    // "52,000+ Jobs in North York", "Resume Guides", etc. The path
+    // check above already filters out the URLs, but adding these
+    // here as a belt-and-suspenders measure in case the page
+    // structure changes.
+    /^\d[\d,]*\+\s+(jobs?|openings?)\b/i,
+    /^[\d,]+\s+jobs? in\s+/i,
+    /^resume guides?$/i,
+    /^salary tools?$/i,
+    /^career advice$/i,
+    /^all jobs? in/i
   ],
   'Remote OK': [
     // Emoji-prefixed category badges in the left rail
