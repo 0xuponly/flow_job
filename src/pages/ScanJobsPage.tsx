@@ -7,8 +7,7 @@ function formatDuration(s: number): string {
   const h = Math.floor(s / 3600)
   const m = Math.floor((s % 3600) / 60)
   const sec = s % 60
-  const parts: string[] = []
-  if (h) parts.push(`${h}h`)
+  const parts: string[] = []  if (h) parts.push(`${h}h`)
   if (m) parts.push(`${m}m`)
   parts.push(`${sec}s`)
   return parts.join(' ')
