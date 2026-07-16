@@ -407,6 +407,31 @@ export default function ScanJobsPage() {
                 Deselect All
               </button>
             )}
+            <button
+              type="button"
+              className="btn btn-sm btn-secondary"
+              onClick={() => {
+                // Clear keywords/location/workType to defaults.
+                resetKeywords()
+                resetLocation()
+                resetWorkType()
+                // If the boards list is already loaded, recompute
+                // the "all minus frequent errors" default in place.
+                // Otherwise, drop the persisted selection back to
+                // null and let the boards-load effect pick it up on
+                // next mount. Either way, the user's saved custom
+                // selection is wiped.
+                if (allBoards.length > 0) {
+                  const frequentErrors = new Set(findFrequentErrorBoards(allBoards, boardHealth))
+                  setSelectedBoardsRaw(allBoards.map((b) => b.name).filter((n) => !frequentErrors.has(n)))
+                } else {
+                  resetSelectedBoards()
+                }
+                setBoardsExpanded(true)
+              }}
+            >
+              Reset
+            </button>
           </div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6, alignItems: 'center' }}>
             {(() => {

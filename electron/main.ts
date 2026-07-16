@@ -14,6 +14,7 @@ import {
 import { tailorDocument, generateFollowUpMessage, regenerateSection, verifyDocumentContent, scoreJobFit, RateLimitError } from './ai'
 import { scrapeJobFromUrl } from './jobScraper'
 import { scanAllBoards, BOARDS } from './jobSearch'
+import { createLogger } from './logger'
 
 // Small helpers used by the backup flow. Defined at module scope
 // (not inside registerIpc) so the audit logger can call them.
@@ -49,6 +50,18 @@ import { scheduleNextAutoScan, cancelAutoScan, markScanStarted, markScanComplete
 // the first time anything reads it. Must run before any code that calls
 // app.getPath('userData') (database.ts::getStorePath, etc.).
 app.setName('apply-assistant')
+
+// File-backed category loggers. Each category writes to
+// <userData>/logs/<category>.log so the per-import scraper trace
+// and other category logs don't spam the dev terminal. The default
+// log dir is resolved by logger.createLogger on first use.
+export const log = {
+  scraper: createLogger('scraper'),
+  scanner: createLogger('scanner'),
+  fit: createLogger('fit'),
+  startup: createLogger('startup'),
+  backup: createLogger('backup')
+}
 
 import type {
   ApiModelConfig,

@@ -1,6 +1,10 @@
 import type { CreateJobInput } from './types'
 import { fetchHtmlViaBrowser, isChallengePage } from './browserScraper'
 import { normalizeEmploymentType, normalizeWorkMode } from './employmentType'
+import { createLogger } from './logger'
+
+// File-backed category logger. Writes to <userData>/logs/scraper.log.
+const log = createLogger('scraper')
 
 const USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -17,8 +21,8 @@ function logExtractedFields(stage: string, result: ScrapedJob): void {
     if (s.length <= 80) return s
     return `${s.slice(0, 77)}...`
   }
-  console.log(
-    `[scraper]   ${stage}: ` +
+  log.info(
+    `  ${stage}: ` +
     `title=${trunc(result.title) ?? '∅'} ` +
     `company=${trunc(result.company) ?? '∅'} ` +
     `location=${trunc(result.location) ?? '∅'} ` +
