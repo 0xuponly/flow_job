@@ -277,9 +277,12 @@ export default function ScanJobsPage() {
           // The user just toggled a board in Settings and hit
           // refresh — they expect the picker to reflect that. No
           // toast: the Settings tab already confirms the toggle.
+          // Same `=== false` guard as the first-mount effect so a
+          // dev hot-reload with stale `enabled` data doesn't wipe
+          // the selection.
           setSelectedBoardsRaw((prev) => {
             if (!prev) return prev
-            const disabledNames = new Set(boards.filter((b) => !b.enabled).map((b) => b.name))
+            const disabledNames = new Set(boards.filter((b) => b.enabled === false).map((b) => b.name))
             const cleaned = prev.filter((n) => !disabledNames.has(n))
             return cleaned.length === prev.length ? prev : cleaned
           })
