@@ -1361,7 +1361,7 @@ export default function SettingsPage() {
             </button>
           </div>
 
-          <div className="card" style={{ maxWidth: 600 }}>
+          <div className="card">
             <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
               This will permanently delete all jobs, documents, applications, follow-ups, and interviews. Your settings and AI model configs will be preserved.
             </p>
