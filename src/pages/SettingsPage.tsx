@@ -3,6 +3,7 @@ import { api } from '../api'
 import type { ApiModelConfig, AtsBoard, Settings } from '../types'
 import { notify } from '../components/Notifications'
 import Modal from '../components/Modal'
+import { BOARD_TYPES } from '../boardTypes'
 
 const PRESETS: { name: string; desc: string; model: Omit<ApiModelConfig, 'id'> }[] = [
   { name: 'Big Pickle', desc: 'Free, no API key needed', model: { name: 'Big Pickle', base_url: 'https://opencode.ai/zen/v1', api_key: '', model: 'big-pickle' } },
@@ -50,8 +51,93 @@ export default function SettingsPage() {
   const [passphraseModalOpen, setPassphraseModalOpen] = useState(false)
   const [passphraseInput, setPassphraseInput] = useState('')
   const [passphraseConfirm, setPassphraseConfirm] = useState('')
+  // Boards tab state. `boards` is the full list from main; `disabled`
+  // is the set mirror of settings.disabled_boards. Kept as Set for
+  // O(1) membership checks during render of the toggle grid.
+  const [boards, setBoards] = useState<{ name: string; useBrowser: boolean; enabled: boolean }[]>([])
+  const [disabled, setDisabled] = useState<Set<string>>(new Set())
+  const [boardsSaving, setBoardsSaving] = useState(false)
 
-  const emptyModel = { name: '', base_url: 'https://api.deepseek.com', api_key: '', model: 'deepseek-chat' }
+  // Lazy-load the boards list the first time the user opens the
+  // Boards tab. Cheaper than loading on every Settings mount, and
+  // the data is only needed when the user is on that tab. Re-runs
+  // when the user toggles a board and hits the sidebar refresh, via
+  // the app:refresh event handler below.
+  useEffect(() => {
+    if (tab !== 'boards') return
+    let cancelled = false
+    api.listBoards().then((list) => {
+      if (cancelled) return
+      setBoards(list)
+      // Initialize the disabled set from settings on first load.
+      // The settings list may have stale names (board renamed/removed
+      // in a future version) — keep only the ones that match a real
+      // board so the disabled set stays authoritative.
+      const s = (typeof window !== 'undefined') ? null : null
+      api.getSettings().then((settings) => {
+        if (cancelled) return
+        const realNames = new Set(list.map((b) => b.name))
+        setDisabled(new Set((settings.disabled_boards || []).filter((n) => realNames.has(n))))
+      }).catch(() => { /* settings load failed; user will see empty list */ })
+      void s
+    }).catch(() => { /* list load failed; user will see empty list */ })
+    return () => { cancelled = true }
+  }, [tab])
+
+  // Listen for sidebar refresh while the Boards tab is mounted —
+  // re-pull the list so toggles the user made in another tab surface.
+  useEffect(() => {
+    const onRefresh = () => {
+      if (tab !== 'boards') return
+      api.listBoards().then((list) => {
+        setBoards(list)
+        const realNames = new Set(list.map((b) => b.name))
+        setDisabled((prev) => new Set([...prev].filter((n) => realNames.has(n))))
+      }).catch(() => { /* ignore */ })
+    }
+    window.addEventListener('app:refresh', onRefresh)
+    return () => window.removeEventListener('app:refresh', onRefresh)
+  }, [tab])
+
+  // Toggle a single board on/off. Persists the full disabled_boards
+  // list via the existing settings:update IPC. Optimistic update
+  // (state flips immediately, revert on error).
+  async function toggleBoard(name: string, on: boolean) {
+    setBoardsSaving(true)
+    const next = new Set(disabled)
+    if (on) next.delete(name); else next.add(name)
+    setDisabled(next)
+    try {
+      await api.updateSettings({ disabled_boards: Array.from(next) })
+    } catch (err) {
+      notify(`Failed to save board toggle: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+      // Revert.
+      setDisabled(disabled)
+    } finally {
+      setBoardsSaving(false)
+    }
+  }
+
+  // Toggle every board in a BOARD_TYPES category at once. If all
+  // are currently enabled, disabling sets the full list; if any
+  // are disabled, enabling turns them all back on. Two states only
+  // per the toggle-button-hide-empty-2state convention.
+  async function toggleCategory(boardsInCategory: string[], allOn: boolean) {
+    setBoardsSaving(true)
+    const next = new Set(disabled)
+    for (const n of boardsInCategory) {
+      if (allOn) next.add(n); else next.delete(n)
+    }
+    setDisabled(next)
+    try {
+      await api.updateSettings({ disabled_boards: Array.from(next) })
+    } catch (err) {
+      notify(`Failed to save category toggle: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+      setDisabled(disabled)
+    } finally {
+      setBoardsSaving(false)
+    }
+  }
 
   const loadSettings = () => {
     Promise.all([
@@ -376,6 +462,7 @@ export default function SettingsPage() {
         {([
           { id: 'profile', label: 'Profile & CV' },
           { id: 'models', label: 'Models' },
+          { id: 'boards', label: 'Boards' },
           { id: 'companies', label: 'Companies' },
           { id: 'scan', label: 'Scan' },
           { id: 'data', label: 'Data' }
