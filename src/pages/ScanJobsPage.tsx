@@ -163,14 +163,7 @@ export default function ScanJobsPage() {
         // boards that consistently return 0 listings burns time and
         // adds noise to the result; let the user opt back in via the
         // "Select Frequent Errors" button if they want to retry.
-        const frequentErrors = new Set(
-          boards
-            .filter((b) => {
-              const history = health[b.name] || []
-              return history.length >= 5 && history.every((h) => h <= 0)
-            })
-            .map((b) => b.name)
-        )
+        const frequentErrors = new Set(findFrequentErrorBoards(boards, health))
         setSelectedBoards(new Set(boards.map((b) => b.name).filter((n) => !frequentErrors.has(n))))
       })
       .catch((err) => {
