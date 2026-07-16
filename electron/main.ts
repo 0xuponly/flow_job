@@ -1116,7 +1116,7 @@ app.whenReady().then(() => {
     try {
       const result = db.retrofitLocations()
       if (result.updated > 0) {
-        console.log(`[startup] Normalized ${result.updated}/${result.total} job locations.`)
+        log.startup.info(`Normalized ${result.updated}/${result.total} job locations.`)
       }
     } catch (err) {
       console.error('[startup] Location retrofit failed:', err)
