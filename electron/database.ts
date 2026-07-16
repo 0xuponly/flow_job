@@ -858,9 +858,10 @@ export function updateDocumentVerification(
 //     (applied, interviewing, offer, rejected, withdrawn).
 //   - Otherwise, if the job has both a CV and a cover letter with
 //     verification_score >= 70, status = 'ready'.
-//   - Otherwise (has docs but not both passing, or only one type),
-//     status = 'reviewing'.
-//   - With no docs, status = 'sourced'.
+//   - Otherwise, if the job has BOTH a CV and a cover letter (regardless
+//     of verification), status = 'reviewing'. Generating only one of the
+//     two keeps the job in 'sourced'.
+//   - With no docs (or only one type), status = 'sourced'.
 const DOC_PROTECTED_STATUSES: JobStatus[] = ['applied', 'interviewing', 'offer', 'rejected', 'withdrawn']
 
 export function recomputeJobStatusFromDocs(jobId: number): JobStatus | null {
