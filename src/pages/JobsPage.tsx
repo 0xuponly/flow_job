@@ -886,7 +886,7 @@ export default function JobsPage() {
     }
     return rows.sort((a, b) => (b.score ?? -1) - (a.score ?? -1))
   },
-    [displayedJobs, filterCompany, filterTitle, filterLocation, filterStatus, filterSalary, filterFit, filterDatePosted, sortColumn, sortDir])
+    [jobs, filterCompany, filterTitle, filterLocation, filterStatus, filterSalary, filterFit, filterDatePosted, sortColumn, sortDir])
 
   const allFilteredSelected = useMemo(
     () => filteredJobs.length > 0 && filteredJobs.every((j) => selectedIds.has(j.id)),
