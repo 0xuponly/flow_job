@@ -515,18 +515,20 @@ export default function SettingsPage() {
                   <input value={model.model} onChange={(e) => updateModel(i, 'model', e.target.value)} placeholder="deepseek-chat" />
                 </div>
               </div>
-              <div className="form-group">
-                <label>Base URL</label>
-                <input value={model.base_url} onChange={(e) => updateModel(i, 'base_url', e.target.value)} placeholder="https://api.deepseek.com" />
-              </div>
-              <div className="form-group">
-                <label>API key</label>
-                <input
-                  type="password"
-                  value={model.api_key}
-                  onChange={(e) => updateModel(i, 'api_key', e.target.value)}
-                  placeholder={i === 0 ? 'sk-... (free at platform.deepseek.com)' : 'sk-... (optional)'}
-                />
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Base URL</label>
+                  <input value={model.base_url} onChange={(e) => updateModel(i, 'base_url', e.target.value)} placeholder="https://api.deepseek.com" />
+                </div>
+                <div className="form-group">
+                  <label>API key</label>
+                  <input
+                    type="password"
+                    value={model.api_key}
+                    onChange={(e) => updateModel(i, 'api_key', e.target.value)}
+                    placeholder={i === 0 ? 'sk-... (free at platform.deepseek.com)' : 'sk-... (optional)'}
+                  />
+                </div>
               </div>
             </div>
           ))}
