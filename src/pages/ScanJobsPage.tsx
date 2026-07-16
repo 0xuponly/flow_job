@@ -442,7 +442,7 @@ export default function ScanJobsPage() {
         <div className="form-group">
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
             <label>
-              Job boards ({selectedBoards.size} of {allBoards.length} selected)
+              Job boards ({selectedBoards.size} of {enabledBoards.length} selected)
             </label>
             <div style={{ display: 'flex', gap: 6 }}>
               {(() => {
