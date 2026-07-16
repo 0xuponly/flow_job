@@ -502,8 +502,9 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
           </select>
           {/* Hidden measure node: same typography as the <select>, so
               getBoundingClientRect reports the exact pixel width needed
-              to fit the widest option without clipping. Absolutely
-              positioned off-screen so it never affects layout. */}
+              to fit the widest option without clipping. We render every
+              option side-by-side and let the browser pick the widest.
+              Absolutely positioned off-screen so it never affects layout. */}
           <span
             ref={statusMeasureRef}
             aria-hidden="true"
@@ -516,13 +517,17 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
               fontSize: 13,
               textTransform: 'uppercase',
               letterSpacing: '0.04em',
-              padding: '8px 28px 8px 16px'
+              padding: '8px 28px 8px 16px',
+              left: -9999,
+              top: -9999
             }}
           >
-            {(Object.keys(STATUS_LABELS) as JobStatus[])
-              .filter((s) => s !== 'tailoring' && s !== 'follow_up' && s !== 'withdrawn')
-              .reduce((widest, s) => (STATUS_LABELS[s].length > STATUS_LABELS[widest as JobStatus].length ? s : widest), 'sourced' as JobStatus)
-              && STATUS_LABELS['ready']}
+            {(() => {
+              const labels = (Object.keys(STATUS_LABELS) as JobStatus[])
+                .filter((s) => s !== 'tailoring' && s !== 'follow_up' && s !== 'withdrawn')
+                .map((s) => STATUS_LABELS[s])
+              return labels.reduce((a, b) => (a.length >= b.length ? a : b), '')
+            })()}
           </span>
         </span>
         <div className="spacer" />
