@@ -7,6 +7,7 @@ import { createLogger } from './logger'
 const log = createLogger('scanner')
 import { fetchHtmlViaBrowser, isChallengePage, paginateHtmlViaBrowser } from './browserScraper'
 import { scoreJobFit } from './ai'
+import { scoreCompatibility } from './fitHeuristic'
 export { scoreCompatibility } from './fitHeuristic'
 import type { Job, ScanFilters, WorkType } from './types'
 
@@ -25,6 +26,51 @@ function abortPromise(signal?: AbortSignal): Promise<true> {
     }
     signal.addEventListener('abort', onAbort)
   })
+}
+
+// Concurrency cap for LLM fit scoring during a scan. Listing scrapes
+// already run with LISTING_CONCURRENCY=6, but the LLM is the slow
+// leg — without a cap, a single scan can fire 6 LLM requests in
+// parallel and trip provider rate limits (or just stall on a queue).
+// Capping at 2 keeps the LLM provider happy while still running
+// scraping (the I/O-bound part) fully in parallel.
+const LLM_SCAN_CONCURRENCY = 2
+
+// pLimit-style async limiter. Resolves tasks FIFO with at most
+// `n` running concurrently. Aborted tasks reject immediately so
+// the scan's cancel signal propagates through the queue.
+function createLimiter<T>(n: number) {
+  const queue: (() => void)[] = []
+  let active = 0
+  function next() {
+    while (active < n && queue.length > 0) {
+      active++
+      const run = queue.shift()!
+      run()
+    }
+  }
+  return (task: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
+    return new Promise<T>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new Error('aborted'))
+        return
+      }
+      const start = () => {
+        if (signal?.aborted) {
+          active--
+          reject(new Error('aborted'))
+          next()
+          return
+        }
+        task().then(
+          (v) => { active--; resolve(v); next() },
+          (e) => { active--; reject(e); next() }
+        )
+      }
+      queue.push(start)
+      next()
+    })
+  }
 }
 
 interface BoardConfig {
@@ -710,7 +756,9 @@ function matchesLocation(jobLocation: string | null, filterLocation: string): bo
   return jl.includes(fl) || fl.includes(jl)
 }
 
-async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<string>, scanSeenUrlsSet: Set<string>, workType: WorkType, filterLocation?: string): Promise<{ action: 'added' | 'skipped' | 'incompatible' | 'error'; job?: Job; reason?: string }> {
+const scoreLimiter = createLimiter<unknown>(LLM_SCAN_CONCURRENCY)
+
+async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<string>, scanSeenUrlsSet: Set<string>, workType: WorkType, filterLocation: string | undefined, signal: AbortSignal | undefined): Promise<{ action: 'added' | 'skipped' | 'incompatible' | 'error'; job?: Job; reason?: string }> {
   const dk = dedupKey(url)
   if (seenUrlsSet.has(dk)) return { action: 'skipped', reason: 'Already in database' }
 
