@@ -702,7 +702,7 @@ export default function SettingsPage() {
                   : `+ ${t.label}`
                 const enabledCount = inCategory.length - inCategory.filter((n) => disabled.has(n)).length
                 return (
-                  <div key={t.label} className="card" style={{ maxWidth: 700, marginBottom: 12, padding: 0 }}>
+                  <div key={t.label} className="card" style={{ marginBottom: 12, padding: 0 }}>
                     <div style={{
                       display: 'flex',
                       justifyContent: 'space-between',
