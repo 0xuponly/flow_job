@@ -322,7 +322,7 @@ async function fetchPageHtml(
     const body = await response.text().catch(() => '')
     if (isChallengePage(body)) {
       if (CF_BLOCKED_HOSTS.has(hostname)) {
-        console.log(`[scraper] ${response.status} body was a challenge page for ${url} but ${hostname} is in CF_BLOCKED_HOSTS — refusing to fall back`)
+        log.info(`${response.status} body was a challenge page for ${url} but ${hostname} is in CF_BLOCKED_HOSTS — refusing to fall back`)
         throw new Error('This site blocked automated access (Cloudflare). Open the job in your browser and try again later.')
       }
       console.log(`[scraper] ${response.status} body was a challenge page for ${url} — falling back to browser`)
