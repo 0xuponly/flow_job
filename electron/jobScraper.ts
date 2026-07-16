@@ -276,7 +276,7 @@ async function fetchPageHtml(
   const combinedSignal = signal
     ? AbortSignal.any([signal, timeoutSignal])
     : timeoutSignal
-  console.log(`[scraper] fetch start ${url} (${hostname}, skipChallenge=${opts.skipChallengeCheck ?? false})`)
+  log.info(`fetch start ${url} (${hostname}, skipChallenge=${opts.skipChallengeCheck ?? false})`)
   const startedAt = Date.now()
   const response = await fetch(url, {
     headers: {
