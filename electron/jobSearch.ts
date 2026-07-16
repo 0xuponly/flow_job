@@ -288,44 +288,43 @@ export const BOARDS: BoardConfig[] = [
   {
     name: 'Northern Health',
     // Northern Health (BC health authority) job board. URL pattern is
-    // /JobSearch/s-{keywords}-{location}-{employeeType}-{category}-{region}-{sort}-{status}-{page}-{perPage}
-    // The first segment carries the keyword (a slash `s-` prefix); the
-    // rest are filter positions. We pin the location segment to "0"
-    // (no filter) and use the keywords slot. ASP.NET WebForms renders
-    // the page fully server-side — direct URL navigation works for
-    // pagination, no browser fallback needed. The `paginate` driver
-    // swaps the page segment (8th dash-separated value) to walk
+    // /JobSearch/s-/{keyword}-{location}-{employeeType}-{category}-{region}-{sort}-{status}-{page}-{perPage}
+    // The keyword sits in the 2nd path segment, after a literal `/`
+    // that comes from the `s-` prefix. Empirically, the keyword
+    // segment in the URL doesn't filter results — ASP.NET WebForms
+    // does its filtering via form state, not the path. The path
+    // carries the pagination index and perPage; the rest of the
+    // segments are filter positions which we pin to "0" (no filter).
+    // ASP.NET WebForms renders the page fully server-side, so direct
+    // URL navigation works for pagination — no browser fallback
+    // needed. The `paginate` driver swaps the page segment to walk
     // through all result pages. The scan loop stops on empty-page
     // detection or signal abort; no upper cap.
-    searchUrl: (k) => `https://jobs.northernhealth.ca/JobSearch/s-${encodeURIComponent(k)}-0-0-0-0-false-0-0-0`,
+    searchUrl: (k) => `https://jobs.northernhealth.ca/JobSearch/s-/${encodeURIComponent(k)}-0-0-0-0-false-0-0-0`,
     useBrowser: false,
     paginate: (searchUrl, page) => {
-      // The page parameter is the 8th dash-separated segment in the
-      // path (e.g. .../s-KW-0-0-0-0-false-0-{page}-{perPage}). We
-      // anchor the rewrite on the trailing "-{perPage}" segment and
-      // replace only the segment immediately before it (the page
-      // index). This avoids any decode ambiguity from keywords
-      // containing dashes — we only touch the tail of the path.
+      // Match the trailing "-{page}-{perPage}" segment pair and
+      // rewrite only the page index. Anchoring on the END of the
+      // pathname (not on the keyword) keeps this driver robust to
+      // keywords that contain dashes — we never touch the keyword
+      // segment, only the tail.
       const u = new URL(searchUrl)
-      // Match: "<rest>-{page}-{perPage}" anchored at end of pathname.
-      // We accept the final `-<digits>` (perPage) and the `-<digits>`
-      // immediately before it (page), then rewrite just the page
-      // segment.
-      const rewritten = u.pathname.replace(/-(\d+)-\d+$/, (_, _page) => `-${page}-0`)
+      const rewritten = u.pathname.replace(/-(\d+)-\d+$/, () => `-${page}-0`)
       return `${u.origin}${rewritten}`
     }
   },
   {
     name: 'Interior Health',
     // Interior Health (BC health authority) runs the same ASP.NET
-    // WebForms platform as Northern Health with identical URL patterns
-    // and the same per-job `JobPosting` JSON-LD block. Same
-    // pagination approach: direct URL navigation, stop on empty page.
-    searchUrl: (k) => `https://jobs.interiorhealth.ca/JobSearch/s-${encodeURIComponent(k)}-0-0-0-0-false-0-0-0`,
+    // WebForms platform as Northern Health with identical URL
+    // patterns and the same per-job `JobPosting` JSON-LD block.
+    // Same pagination approach: direct URL navigation, stop on
+    // empty page.
+    searchUrl: (k) => `https://jobs.interiorhealth.ca/JobSearch/s-/${encodeURIComponent(k)}-0-0-0-0-false-0-0-0`,
     useBrowser: false,
     paginate: (searchUrl, page) => {
       const u = new URL(searchUrl)
-      const rewritten = u.pathname.replace(/-(\d+)-\d+$/, (_, _page) => `-${page}-0`)
+      const rewritten = u.pathname.replace(/-(\d+)-\d+$/, () => `-${page}-0`)
       return `${u.origin}${rewritten}`
     }
   }
