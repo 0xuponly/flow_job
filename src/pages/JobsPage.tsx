@@ -776,9 +776,6 @@ export default function JobsPage() {
   const [form, setForm] = useState<CreateJobInput>(EMPTY_FORM)
   const [selectedJob, setSelectedJob] = useState<Job | null>(null)
   const [rawJobs, setRawJobs] = useState<Job[]>([])
-  const [hiddenDupes, setHiddenDupes] = useState(0)
-  const [showAll, setShowAll] = useState(false)
-  const [deduping, setDeduping] = useState(false)
   const [saving, setSaving] = useState(false)
   const [filterCompany, setFilterCompany] = useState<string[]>([])
   const [filterTitle, setFilterTitle] = useState<string[]>([])
@@ -843,15 +840,12 @@ export default function JobsPage() {
     }
   }, [jobs])
 
-  // When the user opts into "Show all", render the raw (pre-dedupe) list
-  // so they can see what the dashboard count actually reflects. The rest
-  // of the page (counts, batch ops, the existing "Delete Low Fit"
-  // button) keeps reading the deduped `jobs` state — switching those
-  // would change the semantics of "select all low-fit" and similar.
-  const displayedJobs = showAll ? rawJobs : jobs
+  // The deduped `jobs` state is the only list the user sees — the
+  // store-level auto-dedupe in loadJobs() keeps the pre-dedupe view
+  // in sync, so there's no "Show all" toggle to render here.
 
   const filteredJobs = useMemo(() => {
-    const rows = displayedJobs.filter((j) => {
+    const rows = jobs.filter((j) => {
       if (filterCompany.length && !filterCompany.includes(j.company)) return false
       if (filterTitle.length && !filterTitle.includes(j.title)) return false
       if (filterLocation.length && !filterLocation.includes(j.location || '—')) return false
