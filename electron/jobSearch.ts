@@ -763,8 +763,6 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
   const dk = dedupKey(url)
   if (seenUrlsSet.has(dk)) return { action: 'skipped', reason: 'Already in database' }
 
-  await new Promise(r => setTimeout(r, 200 + Math.random() * 300))
-
   let input: { title: string; company: string; location?: string; url?: string; description?: string; salary_range?: string; source?: string; notes?: string; requirements?: string; application_requirements?: string; hiring_manager?: string; employment_type?: string; work_mode?: string }
   try {
     input = await scrapeJobFromUrl(url)
@@ -829,12 +827,16 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
     // provider rate limits. The queue is bounded; new requests
     // queue until a slot frees up. The scan's AbortSignal
     // propagates so cancel feels immediate.
+    const tLlm0 = Date.now()
     fit = (await scoreLimiter(() => scoreJobFit({
       title: input.title,
       description: input.description || null,
       requirements: input.requirements || null,
       baseCv
     }, signal), signal)) as Awaited<ReturnType<typeof scoreJobFit>>
+    if (process.env.FLOW_JOB_SCAN_TIMING) {
+      console.error(`[scan] stage=llm-score source=${fit.source} score=${fit.score?.toFixed(3)} ms=${Date.now() - tLlm0}`)
+    }
   } catch {
     fit = {
       score: heuristicScore,
@@ -1020,11 +1022,19 @@ export async function scanAllBoards(filters?: ScanFilters, onProgress?: (msg: st
       const locTag = location ? ` (${location})` : ''
       progress(`Scanning ${board.name}${locTag}...`)
       const searchUrl = board.searchUrl(keywords, location)
+      const tFetch0 = Date.now()
       const html = await fetchBoardListingsHtml(searchUrl, board)
+      if (process.env.FLOW_JOB_SCAN_TIMING) {
+        console.error(`[scan] stage=board-fetch board=${board.name} bytes=${html.length} ms=${Date.now() - tFetch0}`)
+      }
 
       progress(`Parsing listings from ${board.name}${locTag}...`)
+      const tParse0 = Date.now()
       let listings = extractJobUrls(html, searchUrl, board.name)
       br.found = listings.length
+      if (process.env.FLOW_JOB_SCAN_TIMING) {
+        console.error(`[scan] stage=parse board=${board.name} listings=${listings.length} ms=${Date.now() - tParse0}`)
+      }
 
       // Dedup listings by normalized URL and by company+title combo
       const seenTitleCompany = new Set<string>()
