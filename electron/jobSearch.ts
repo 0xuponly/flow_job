@@ -720,7 +720,8 @@ async function fetchPageHtml(url: string, useBrowser: boolean): Promise<string> 
     headers: {
       'User-Agent': USER_AGENT,
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9'
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br'
     },
     signal: AbortSignal.timeout(30000),
     redirect: 'follow'
