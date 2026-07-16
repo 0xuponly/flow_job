@@ -456,7 +456,7 @@ export default function SettingsPage() {
             <h1>Settings</h1>
             <p>Configure your profile, AI integration, and data</p>
           </div>
-          {(tab === 'profile' || tab === 'models' || tab === 'boards') && (
+          {(tab === 'profile' || tab === 'models') && (
             <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
               {saving ? 'Saving...' : saved ? 'Saved!' : 'Save settings'}
             </button>
