@@ -612,8 +612,8 @@ function extractJobUrls(html: string, baseUrl: string, boardName: string): { url
   const pageTitle = html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]
   if (isNonListingPage(html, pageTitle)) return []
 
-  const results: { url: string; title?: string; company?: string }[] = []
-  const seen = new Set<string>()
+  const results: { url: string; title?: string; company?: string }[] = [...jsonLd]
+  const seen = new Set<string>(jsonLd.map((j) => j.url.toLowerCase()))
   const base = new URL(baseUrl)
   const boardLower = boardName.toLowerCase()
 
