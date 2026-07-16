@@ -305,7 +305,7 @@ async function fetchPageHtml(
     }
     if (!opts.skipChallengeCheck && isChallengePage(html)) {
       if (CF_BLOCKED_HOSTS.has(hostname)) {
-        console.log(`[scraper] challenge page detected for ${url} but ${hostname} is in CF_BLOCKED_HOSTS — refusing to fall back`)
+        log.info(`challenge page detected for ${url} but ${hostname} is in CF_BLOCKED_HOSTS — refusing to fall back`)
         throw new Error('This site blocked automated access (Cloudflare). Open the job in your browser and try again later.')
       }
       console.log(`[scraper] challenge page detected for ${url} — falling back to browser`)
