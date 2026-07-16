@@ -449,10 +449,10 @@ export default function ScanJobsPage() {
               const allSelected = t.boards.every((n) => selectedBoards.has(n))
               const anySelected = t.boards.some((n) => selectedBoards.has(n))
               const label = allSelected
-                ? `Deselect ${t.label}`
+                ? `- ${t.label}`
                 : anySelected
-                  ? `Select all ${t.label}`
-                  : `Select ${t.label}`
+                  ? `+ all ${t.label}`
+                  : `+ ${t.label}`
               return (
                 <button
                   key={t.label}
