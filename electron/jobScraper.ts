@@ -129,8 +129,8 @@ async function finalizeWithDiagnostics(
   if (missing.length > 0) {
     const snippet = html.slice(0, 500).replace(/\s+/g, ' ')
     const htmlLen = html.length
-    console.error(
-      `[scraper] missing fields ${JSON.stringify(missing)} for ${url} ` +
+    log.error(
+      `missing fields ${JSON.stringify(missing)} for ${url} ` +
       `(${hostname}, source=${source}, htmlBytes=${htmlLen}). ` +
       `Snippet: ${snippet}`
     )
