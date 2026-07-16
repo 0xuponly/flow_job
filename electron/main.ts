@@ -1034,6 +1034,13 @@ ${htmlBody}
 
     const dataDest = db.getStorePath()
     const keyDest = join(app.getPath('userData'), 'apply-assistant-key')
+    // Snapshot the existing data file so we can roll back if the
+    // reload fails (e.g. the live DEK no longer matches the backup's
+    // DEK, which would cause loadStore to throw). Without rollback,
+    // the user would be left with a data file they can't decrypt.
+    const previousData = existsSync(dataDest) ? readFileSync(dataDest) : null
+    const previousKey = existsSync(keyDest) ? readFileSync(keyDest) : null
+
     try {
       writeFileSync(dataDest, readFileSync(srcData))
       if (isWrapped) {
@@ -1065,8 +1072,27 @@ ${htmlBody}
 
     // Discard the in-memory store and re-read the data file from
     // disk. The encryption-key file is re-read fresh on the next
-    // load (secureStore.getOrCreateDek does not cache).
-    db.reloadStore()
+    // load (secureStore.getOrCreateDek does not cache). If the
+    // reload throws (e.g. DEK mismatch — the live key no longer
+    // matches the backup's key), roll back the data file so the
+    // user's previous state is preserved and surface a clear error.
+    try {
+      db.reloadStore()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (previousData !== null) writeFileSync(dataDest, previousData)
+      else {
+        try { unlinkSync(dataDest) } catch { /* ignore */ }
+      }
+      if (isWrapped && previousKey !== null) {
+        // Wrapped backups never overwrite the key, so prior key
+        // is still on disk — nothing to restore.
+      } else if (!isWrapped && previousKey !== null) {
+        writeFileSync(keyDest, previousKey)
+      }
+      logFailure('reload-fail')
+      return { ok: false, error: msg }
+    }
 
     if (parentDir) {
       appendAudit(parentDir, {
