@@ -484,12 +484,12 @@ export default function ScanJobsPage() {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6, alignItems: 'center' }}>
-            {selectedBoards.size < allBoards.length && (
+            {selectedBoards.size < enabledBoards.length && (
               <button
                 type="button"
                 className="btn btn-sm btn-secondary"
                 onClick={() => {
-                  setSelectedBoards(new Set(allBoards.map((b) => b.name)))
+                  setSelectedBoards(new Set(enabledBoards.map((b) => b.name)))
                   setBoardsExpanded(true)
                 }}
               >
