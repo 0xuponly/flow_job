@@ -16,6 +16,35 @@ import { scrapeJobFromUrl } from './jobScraper'
 import { scanAllBoards, BOARDS } from './jobSearch'
 import { createLogger } from './logger'
 
+// Filter known-harmless Chromium internal noise out of stderr.
+//
+// We drop a small, well-known set of patterns and pass everything
+// else through unchanged so real errors are still visible. Each
+// pattern is annotated with why it's safe to drop.
+//
+//  1. "Hit debug scenario: N" — content/common/debug_utils.cc.
+//     Scenario 4 = a transient browser-vs-renderer origin mismatch
+//     during the initial about:blank load of a new BrowserWindow.
+//     Electron issue #44368 closed NOT_PLANNED; no upstream fix.
+//     Fires one per hidden scraper BrowserWindow during scans.
+//  2. "Failed to resolve address for stun.*" — content/renderer/
+//     media/webrtc/socket_manager.cc. Chromium's WebRTC stack tries
+//     to resolve a default list of STUN servers for ICE candidate
+//     gathering even when the app doesn't use WebRTC. Safe to
+//     ignore; the app has no peer-to-peer connections.
+const STDERR_NOISE_PATTERNS: readonly RegExp[] = [
+  /Hit debug scenario: \d+/,
+  /Failed to resolve address for stun\.[^\s,]+\.?, errorcode: -?\d+/
+]
+const _origStderrWrite = process.stderr.write.bind(process.stderr)
+;(process.stderr as NodeJS.WriteStream).write = ((chunk: string | Buffer, ...rest: unknown[]) => {
+  const s = typeof chunk === 'string' ? chunk : chunk.toString('utf-8')
+  for (const re of STDERR_NOISE_PATTERNS) {
+    if (re.test(s)) return true
+  }
+  return (_origStderrWrite as (c: string | Buffer, ...a: unknown[]) => boolean)(chunk, ...(rest as []))
+}) as typeof process.stderr.write
+
 // Small helpers used by the backup flow. Defined at module scope
 // (not inside registerIpc) so the audit logger can call them.
 function basename(p: string): string {

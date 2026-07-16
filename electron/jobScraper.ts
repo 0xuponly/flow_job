@@ -9,30 +9,6 @@ const log = createLogger('scraper')
 const USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
-// Compact one-line snapshot of which ScrapedJob fields are populated. Used
-// for diagnostic logging — every per-site applyXxx() can call this after
-// it runs so we can see, after a failure, exactly which step populated
-// what and which step left gaps. The output truncates long strings so a
-// verbose description doesn't drown the rest of the log line.
-function logExtractedFields(stage: string, result: ScrapedJob): void {
-  const trunc = (v: string | undefined): string | undefined => {
-    if (!v) return undefined
-    const s = v.replace(/\s+/g, ' ').trim()
-    if (s.length <= 80) return s
-    return `${s.slice(0, 77)}...`
-  }
-  log.info(
-    `  ${stage}: ` +
-    `title=${trunc(result.title) ?? '∅'} ` +
-    `company=${trunc(result.company) ?? '∅'} ` +
-    `location=${trunc(result.location) ?? '∅'} ` +
-    `descLen=${result.description?.length ?? 0} ` +
-    `salary=${trunc(result.salary_range) ?? '∅'} ` +
-    `employmentType=${trunc(result.employment_type) ?? '∅'} ` +
-    `workMode=${trunc(result.work_mode) ?? '∅'}`
-  )
-}
-
 // Hosts that are reliably Cloudflare-blocked for our headless browser.
 // For these, the browser fallback (which spins up a hidden BrowserWindow
 // and waits up to 90s for the challenge to clear) is wasted effort — the
@@ -439,17 +415,8 @@ async function extractFromHtmlImpl(html: string, hostname: string, pageUrl: stri
   if (jobPosting) {
     applyJobPosting(result, jobPosting)
   }
-  // Diagnostic: how many JobPosting JSON-LD blocks were found, and how the
-  // selector picked one (or didn't). Helps distinguish "no schema on the
-  // page" from "schema present but the selector rejected it".
-  log.info(
-    `${pageUrl} (${hostname}) jsonLdCount=${jobPostings.length} ` +
-    `jsonLdPicked=${jobPosting ? 'yes' : 'no'}` +
-    (jobPosting?.title ? ` title=${JSON.stringify(jobPosting.title).slice(0, 120)}` : '') +
-    (jobPosting?.hiringOrganization?.name ? ` company=${JSON.stringify(jobPosting.hiringOrganization.name).slice(0, 80)}` : '')
-  )
-  logExtractedFields('jsonLd', result)
-
+  // (Per-stage diagnostic logging removed: only errors are logged now.
+  // See logger.ts — successful extracts don't write to scraper.log.)
 
   if (hostname.includes('linkedin.com')) {
     applyLinkedIn(result, html)
