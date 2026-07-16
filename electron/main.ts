@@ -1274,21 +1274,6 @@ app.whenReady().then(() => {
     }
   }
 
-  // One-shot: clear any heuristic-fallback fit data that older versions of
-  // the scan flow persisted as if it were a real LLM score. The team policy
-  // is: heuristic must never replace a real score; clear it and let the
-  // next batch-score pass try the LLM again. Idempotent — gated by a flag.
-  if (!db.hasHeuristicScoresCleared() && db.listJobs().length > 0) {
-    try {
-      const result = db.clearHeuristicPersistedScores()
-      if (result.updated > 0) {
-        log.startup.info(`Cleared heuristic-persisted fit on ${result.updated}/${result.total} jobs.`)
-      }
-    } catch (err) {
-      log.startup.error('Heuristic-clear failed:', err)
-    }
-  }
-
   // One-shot: bump the global CV version so the bootstrap score pass re-scores
   // every job that's currently holding a heuristic-only fit score. This
   // self-heals the bug where the LLM scorer silently fell back to a keyword
