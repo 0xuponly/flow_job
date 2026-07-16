@@ -1030,6 +1030,23 @@ export async function scanAllBoards(
     _seenProgress.add(msg)
     ;(onProgress || ((_: string) => {}))(msg)
   }
+  // Emit the live counter snapshot to the renderer so the scan-in-progress
+  // card can show "Found / Added / Skipped / Incompatible / Errors" ticking
+  // in real time instead of only at completion. The snapshot only carries
+  // the 5 totals (not the per-board breakdown) — the renderer-side table
+  // re-derives the per-board view from the final result on scan:complete.
+  // Cheap to call: it's a reference, and the renderer throttles its own
+  // re-renders via setState batching.
+  const emitCounters = () => {
+    if (!onCounters) return
+    onCounters({
+      totalFound: result.totalFound,
+      totalAdded: result.totalAdded,
+      totalSkipped: result.totalSkipped,
+      totalIncompatible: result.totalIncompatible,
+      totalErrors: result.totalErrors
+    })
+  }
 
   const LISTING_CONCURRENCY = 6
 
@@ -1152,8 +1169,8 @@ export async function scanAllBoards(
           if (signal?.aborted) break
           const dk = input.url ? dedupKey(input.url) : null
           if (dk) {
-            if (seenUrls.has(dk)) { br.skipped++; result.totalSkipped++; continue }
-            if (scanSeenUrls.has(dk)) { br.skipped++; result.totalSkipped++; continue }
+            if (seenUrls.has(dk)) { br.skipped++; emitCounters(); continue }
+            if (scanSeenUrls.has(dk)) { br.skipped++; emitCounters(); continue }
           }
           if (findDuplicateJob(input)) {
             if (dk) seenUrls.add(dk)
