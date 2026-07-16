@@ -22,6 +22,10 @@ export default function SettingsPage() {
   const [dragging, setDragging] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  // True when the user has unsaved changes on Profile or Models.
+  // Reorder/Delete on Models auto-save, so they don't dirty this.
+  // Reset on load and on successful save.
+  const [dirty, setDirty] = useState(false)
   const [encryptionMode, setEncryptionMode] = useState<'sealed' | 'plaintext-fallback' | 'uninitialized' | null>(null)
   const [blacklist, setBlacklist] = useState<string[]>([])
   const [newBlacklistCompany, setNewBlacklistCompany] = useState('')
@@ -170,6 +174,7 @@ export default function SettingsPage() {
       setBlacklist(bl)
       setBackupLastSuccessAt(bkp.lastSuccessAt)
       setBackupLastError(bkp.lastError)
+      setDirty(false)
     })
   }
 
@@ -380,6 +385,7 @@ export default function SettingsPage() {
     try {
       await api.updateSettings(settings)
       await api.saveApiModels(models)
+      setDirty(false)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     } finally {
@@ -389,14 +395,17 @@ export default function SettingsPage() {
 
   function update(field: keyof Settings, value: string | number | boolean) {
     setSettings((prev) => (prev ? { ...prev, [field]: value as never } : prev))
+    setDirty(true)
   }
 
   function updateModel(i: number, field: keyof ApiModelConfig, value: string | boolean) {
     setModels((prev) => prev.map((m, idx) => (idx === i ? { ...m, [field]: value } : m)))
+    setDirty(true)
   }
 
   function addModel() {
     setModels((prev) => [...prev, { id: '', ...emptyModel }])
+    setDirty(true)
   }
 
   function moveModel(from: number, to: number) {
@@ -429,6 +438,7 @@ export default function SettingsPage() {
 
   function addPreset(preset: typeof PRESETS[number]) {
     setModels((prev) => [...prev, { id: '', ...preset.model }])
+    setDirty(true)
   }
 
   async function handleAddBlacklist() {
@@ -457,7 +467,7 @@ export default function SettingsPage() {
             <p>Configure your profile, AI integration, and data</p>
           </div>
           {(tab === 'profile' || tab === 'models') && (
-            <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+            <button className="btn btn-primary" onClick={handleSave} disabled={saving || !dirty}>
               {saving ? 'Saving...' : saved ? 'Saved!' : 'Save settings'}
             </button>
           )}
