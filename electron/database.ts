@@ -163,9 +163,39 @@ function loadStore(): Store {
       // been written by an earlier version of the app before file-level
       // encryption was introduced.
       if (stripLegacyEncryptedFields(store)) persistStore()
-    } catch {
-      // Either file is legacy plaintext, or DEK is wrong. Try legacy plaintext
-      // parse; if that fails, start fresh.
+    } catch (err) {
+      // Distinguish three failure modes:
+      //
+      //   1. Modern encrypted payload (`enc:v1:` prefix) but decryption
+      //      failed. The most likely cause is a DEK mismatch — the live
+      //      encryption key no longer matches the one that encrypted this
+      //      file. This can happen after `clearAllData()` (which deletes
+      //      the key file and regenerates a DEK), a safeStorage / OS
+      //      keychain hiccup that caused `getOrCreateDek` to silently
+      //      regenerate, or restoring a backup made on a different
+      //      machine. In all of these cases, falling back to a fresh
+      //      store would silently wipe the user's data — exactly the
+      //      failure mode this code path was producing before this fix.
+      //      Throw a typed error instead so the caller can surface it
+      //      to the user (e.g. "Cannot decrypt data file — your
+      //      encryption key has been regenerated. Restore from a
+      //      passphrase-wrapped backup to recover.").
+      //
+      //   2. Legacy plaintext payload (no `enc:` prefix). Try parsing
+      //      as JSON; if it has the legacy markers, load it. This path
+      //      is preserved for users upgrading from pre-encryption
+      //      builds.
+      //
+      //   3. Corrupt JSON, empty file, or otherwise unparseable. Start
+      //      fresh (the only case where defaulting is safe).
+      if (raw.startsWith('enc:')) {
+        const reason = err instanceof Error ? err.message : String(err)
+        throw new Error(
+          `Cannot decrypt data file (${reason}). The encryption key may have been ` +
+          `regenerated. If you have a passphrase-protected backup, restore it now ` +
+          `to recover your data.`
+        )
+      }
       try {
         const parsed = JSON.parse(raw) as Store
         // Detect plaintext legacy: legacy had no `enc:v1:` prefix and used
