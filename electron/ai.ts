@@ -658,7 +658,7 @@ PARSED CONTEXT (hints only — verify against the CV above):
 Return the JSON object now.`
 
   try {
-    const result = await callAI(systemPrompt, userPrompt, 0.2, 20000)
+    const result = await callAI(systemPrompt, userPrompt, 0.2, 20000, signal)
     const content = result.content || ''
     // Try to locate a JSON object in the response (defensive against stray prose)
     const match = content.match(/\{[\s\S]*\}/)
