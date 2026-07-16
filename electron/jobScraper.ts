@@ -256,7 +256,12 @@ async function fetchPageHtml(
     headers: {
       'User-Agent': USER_AGENT,
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9'
+      'Accept-Language': 'en-US,en;q=0.9',
+      // Node's fetch auto-decodes gzip/deflate/br when this header
+      // is set, so the response.text() body is identical to before
+      // but transferred over the wire 5-10× smaller for typical
+      // job-board listing pages.
+      'Accept-Encoding': 'gzip, deflate, br'
     },
     redirect: 'follow',
     signal: combinedSignal
