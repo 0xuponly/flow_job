@@ -8,7 +8,8 @@ import {
   skillCount,
   runDocumentRuleChecks,
   selectTechnicalSkills,
-  enforceSkillsCeilings
+  enforceSkillsCeilings,
+  enforceAllCvCeilings
 } from './documentRules'
 
 describe('paragraphCount', () => {
@@ -321,5 +322,27 @@ describe('enforceSkillsCeilings', () => {
     const out = enforceSkillsCeilings(md, 'react')
     expect(out).not.toMatch(/Technical:/)
     expect(out).toMatch(/Language: English/)
+  })
+})
+
+describe('enforceAllCvCeilings', () => {
+  it('composes the skills cull and the ceiling cull', () => {
+    const exp = (n: number) => `Role ${n}\tCity, ST\nTitle ${n}\tJan 2024 – Present\n- bullet\n`
+    const tech = Array.from({ length: 20 }, (_, i) => `s${i}`).join(', ')
+    const md = `Name\nemail\n\nSKILLS & INTERESTS\nTechnical: ${tech}\nLanguage: English\n\nEXPERIENCE\n${exp(1)}${exp(2)}${exp(3)}${exp(4)}${exp(5)}${exp(6)}${exp(7)}\n`
+    const out = enforceAllCvCeilings(md, { jobDescription: 's0 s1' })
+    // Skills capped at 15
+    const techLine = out.split('\n').find((l) => l.startsWith('Technical:'))!
+    const kept = techLine.replace('Technical:', '').split(',').map((s) => s.trim())
+    expect(kept).toHaveLength(15)
+    // Experience capped at 4 (only Roles 1-4)
+    expect(out).toMatch(/Role 1\b/)
+    expect(out).toMatch(/Role 4\b/)
+    expect(out).not.toMatch(/Role 5\b/)
+  })
+  it('handles empty jobDescription without crashing', () => {
+    const md = 'Name\nemail\n\nSKILLS & INTERESTS\nTechnical: React, TypeScript\nLanguage: English\n'
+    const out = enforceAllCvCeilings(md, { jobDescription: '' })
+    expect(out).toMatch(/Technical: React, TypeScript/)
   })
 })

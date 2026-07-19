@@ -2,6 +2,8 @@
 // No Electron imports — this file is loaded directly by vitest.
 // See .superpowers/specs/2026-07-19-cover-letter-one-page-and-verifier-rules-design.md
 
+import { enforceOnePageCeilings } from './cvOnePage'
+
 const STOP_WORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'with', 'to', 'for', 'of', 'in', 'on', 'at',
   'is', 'are', 'be', 'as', 'by', 'this', 'that', 'we', 'you', 'our', 'your',
@@ -334,4 +336,21 @@ export function enforceSkillsCeilings(
   }
   void skillsHeaderSeen
   return output.join('\n')
+}
+
+export interface EnforceAllCvCeilingsOpts {
+  jobDescription?: string
+  log?: (msg: string) => void
+}
+
+export function enforceAllCvCeilings(
+  markdown: string,
+  opts: EnforceAllCvCeilingsOpts = {}
+): string {
+  const log = opts.log ?? ((m: string) => console.info(`[doc] ${m}`))
+  // Order matters: skills cull first, ceiling cull second. The ceiling
+  // cull does not touch the Skills section, so re-running on the
+  // already-rewritten Skills section is safe.
+  const skillsCulled = enforceSkillsCeilings(markdown, opts.jobDescription ?? '', { log })
+  return enforceOnePageCeilings(skillsCulled, { log })
 }
