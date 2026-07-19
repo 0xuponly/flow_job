@@ -12,6 +12,7 @@ import {
   wrapDekWithPassphrase
 } from './backupCrypto'
 import { tailorDocument, generateFollowUpMessage, regenerateSection, verifyDocumentContent, scoreJobFit, RateLimitError } from './ai'
+import { enforceOnePageCeilings } from '../src/cvOnePage'
 import { scrapeJobFromUrl } from './jobScraper'
 import { scanAllBoards, BOARDS } from './jobSearch'
 import { createLogger } from './logger'
@@ -469,7 +470,8 @@ function registerIpc(): void {
       return sectionHeaders.has(cleaned) || /^[a-z\s&]+$/.test(cleaned) && sectionHeaders.has(cleaned.replace(/[^a-z\s&]/g, '').trim())
     }
 
-    const lines = content.split('\n')
+    const culled = enforceOnePageCeilings(content)
+    const lines = culled.split('\n')
     let htmlBody = ''
     let headerCollected = false
     const headerLines: string[] = []
