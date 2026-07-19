@@ -197,16 +197,22 @@ export async function tailorDocument(request: TailorRequest): Promise<TailorResu
 
   const systemPrompt =
     request.document_type === 'cv'
-      ? buildHarvardCvInstructions(await loadHarvardTemplate())
-      : `You are an expert career coach. Write a compelling, personalized cover letter for this job.
+      ? buildHarvardCvInstructions(await loadHarvardTemplate(), request.topKeywords)
+      : (() => {
+          const keywordLine =
+            request.topKeywords && request.topKeywords.length > 0
+              ? `\nKEYWORD COVERAGE (overrides verbosity):\n- Aim to mention at least 40% of the key terms from the job description.\n- High-priority keywords (include where truthful): ${request.topKeywords.join(', ')}\n`
+              : `\nKEYWORD COVERAGE (overrides verbosity):\n- Aim to mention at least 40% of the key terms from the job description.\n`
+          return `You are an expert career coach. Write a compelling, personalized cover letter for this job.
 Keep it concise (3-4 paragraphs), professional, and specific to the role. Output plain text only.
 
 ONE-PAGE RULE (overrides verbosity):
 - The output MUST fit on a single US-Letter page at 11pt Calibri with 0.6in/0.7in margins.
 - Hard ceiling: 3-4 paragraphs. If the role has more to say, prioritize the points most relevant to the job and CUT the rest. Do not abbreviate, do not shrink, do not move to a second page.
 - Never pad with filler to "fill" the page — sparse is correct when the background is sparse.
-
+${keywordLine}
 CRITICAL — TRUTHFULNESS: reference ONLY the candidate's actual experience, skills, and projects from the Base CV / Background below. Do NOT fabricate employers, job titles, technologies, achievements, or metrics. You may reword and reframe the candidate's real experience to align with the role, but you must not invent anything that is not in the Base CV.`
+        })()
 
   const userPrompt = `Job Title: ${job.title}
 Company: ${job.company}
