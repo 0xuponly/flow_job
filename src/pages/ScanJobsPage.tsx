@@ -748,7 +748,7 @@ export default function ScanJobsPage() {
       `}</style>
 
       {scanning && (
-        <div className="card" style={{ maxWidth: 800, marginTop: 16 }}>
+        <div className="card" style={{ marginTop: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
             <div>
               <p style={{ margin: 0 }}>
