@@ -946,7 +946,7 @@ function extractJobUrls(html: string, baseUrl: string, boardName: string): { url
 async function fetchPageHtml(url: string, useBrowser: boolean, signal?: AbortSignal): Promise<string> {
   if (useBrowser) {
     try {
-      return await fetchHtmlViaBrowser(url, signal)
+      return await fetchHtmlViaBrowser(url)
     } catch {
       throw new Error('Blocked by anti-bot protection (Cloudflare/Cloudfront).')
     }
@@ -974,7 +974,7 @@ async function fetchPageHtml(url: string, useBrowser: boolean, signal?: AbortSig
   const html = await response.text()
   if (isChallengePage(html)) {
     try {
-      return await fetchHtmlViaBrowser(url, signal)
+      return await fetchHtmlViaBrowser(url)
     } catch {
       throw new Error(`HTTP ${  response.status  } (blocked)`)
     }
@@ -1412,7 +1412,7 @@ export async function scanAllBoards(
 
       const searchUrl = board.searchUrl(keywords, location)
       const tFetch0 = Date.now()
-      const html = await fetchBoardListingsHtml(searchUrl, board)
+      const html = await fetchBoardListingsHtml(searchUrl, board, signal)
       if (process.env.FLOW_JOB_SCAN_TIMING) {
         console.error(`[scan] stage=board-fetch board=${board.name} bytes=${html.length} ms=${Date.now() - tFetch0}`)
       }
@@ -1613,7 +1613,7 @@ export async function scanAllBoards(
         if (signal?.aborted) break
         const chunk = track.slice(i, i + concurrency)
         const t0 = Date.now()
-        const results = await Promise.allSettled(chunk.map(board => processBoard(board, location)))
+        const results = await Promise.allSettled(chunk.map(board => processBoard(board, location, signal)))
         if (process.env.FLOW_JOB_SCAN_TIMING) {
           const elapsed = Date.now() - t0
           console.error(`[scan] track=${trackName} chunk=[${chunk.map(b => b.name).join(',')}] ms=${elapsed}`)
