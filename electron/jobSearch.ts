@@ -467,6 +467,74 @@ export const BOARDS: BoardConfig[] = [
     searchUrl: () => 'https://www.jobbank.gc.ca/jobsearch/search',
     useBrowser: false,
     apiFetcher: (k, l, signal) => fetchJobBankJobs(k, l, { signal })
+  },
+  {
+    name: 'Hiring Cafe',
+    // hiring.cafe is a remote-first job aggregator. The search
+    // page is server-rendered with JSON-LD JobPosting blocks per
+    // listing; per-job URLs are /?job_id={uuid} so the listing
+    // fetch and the per-job scrape share the same scrapeJobFromUrl
+    // path. useBrowser=true: the keyword filter is client-side and
+    // the static HTML only ships the unfiltered list, so we walk
+    // the unfiltered page and rely on the per-listing scraper to
+    // honour the keyword.
+    searchUrl: (k) => `https://hiring.cafe/?keyword=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Sprout',
+    // Sprout (sproutjobs.com) is a marketing/creative remote job
+    // board on WordPress. Per-job URLs are /jobs/{slug}/ — covered
+    // by the generic /jobs path regex. Search URL is the standard
+    // WP /?s= shape; useBrowser=true because the search is a
+    // client-rendered overlay.
+    searchUrl: (k) => `https://sproutjobs.com/jobs?s=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Arc',
+    // Arc (arc.dev) is a dev-focused remote job board. Each listing
+    // has its own /remote-jobs/{slug} URL (the slug IS the job,
+    // not a category). Per-job pages carry a single JobPosting
+    // JSON-LD block. useBrowser=true: the listing grid is rendered
+    // client-side; static HTML carries only category nav.
+    searchUrl: (k) => `https://arc.dev/remote-jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Contra',
+    // Contra (contra.com) lists freelance projects (gigs, not
+    // 1099 jobs). Per-project URLs are /projects/{slug}/. Static
+    // HTML is a thin shell — the React app fetches the listing
+    // grid from an internal API, so useBrowser=true.
+    searchUrl: (k) => `https://contra.com/jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'SkipTheDrive',
+    // SkipTheDrive (skipthedrive.com) is a remote-only job board
+    // on WordPress. Per-job URLs are /job/{slug}-{numericId}/. The
+    // search page is server-rendered, so useBrowser=false.
+    searchUrl: (k) => `https://www.skipthedrive.com/?s=${encodeURIComponent(k)}`,
+    useBrowser: false
+  },
+  {
+    name: 'Jobspresso',
+    // Jobspresso (jobspresso.co) is a curated remote job board on
+    // WordPress. Per-job URLs are bare /{slug}/ posts (not under
+    // /jobs/). The search page is server-rendered and the /search/
+    // path carries the listings; the per-job anchor pattern matches
+    // the generic /jobs|post|... regex. useBrowser=false.
+    searchUrl: (k) => `https://jobspresso.co/?s=${encodeURIComponent(k)}`,
+    useBrowser: false
+  },
+  {
+    name: 'Dynamite Jobs',
+    // Dynamite Jobs (dynamitejobs.com) is a remote-only curated
+    // board. Per-job URLs are /job/{slug}/. Static HTML is a thin
+    // shell — listings render via the SPA — so useBrowser=true.
+    searchUrl: (k) => `https://dynamitejobs.com/?s=${encodeURIComponent(k)}`,
+    useBrowser: true
   }
 ]
 
@@ -712,7 +780,7 @@ function extractJobUrls(html: string, baseUrl: string, boardName: string): { url
     if (seen.has(lowerUrl)) continue
     seen.add(lowerUrl)
 
-    const knownBoardDomains = /linkedin\.com|indeed\.com|ca\.indeed\.com|monster\.com|ziprecruiter\.com|simplyhired\.com|adzuna\.com|talent\.com|jora\.com|remoteok\.com|weworkremotely\.com|remotive\.com|remote\.co|workingnomads\.com|justremote\.co|jobbank\.gc\.ca|eluta\.ca|workopolis\.com|jobboom\.com|workbc\.ca|careerbeacon\.com|charityvillage\.com|crypto-careers\.com|cryptorecruit\.com|remote3\.co|cryptocurrencyjobs\.co|cryptojobslist\.com|cryptojobs\.com|crypto\.jobs|web3\.career|startup\.jobs|selbyjennings\.com|idealist\.org|builtin\.com|jobs\.vancouver\.ca|google\.com\/about\/careers|careerhound\.io|usebraintrust\.com/
+    const knownBoardDomains = /linkedin\.com|indeed\.com|ca\.indeed\.com|monster\.com|ziprecruiter\.com|simplyhired\.com|adzuna\.com|talent\.com|jora\.com|remoteok\.com|weworkremotely\.com|remotive\.com|remote\.co|workingnomads\.com|justremote\.co|jobbank\.gc\.ca|eluta\.ca|workopolis\.com|jobboom\.com|workbc\.ca|careerbeacon\.com|charityvillage\.com|crypto-careers\.com|cryptorecruit\.com|remote3\.co|cryptocurrencyjobs\.co|cryptojobslist\.com|cryptojobs\.com|crypto\.jobs|web3\.career|startup\.jobs|selbyjennings\.com|idealist\.org|builtin\.com|jobs\.vancouver\.ca|google\.com\/about\/careers|careerhound\.io|usebraintrust\.com|hiring\.cafe|sproutjobs\.com|arc\.dev|contra\.com|skipthedrive\.com|jobspresso\.co|dynamitejobs\.com/
     if (!knownBoardDomains.test(lowerUrl)) continue
 
     const pathname = new URL(fullUrl).pathname
