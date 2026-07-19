@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import Modal from '../components/Modal'
+import { LocationAutocomplete } from '../components/LocationAutocomplete'
 import { notify } from '../components/Notifications'
 import type { Application, Document, Job, JobStatus } from '../types'
 import { STATUS_COLORS, STATUS_LABELS } from '../types'
@@ -586,7 +587,13 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
             <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} placeholder="Job title" style={{ fontSize: 24, fontWeight: 700 }} />
             <div style={{ display: 'flex', gap: 8 }}>
               <input value={editCompany} onChange={(e) => setEditCompany(e.target.value)} placeholder="Company" style={{ flex: 1, fontSize: 16 }} />
-              <input value={editLocation} onChange={(e) => setEditLocation(e.target.value)} placeholder="Location" style={{ flex: 1, fontSize: 16 }} />
+              <div style={{ flex: 1 }}>
+                <LocationAutocomplete
+                  value={editLocation}
+                  onChange={setEditLocation}
+                  placeholder="Location"
+                />
+              </div>
             </div>
             <input value={editUrl} onChange={(e) => setEditUrl(e.target.value)} placeholder="Posting link (https://...)" style={{ fontSize: 14 }} />
           </div>
