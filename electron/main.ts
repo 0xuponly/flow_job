@@ -13,6 +13,7 @@ import {
 } from './backupCrypto'
 import { tailorDocument, generateFollowUpMessage, regenerateSection, verifyDocumentContent, scoreJobFit, RateLimitError } from './ai'
 import { enforceOnePageCeilings, countPdfPages } from '../src/cvOnePage'
+import { enforceParagraphCeilings } from '../src/documentRules'
 import { scrapeJobFromUrl } from './jobScraper'
 import { scanAllBoards, BOARDS } from './jobSearch'
 import { createLogger } from './logger'
@@ -454,6 +455,15 @@ function registerIpc(): void {
     let bestPages = Infinity
     let bestScale = 1.0
 
+    // Cover letters are plain text with a paragraph cap; CVs use the
+    // Harvard-format ceiling helper. Both run before the markdown parser.
+    function applyDocumentRules(raw: string, kind: string): string {
+      if (kind === 'cover_letter') {
+        return enforceParagraphCeilings(raw, { max: 4 })
+      }
+      return enforceOnePageCeilings(raw)
+    }
+
     function stripMarkdown(s: string): string {
       return s.replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1').replace(/__(.+?)__/g, '$1').replace(/_(.+?)_/g, '$1')
     }
@@ -475,7 +485,7 @@ function registerIpc(): void {
       return sectionHeaders.has(cleaned) || /^[a-z\s&]+$/.test(cleaned) && sectionHeaders.has(cleaned.replace(/[^a-z\s&]/g, '').trim())
     }
 
-    const culled = enforceOnePageCeilings(content)
+    const culled = applyDocumentRules(content, docType ?? 'cv')
     const lines = culled.split('\n')
     let htmlBody = ''
     let headerCollected = false
