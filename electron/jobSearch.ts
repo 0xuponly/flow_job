@@ -1337,7 +1337,7 @@ export async function scanAllBoards(
     return fetchPageHtml(searchUrl, board.useBrowser, signal)
   }
 
-  async function processBoard(board: BoardConfig, location: string): Promise<ScanBoardResult> {
+  async function processBoard(board: BoardConfig, location: string, signal?: AbortSignal): Promise<ScanBoardResult> {
     const br: ScanBoardResult = { board: board.name, found: 0, added: 0, skipped: 0, errors: 0, incompatible: 0 }
     try {
       const locTag = location ? ` (${location})` : ''
