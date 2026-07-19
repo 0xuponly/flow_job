@@ -24,9 +24,9 @@ const CEILINGS = {
   bulletsPerEntry: 4,
   leadershipEntries: 2,
   skillsLines: 6,
-  // Education is rendered as 2 lines per school (school + degree) in the
-  // pipeline that feeds this helper, so 4 entries == 8 lines.
-  educationLines: 8
+  // Education content lines: 4 lines max. The spec treats each line in
+  // the Education section as a single line, not a school/degree pair.
+  educationLines: 4
 } as const
 
 function normalize(s: string): string {
@@ -185,8 +185,8 @@ export function enforceOnePageCeilings(markdown: string, opts: CullOptions = {})
           if (isNonBullet) {
             leadershipLastWasBullet = false
           } else {
+            // Bullet of the entry currently being dropped; do not re-emit.
             leadershipLastWasBullet = true
-            out.push(raw)
           }
           continue
         }

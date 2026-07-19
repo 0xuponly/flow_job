@@ -44,12 +44,21 @@ describe('enforceOnePageCeilings', () => {
   })
 
   it('truncates Education to at most 4 lines', () => {
-    const md = `Name\nemail\n\nEDUCATION\nSchool 1\nDegree 1\nSchool 2\nDegree 2\nSchool 3\nDegree 3\nSchool 4\nDegree 4\nSchool 5\nDegree 5\n`
+    const md = `Name\nemail\n\nEDUCATION\nSchool 1\nDegree 1\nSchool 2\nDegree 2\n`
     const out = enforceOnePageCeilings(md)
     expect(out).toMatch(/School 1/)
-    expect(out).toMatch(/School 4/)
-    expect(out).not.toMatch(/School 5/)
-    expect(out).not.toMatch(/Degree 5/)
+    expect(out).toMatch(/Degree 1/)
+    expect(out).toMatch(/School 2/)
+    expect(out).toMatch(/Degree 2/)
+  })
+
+  it('drops Education content beyond the 4-line cap', () => {
+    const md = `Name\nemail\n\nEDUCATION\nSchool 1\nDegree 1\nSchool 2\nDegree 2\nSchool 3\nDegree 3\n`
+    const out = enforceOnePageCeilings(md)
+    expect(out).toMatch(/School 1/)
+    expect(out).toMatch(/Degree 2/)
+    expect(out).not.toMatch(/School 3/)
+    expect(out).not.toMatch(/Degree 3/)
   })
 
   it('leaves content under all ceilings unchanged', () => {
