@@ -855,7 +855,7 @@ export default function ScanJobsPage() {
           ? (minutes > 0 ? `${minutes}m ${remSeconds}s` : `${seconds}s`)
           : 'unknown duration'
         return (
-          <div className="card" style={{ maxWidth: 800, marginTop: 16 }}>
+          <div className="card" style={{ marginTop: 16 }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 4 }}>
               <h3 style={{ margin: 0 }}>
                 Found {result.totalFound} - Added {result.totalAdded}
