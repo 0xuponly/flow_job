@@ -358,3 +358,38 @@ export function enforceAllCvCeilings(
   const skillsCulled = enforceSkillsCeilings(markdown, opts.jobDescription ?? '', { log })
   return enforceOnePageCeilings(skillsCulled, { log })
 }
+
+export interface ExtractResult {
+  rules: RuleCheck[]
+  cleanFeedback: string
+}
+
+export function extractRulesFromFeedback(feedback: string): ExtractResult {
+  // Match the suffix the verifier writes: `<!-- rules:[...] -->`
+  // Use the `s` (dotall) flag so `.*` matches newlines.
+  const match = feedback.match(/<!--\s*rules:(\[[\s\S]*?\])\s*-->/)
+  if (!match) {
+    return { rules: [], cleanFeedback: feedback }
+  }
+  let rules: RuleCheck[] = []
+  try {
+    const parsed: unknown = JSON.parse(match[1])
+    if (Array.isArray(parsed)) {
+      // Defensive: drop entries that don't have the expected shape.
+      rules = parsed.filter(
+        (entry): entry is RuleCheck =>
+          typeof entry === 'object' &&
+          entry !== null &&
+          typeof (entry as RuleCheck).rule === 'string' &&
+          typeof (entry as RuleCheck).passed === 'boolean' &&
+          typeof (entry as RuleCheck).detail === 'string'
+      )
+    }
+  } catch {
+    // Malformed JSON — return empty rules, keep the original feedback.
+    return { rules: [], cleanFeedback: feedback }
+  }
+  // Strip the suffix (and any preceding whitespace) from the feedback.
+  const cleanFeedback = feedback.slice(0, match.index ?? 0).replace(/\s+$/, '')
+  return { rules, cleanFeedback }
+}

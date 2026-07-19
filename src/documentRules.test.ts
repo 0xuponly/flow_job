@@ -9,7 +9,8 @@ import {
   runDocumentRuleChecks,
   selectTechnicalSkills,
   enforceSkillsCeilings,
-  enforceAllCvCeilings
+  enforceAllCvCeilings,
+  extractRulesFromFeedback
 } from './documentRules'
 
 describe('paragraphCount', () => {
@@ -348,5 +349,62 @@ describe('enforceAllCvCeilings', () => {
     const md = 'Name\nemail\n\nSKILLS & INTERESTS\nTechnical: React, TypeScript\nLanguage: English\n'
     const out = enforceAllCvCeilings(md, { jobDescription: '' })
     expect(out).toMatch(/Technical: React, TypeScript/)
+  })
+})
+
+describe('extractRulesFromFeedback', () => {
+  it('parses a feedback string with a valid rules suffix', () => {
+    const rules = [
+      { rule: 'one_page', passed: true, detail: 'estimated' },
+      { rule: 'paragraph_count', passed: true, detail: '4 paragraphs (max 4)' },
+      { rule: 'skills_count', passed: false, detail: '20 skills (target 5-15)' },
+      { rule: 'keyword_coverage', passed: true, detail: 'coverage 60%' }
+    ]
+    const feedback = `LLM critique goes here.\n\n<!-- rules:${JSON.stringify(rules)} -->`
+    const out = extractRulesFromFeedback(feedback)
+    expect(out.rules).toEqual(rules)
+    expect(out.cleanFeedback).toBe('LLM critique goes here.')
+  })
+
+  it('returns empty rules and original feedback when no suffix is present', () => {
+    const feedback = 'Just an LLM critique, no rules.'
+    const out = extractRulesFromFeedback(feedback)
+    expect(out.rules).toEqual([])
+    expect(out.cleanFeedback).toBe(feedback)
+  })
+
+  it('returns empty rules and original feedback when the suffix is malformed', () => {
+    const feedback = 'Critique.\n\n<!-- rules:not-valid-json -->'
+    const out = extractRulesFromFeedback(feedback)
+    expect(out.rules).toEqual([])
+    expect(out.cleanFeedback).toBe(feedback)
+  })
+
+  it('returns empty rules and original feedback when the JSON is not an array', () => {
+    const feedback = 'Critique.\n\n<!-- rules:{"not":"an array"} -->'
+    const out = extractRulesFromFeedback(feedback)
+    expect(out.rules).toEqual([])
+    expect(out.cleanFeedback).toBe(feedback)
+  })
+
+  it('strips trailing whitespace from the cleaned feedback', () => {
+    const rules = [{ rule: 'one_page', passed: true, detail: 'estimated' }]
+    const feedback = `Critique.   \n\n<!-- rules:${JSON.stringify(rules)} -->   `
+    const out = extractRulesFromFeedback(feedback)
+    expect(out.cleanFeedback).toBe('Critique.')
+  })
+
+  it('handles a single-rule array', () => {
+    const rules = [{ rule: 'keyword_coverage', passed: false, detail: 'coverage 20%' }]
+    const feedback = `x\n\n<!-- rules:${JSON.stringify(rules)} -->`
+    const out = extractRulesFromFeedback(feedback)
+    expect(out.rules).toEqual(rules)
+  })
+
+  it('handles an empty rules array', () => {
+    const feedback = 'x\n\n<!-- rules:[] -->'
+    const out = extractRulesFromFeedback(feedback)
+    expect(out.rules).toEqual([])
+    expect(out.cleanFeedback).toBe('x')
   })
 })
