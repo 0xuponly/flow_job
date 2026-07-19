@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { ApiModelConfig, Settings } from '../types'
 import { notify } from '../components/Notifications'
+import { LocationAutocomplete } from '../components/LocationAutocomplete'
 import Modal from '../components/Modal'
 import { BOARD_TYPES } from '../boardTypes'
 
@@ -546,9 +547,9 @@ export default function SettingsPage() {
               </div>
               <div className="form-group">
                 <label>Preferred location</label>
-                <input
+                <LocationAutocomplete
                   value={settings.job_search_location}
-                  onChange={(e) => update('job_search_location', e.target.value)}
+                  onChange={(v) => update('job_search_location', v)}
                   placeholder="e.g. London, Remote"
                 />
               </div>
