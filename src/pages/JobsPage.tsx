@@ -3,6 +3,7 @@ import { api } from '../api'
 import Modal from '../components/Modal'
 import { LocationAutocomplete } from '../components/LocationAutocomplete'
 import { notify } from '../components/Notifications'
+import { condenseLocation } from '../locations'
 import type { CreateJobInput, Document, Job } from '../types'
 
 // Lives at module scope so a single ResizeObserver can measure the
@@ -828,7 +829,9 @@ export default function JobsPage() {
     for (const j of jobs) {
       companies.add(j.company)
       titles.add(j.title)
-      locations.add(j.location || '—')
+      // condenseLocation so long-form (e.g. "Vancouver, British Columbia,
+      // Canada") and short-form stored values dedupe to a single filter chip
+      locations.add(condenseLocation(j.location || '—'))
       statuses.add(j.status)
       fits.add(fitLabel(j.score))
     }
@@ -849,7 +852,7 @@ export default function JobsPage() {
     const rows = jobs.filter((j) => {
       if (filterCompany.length && !filterCompany.includes(j.company)) return false
       if (filterTitle.length && !filterTitle.includes(j.title)) return false
-      if (filterLocation.length && !filterLocation.includes(j.location || '—')) return false
+      if (filterLocation.length && !filterLocation.includes(condenseLocation(j.location || '—'))) return false
       if (filterStatus.length && !filterStatus.includes(j.status)) return false
       if (!matchesSalaryFilter(j.salary_range, filterSalary)) return false
       if (filterFit.length && !filterFit.includes(fitLabel(j.score))) return false
@@ -1624,7 +1627,7 @@ export default function JobsPage() {
                 </td>
                 <td><strong>{job.company}</strong></td>
                 <td>{job.title}</td>
-                <td>{job.location ?? '—'}</td>
+                <td>{condenseLocation(job.location ?? '') || '—'}</td>
                 <td>
                   <span
                     className="badge"

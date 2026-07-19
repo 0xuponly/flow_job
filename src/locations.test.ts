@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { getLocations, getCountries, isRecognizedCountry, findByPrefix } from './locations';
+import {
+  getLocations,
+  getCountries,
+  isRecognizedCountry,
+  findByPrefix,
+  condenseLocation,
+} from './locations';
 
 describe('locations data', () => {
   it('exposes a non-empty list of nodes', () => {
@@ -68,5 +74,44 @@ describe('display()', () => {
     const ontario = r.find((n) => n.type === 'province' && n.name === 'Ontario');
     expect(ontario).toBeDefined();
     expect(ontario!.display()).toBe('Ontario, Canada');
+  });
+});
+
+describe('condenseLocation', () => {
+  it('condenses "City, State, Country" using both maps', () => {
+    expect(condenseLocation('Vancouver, British Columbia, Canada')).toBe('Vancouver, BC, CA');
+  });
+
+  it('condenses a US city to "City, ST, US"', () => {
+    expect(condenseLocation('San Francisco, California, United States')).toBe('San Francisco, CA, US');
+  });
+
+  it('condenses a city with no state segment to "City, CC"', () => {
+    expect(condenseLocation('London, United Kingdom')).toBe('London, UK');
+  });
+
+  it('returns free text without commas unchanged', () => {
+    expect(condenseLocation('Remote')).toBe('Remote');
+    expect(condenseLocation('Anywhere')).toBe('Anywhere');
+    expect(condenseLocation('EU')).toBe('EU');
+  });
+
+  it('returns empty string for empty input', () => {
+    expect(condenseLocation('')).toBe('');
+  });
+
+  it('returns empty string for null/undefined', () => {
+    expect(condenseLocation(null)).toBe('');
+    expect(condenseLocation(undefined)).toBe('');
+  });
+
+  it('leaves an unmapped state alone but condenses a mapped country', () => {
+    expect(condenseLocation('Mumbai, Maharashtra, India')).toBe('Mumbai, Maharashtra, IN');
+  });
+
+  it('leaves an unmapped country alone but condenses a mapped state', () => {
+    expect(condenseLocation('Vancouver, British Columbia, Atlantis')).toBe(
+      'Vancouver, BC, Atlantis'
+    );
   });
 });

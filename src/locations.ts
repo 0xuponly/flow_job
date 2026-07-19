@@ -102,6 +102,186 @@ function buildNameIndex(): Map<string, LocationNode[]> {
   return idx;
 }
 
+// ISO 3166-1 alpha-2 country code map keyed by full English country name.
+// Covers the countries flow_job users actually see on scraped job boards;
+// unmapped names fall through unchanged. Names match the dataset at
+// data/locations.json (and the long-form autocomplete that uses it).
+const COUNTRY_CODES: Record<string, string> = {
+  'United States': 'US',
+  'United States of America': 'US',
+  Canada: 'CA',
+  'United Kingdom': 'UK',
+  'Great Britain': 'UK',
+  Australia: 'AU',
+  'New Zealand': 'NZ',
+  Japan: 'JP',
+  Germany: 'DE',
+  France: 'FR',
+  Netherlands: 'NL',
+  Spain: 'ES',
+  Italy: 'IT',
+  Ireland: 'IE',
+  Portugal: 'PT',
+  Belgium: 'BE',
+  Austria: 'AT',
+  Finland: 'FI',
+  Greece: 'GR',
+  India: 'IN',
+  China: 'CN',
+  Brazil: 'BR',
+  Mexico: 'MX',
+  Argentina: 'AR',
+  Chile: 'CL',
+  Colombia: 'CO',
+  Peru: 'PE',
+  'South Africa': 'ZA',
+  Egypt: 'EG',
+  Nigeria: 'NG',
+  Kenya: 'KE',
+  'United Arab Emirates': 'AE',
+  'Saudi Arabia': 'SA',
+  Turkey: 'TR',
+  Russia: 'RU',
+  Ukraine: 'UA',
+  Poland: 'PL',
+  'Czech Republic': 'CZ',
+  'Czechia': 'CZ',
+  Hungary: 'HU',
+  Romania: 'RO',
+  Sweden: 'SE',
+  Norway: 'NO',
+  Denmark: 'DK',
+  Switzerland: 'CH',
+  'South Korea': 'KR',
+  'Korea, Republic of': 'KR',
+  Singapore: 'SG',
+  Malaysia: 'MY',
+  Thailand: 'TH',
+  Vietnam: 'VN',
+  Philippines: 'PH',
+  Indonesia: 'ID',
+  'Hong Kong': 'HK',
+  Taiwan: 'TW',
+  Pakistan: 'PK',
+  Bangladesh: 'BD',
+  'Sri Lanka': 'LK',
+  Israel: 'IL',
+  Luxembourg: 'LU',
+  Iceland: 'IS',
+  'New Caledonia': 'NC',
+};
+
+// Subdivision abbreviation map. Keyed by the full subdivision name as
+// it appears in the locations dataset (and the long-form autocomplete).
+// 50 US states + DC, 13 Canadian provinces/territories.
+const SUBDIVISION_CODES: Record<string, string> = {
+  // US states
+  Alabama: 'AL',
+  Alaska: 'AK',
+  Arizona: 'AZ',
+  Arkansas: 'AR',
+  California: 'CA',
+  Colorado: 'CO',
+  Connecticut: 'CT',
+  Delaware: 'DE',
+  'District of Columbia': 'DC',
+  Florida: 'FL',
+  Georgia: 'GA',
+  Hawaii: 'HI',
+  Idaho: 'ID',
+  Illinois: 'IL',
+  Indiana: 'IN',
+  Iowa: 'IA',
+  Kansas: 'KS',
+  Kentucky: 'KY',
+  Louisiana: 'LA',
+  Maine: 'ME',
+  Maryland: 'MD',
+  Massachusetts: 'MA',
+  Michigan: 'MI',
+  Minnesota: 'MN',
+  Mississippi: 'MS',
+  Missouri: 'MO',
+  Montana: 'MT',
+  Nebraska: 'NE',
+  Nevada: 'NV',
+  'New Hampshire': 'NH',
+  'New Jersey': 'NJ',
+  'New Mexico': 'NM',
+  'New York': 'NY',
+  'North Carolina': 'NC',
+  'North Dakota': 'ND',
+  Ohio: 'OH',
+  Oklahoma: 'OK',
+  Oregon: 'OR',
+  Pennsylvania: 'PA',
+  'Rhode Island': 'RI',
+  'South Carolina': 'SC',
+  'South Dakota': 'SD',
+  Tennessee: 'TN',
+  Texas: 'TX',
+  Utah: 'UT',
+  Vermont: 'VT',
+  Virginia: 'VA',
+  Washington: 'WA',
+  'West Virginia': 'WV',
+  Wisconsin: 'WI',
+  Wyoming: 'WY',
+  // Canadian provinces and territories
+  Alberta: 'AB',
+  'British Columbia': 'BC',
+  Manitoba: 'MB',
+  'New Brunswick': 'NB',
+  'Newfoundland and Labrador': 'NL',
+  'Nova Scotia': 'NS',
+  Ontario: 'ON',
+  'Prince Edward Island': 'PE',
+  Quebec: 'QC',
+  Saskatchewan: 'SK',
+  Yukon: 'YT',
+  'Northwest Territories': 'NT',
+  Nunavut: 'NU',
+};
+
+/**
+ * Render a long-form location string in a condensed display form.
+ *
+ * Examples:
+ *   "Vancouver, British Columbia, Canada" -> "Vancouver, BC, CA"
+ *   "San Francisco, California, United States" -> "San Francisco, CA, US"
+ *   "London, United Kingdom" -> "London, UK"
+ *   "Remote" -> "Remote"            (free text, no comma)
+ *   "" -> ""                        (empty stays empty)
+ *   null / undefined -> ""
+ *   "Mumbai, Maharashtra, India" -> "Mumbai, Maharashtra, IN"
+ *   "Vancouver, British Columbia, Atlantis" -> "Vancouver, BC, Atlantis"
+ *
+ * Splits on ", " (comma + space), condenses middle segments (state /
+ * province) and the last segment (country) when their full name is in
+ * the abbreviation maps. Unknown segments are left as-is so unmapped
+ * countries/states still show the long form.
+ */
+export function condenseLocation(value: string | null | undefined): string {
+  if (value == null) return '';
+  const input = value;
+  if (!input) return '';
+  const parts = input.split(', ');
+  if (parts.length <= 1) return input;
+  // Country is the last segment. Look up by full name; fall through if
+  // not in the map (handles "Atlantis", free-text like "EU", etc.).
+  const countryRaw = parts[parts.length - 1];
+  const country = COUNTRY_CODES[countryRaw] ?? countryRaw;
+  // Middle segments: state/province. Only the first middle segment has
+  // a known abbreviation in practice, but the loop keeps things general.
+  const middle: string[] = [];
+  for (let i = 1; i < parts.length - 1; i++) {
+    const seg = parts[i];
+    middle.push(SUBDIVISION_CODES[seg] ?? seg);
+  }
+  // First segment is the city; always preserved as-is.
+  return [parts[0], ...middle, country].join(', ');
+}
+
 export function findByPrefix(query: string, limit = 10): LocationNode[] {
   if (!query) return [];
   const q = query.trim().toLowerCase();
