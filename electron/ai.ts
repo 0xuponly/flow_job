@@ -519,7 +519,8 @@ export async function regenerateSection(
   documentId: number,
   sectionName: string,
   jobId: number,
-  extraContext?: string
+  extraContext?: string,
+  topKeywords?: string[]
 ): Promise<string> {
   const job = getJob(jobId)
   if (!job) throw new Error('Job not found')
@@ -575,6 +576,16 @@ ONE-PAGE RULE (overrides verbosity):
 - If the candidate has more, prioritize the items most relevant to the target job and DROP the rest. Do not abbreviate, do not shrink, do not move to a second page.
 - Never pad with filler to "fill" the page — sparse is correct when the background is sparse.
 
+${topKeywords && topKeywords.length > 0
+  ? `KEYWORD COVERAGE (overrides verbosity):
+- Aim to mention at least 50% of the key terms from the job description.
+- High-priority keywords (include where truthful): ${topKeywords.join(', ')}
+
+`
+ : `KEYWORD COVERAGE (overrides verbosity):
+- Aim to mention at least 50% of the key terms from the job description.
+
+`}
 Rewrite the section content to better match the target job. Keep only relevant entries. Output ONLY the section body — no header line, no markdown.`
 
   const userPrompt = `Job Title: ${job.title}
