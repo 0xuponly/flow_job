@@ -943,14 +943,23 @@ function extractJobUrls(html: string, baseUrl: string, boardName: string): { url
   return results
 }
 
-async function fetchPageHtml(url: string, useBrowser: boolean): Promise<string> {
+async function fetchPageHtml(url: string, useBrowser: boolean, signal?: AbortSignal): Promise<string> {
   if (useBrowser) {
     try {
-      return await fetchHtmlViaBrowser(url)
+      return await fetchHtmlViaBrowser(url, signal)
     } catch {
       throw new Error('Blocked by anti-bot protection (Cloudflare/Cloudfront).')
     }
   }
+  // Combine the scan-cancel signal with the 30s per-request timeout.
+  // Without this, a Cancel click during a long fetch leaves the request
+  // running until the timeout fires (up to 30s), which the user reads as
+  // "Cancel is broken." Combining the two signals means either source of
+  // abort tears the in-flight request down immediately.
+  const timeoutSignal = AbortSignal.timeout(30000)
+  const combinedSignal = signal
+    ? AbortSignal.any([signal, timeoutSignal])
+    : timeoutSignal
   const response = await fetch(url, {
     headers: {
       'User-Agent': USER_AGENT,
@@ -958,14 +967,14 @@ async function fetchPageHtml(url: string, useBrowser: boolean): Promise<string> 
       'Accept-Language': 'en-US,en;q=0.9',
       'Accept-Encoding': 'gzip, deflate, br'
     },
-    signal: AbortSignal.timeout(30000),
+    signal: combinedSignal,
     redirect: 'follow'
   })
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
   const html = await response.text()
   if (isChallengePage(html)) {
     try {
-      return await fetchHtmlViaBrowser(url)
+      return await fetchHtmlViaBrowser(url, signal)
     } catch {
       throw new Error(`HTTP ${  response.status  } (blocked)`)
     }
