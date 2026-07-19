@@ -127,9 +127,10 @@ let _scanAbortController: AbortController | null = null
 let _importAbortController: AbortController | null = null
 
 function createWindow(): void {
+  const { height: displayHeight } = screen.getPrimaryDisplay().workAreaSize
   const mainWindow = new BrowserWindow({
     width: 1280,
-    height: 860,
+    height: displayHeight,
     minWidth: 960,
     minHeight: 640,
     show: false,
