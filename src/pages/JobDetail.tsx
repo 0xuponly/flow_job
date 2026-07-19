@@ -1019,7 +1019,7 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
                 setExportingDoc(true)
                 try {
                   const typeLabel = viewDoc?.type === 'cv' ? 'CV' : 'Cover Letter'
-                  const path = await api.exportDocumentPdf(docTitle, docContent, typeLabel, job.company, job.title)
+                  const path = await api.exportDocumentPdf(docTitle, docContent, typeLabel, viewDoc.id, job.company, job.title)
                   if (path) alert(`PDF saved to: ${path}`)
                 } finally {
                   setExportingDoc(false)

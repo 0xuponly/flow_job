@@ -38,7 +38,7 @@ export interface Api {
   createDocument: (type: 'cv' | 'cover_letter', title: string, content: string, jobId?: number) => Promise<Document>
   updateDocument: (id: number, title: string, content: string) => Promise<Document>
   deleteDocument: (id: number) => Promise<void>
-  exportDocumentPdf: (title: string, content: string, docType?: string, company?: string, position?: string) => Promise<string | null>
+  exportDocumentPdf: (title: string, content: string, docType: string, documentId: number | null, company?: string, position?: string) => Promise<string | null>
   listApplications: () => Promise<(Application & { job_title: string; company: string })[]>
   getOrCreateApplication: (jobId: number) => Promise<Application>
   updateApplication: (id: number, fields: Partial<Application>) => Promise<Application>
@@ -154,7 +154,7 @@ const api: Api = {
     ipcRenderer.invoke('documents:create', type, title, content, jobId),
   updateDocument: (id, title, content) => ipcRenderer.invoke('documents:update', id, title, content),
   deleteDocument: (id) => ipcRenderer.invoke('documents:delete', id),
-  exportDocumentPdf: (title, content, docType, company, position) => ipcRenderer.invoke('documents:exportPdf', title, content, docType, company, position),
+  exportDocumentPdf: (title, content, docType, documentId, company, position) => ipcRenderer.invoke('documents:exportPdf', title, content, docType, documentId, company, position),
   listApplications: () => ipcRenderer.invoke('applications:list'),
   getOrCreateApplication: (jobId) => ipcRenderer.invoke('applications:getOrCreate', jobId),
   updateApplication: (id, fields) => ipcRenderer.invoke('applications:update', id, fields),

@@ -228,7 +228,7 @@ export default function DocumentsPage() {
     setExporting(true)
     try {
       const typeLabel = selected?.type === 'cv' ? 'CV' : 'Cover Letter'
-      const path = await api.exportDocumentPdf(editTitle, editContent, typeLabel)
+      const path = await api.exportDocumentPdf(editTitle, editContent, typeLabel, selected.id)
       if (path) {
         alert(`PDF saved to: ${path}`)
       }

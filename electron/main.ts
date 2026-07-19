@@ -12,8 +12,8 @@ import {
   wrapDekWithPassphrase
 } from './backupCrypto'
 import { tailorDocument, generateFollowUpMessage, regenerateSection, verifyDocumentContent, scoreJobFit, RateLimitError } from './ai'
-import { enforceOnePageCeilings, countPdfPages } from '../src/cvOnePage'
-import { enforceParagraphCeilings } from '../src/documentRules'
+import { countPdfPages } from '../src/cvOnePage'
+import { enforceAllCvCeilings, enforceParagraphCeilings } from '../src/documentRules'
 import { scrapeJobFromUrl } from './jobScraper'
 import { scanAllBoards, BOARDS } from './jobSearch'
 import { createLogger } from './logger'
@@ -447,7 +447,7 @@ function registerIpc(): void {
       throw err
     }
   })
-  ipcMain.handle('documents:exportPdf', async (_e, title: string, content: string, docType?: string, company?: string, position?: string) => {
+  ipcMain.handle('documents:exportPdf', async (_e, title: string, content: string, docType: string, documentId: number | null, company?: string, position?: string) => {
     const win = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, nodeIntegration: false } })
 
     const SHRINK_SCALES = [1.0, 0.92, 0.85] as const
@@ -457,11 +457,20 @@ function registerIpc(): void {
 
     // Cover letters are plain text with a paragraph cap; CVs use the
     // Harvard-format ceiling helper. Both run before the markdown parser.
-    function applyDocumentRules(raw: string, kind: string): string {
+    function applyDocumentRules(raw: string, kind: string, jobDesc: string): string {
       if (kind === 'cover_letter') {
         return enforceParagraphCeilings(raw, { max: 4 })
       }
-      return enforceOnePageCeilings(raw)
+      return enforceAllCvCeilings(raw, { jobDescription: jobDesc })
+    }
+
+    let jobDescription = ''
+    if (documentId !== null && documentId !== undefined) {
+      const docRow = db.getDocument(documentId)
+      if (docRow?.job_id) {
+        const jobRow = db.getJob(docRow.job_id)
+        if (jobRow) jobDescription = jobRow.description ?? ''
+      }
     }
 
     function stripMarkdown(s: string): string {
@@ -485,7 +494,7 @@ function registerIpc(): void {
       return sectionHeaders.has(cleaned) || /^[a-z\s&]+$/.test(cleaned) && sectionHeaders.has(cleaned.replace(/[^a-z\s&]/g, '').trim())
     }
 
-    const culled = applyDocumentRules(content, docType ?? 'cv')
+    const culled = applyDocumentRules(content, docType ?? 'cv', jobDescription)
     const lines = culled.split('\n')
     let htmlBody = ''
     let headerCollected = false
