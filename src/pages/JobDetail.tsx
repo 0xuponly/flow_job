@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { api } from '../api'
 import Modal from '../components/Modal'
 import { LocationAutocomplete } from '../components/LocationAutocomplete'
+import { extractJobKeywords } from '../documentRules'
 import { notify } from '../components/Notifications'
 import type { Application, Document, Job, JobStatus } from '../types'
 import { STATUS_COLORS, STATUS_LABELS } from '../types'
@@ -221,6 +222,7 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
   }
 
   async function ensureDocVerified(doc: Document): Promise<Document | null> {
+    const topKeywords = extractJobKeywords(job.description ?? '').slice(0, 10)
     const v = await api.verifyDocument(job.id, doc.id, doc.type)
     if ('queued' in v) {
       notify('AI is rate-limited — verification added to queue. Will retry automatically.', 'info')
@@ -246,7 +248,8 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete }: Props) {
       const r = await api.tailorDocument({
         job_id: job.id,
         document_type: doc.type,
-        base_content: `Previous version had these issues: ${prevFeedback}\n\n---\n${prevContent}`
+        base_content: `Previous version had these issues: ${prevFeedback}\n\n---\n${prevContent}`,
+        topKeywords
       })
       if ('queued' in r) {
         // AI is rate-limited; bail with the best score we've seen so far.
