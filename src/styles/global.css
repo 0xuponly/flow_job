@@ -95,10 +95,6 @@ textarea {
   display: none;
 }
 
-.sidebar--collapsed .sidebar-bottom-actions {
-  align-items: center;
-}
-
 .sidebar--collapsed .sidebar-scan-indicator {
   font-size: 0;
   padding: 8px;
@@ -931,8 +927,13 @@ input[type="checkbox"]:disabled {
   padding: 8px;
   border-top: 1px solid var(--border);
   display: flex;
+  flex-direction: column;
   gap: 4px;
-  justify-content: flex-end;
+  align-items: flex-end;
+}
+
+.sidebar--collapsed .sidebar-bottom-actions {
+  align-items: center;
 }
 
 .sidebar-action {
