@@ -96,14 +96,21 @@ textarea {
    [data-tooltip]::after pseudo-element and hide the hover label. */
 .nav-item .nav-label {
   display: inline-block;
+  max-width: 200px;
   transition: opacity 180ms cubic-bezier(0.22, 1, 0.36, 1),
-              transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+              transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+              max-width 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .sidebar--collapsed .nav-item .nav-label {
   opacity: 0;
   transform: translateX(-6px);
   pointer-events: none;
+  /* Collapse the label's layout box to zero so it doesn't claim
+     space inside the flex row — clip-path only hides pixels, not
+     layout, so the label would still push the icon off-center
+     without max-width: 0. */
+  max-width: 0;
   clip-path: inset(0 100% 0 0);
 }
 
@@ -977,6 +984,7 @@ input[type="checkbox"]:disabled {
   justify-content: center;
   cursor: pointer;
   color: var(--text-muted);
+  font-size: 16px;
   padding: 0;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
