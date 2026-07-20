@@ -14,6 +14,7 @@ import {
 import { tailorDocument, generateFollowUpMessage, regenerateSection, verifyDocumentContent, scoreJobFit, RateLimitError } from './ai'
 import { countPdfPages } from '../src/cvOnePage'
 import { enforceAllCvCeilings, enforceParagraphCeilings } from '../src/documentRules'
+import { extractJobKeywordsStructured } from '../src/keywordExtractor'
 import { scrapeJobFromUrl } from './jobScraper'
 import { scanAllBoards, BOARDS } from './jobSearch'
 import { createLogger } from './logger'
@@ -335,6 +336,12 @@ function registerIpc(): void {
       }
     }
     return { updated }
+  })
+
+  ipcMain.handle('keywords:extract', async (_e, jobId: number) => {
+    const job = db.getJob(jobId)
+    if (!job) return { keywords: [], refinedByLlm: false }
+    return extractJobKeywordsStructured(job.description ?? '')
   })
 
   ipcMain.handle('jobs:recomputeFit', async (_e, id: number) => {
