@@ -130,6 +130,11 @@ textarea {
 
 .sidebar--collapsed .nav-item {
   justify-content: center;
+  /* The label collapses to max-width: 0 but `gap: 10px` still inserts
+     10px between the icon and the (invisible) label, pushing the icon
+     5px right of true center. Zeroing the gap in collapsed mode lets
+     justify-content: center land the icon on the rail's centerline. */
+  gap: 0;
 }
 
 .sidebar--collapsed .sidebar-scan-indicator {
