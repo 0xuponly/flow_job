@@ -2,10 +2,11 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { api } from '../api'
 import Modal from '../components/Modal'
 import { LocationAutocomplete } from '../components/LocationAutocomplete'
+import { KeywordGapsPanel } from '../components/KeywordGapsPanel'
 import RuleCheckList from '../components/RuleCheckList'
 import { extractJobKeywords, extractRulesFromFeedback } from '../documentRules'
 import { notify } from '../components/Notifications'
-import type { Application, Document, Job, JobStatus } from '../types'
+import type { Application, Document, Job, JobStatus, KeywordCategory, KeywordResult } from '../types'
 import { STATUS_COLORS, STATUS_LABELS } from '../types'
 import { EMPLOYMENT_TYPES, EMPLOYMENT_TYPE_LABELS, WORK_MODES, formatEmploymentType } from '../employmentType'
 import { enqueueFitRecompute, isJobInFitQueue } from '../fitQueue'
@@ -31,6 +32,17 @@ function formatJobDate(iso: string | null | undefined): string {
   if (isNaN(d.getTime())) return '—'
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${String(d.getFullYear()).slice(-2)}`
+}
+
+// Display labels for the four keyword categories. Mirrors the map in
+// KeywordGapsPanel.tsx — kept local so JobDetail can render the
+// "all keywords" grouped chip block without forcing that component to
+// export its internal label table.
+const CATEGORY_LABELS: Record<KeywordCategory, string> = {
+  hard: 'Hard Skills',
+  soft: 'Soft Skills',
+  cert: 'Certifications',
+  seniority: 'Seniority Cues'
 }
 
 export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJobIds, onNavigateSibling }: Props) {
@@ -143,6 +155,29 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
       setEditUrl(job.url ?? '')
     }
   }, [job, editing])
+
+  // Structured keyword extraction result for the "all keywords by
+  // category" grouped chip block and the KeywordGapsPanel. Re-fetches
+  // whenever the underlying job description changes (description edit
+  // is the only path that can shift category/weight). The IPC is a
+  // pure function (no LLM) so this is cheap to recompute; we still
+  // gate it on [job.id, currentJob.description] to avoid refetching
+  // on unrelated re-renders.
+  const [structuredResult, setStructuredResult] = useState<KeywordResult | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    api.extractJobKeywords(job.id).then((r) => {
+      if (cancelled) return
+      setStructuredResult(r)
+    }).catch((err) => {
+      if (cancelled) return
+      // Non-fatal: the page still renders without the chip block +
+      // gaps panel. Surface as a toast so the user knows the UI is
+      // missing one of its affordances rather than failing silently.
+      notify(`Keyword extraction failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+    })
+    return () => { cancelled = true }
+  }, [job.id, currentJob.description])
 
   // Surface the fit-scorer failure as a toast when the page opens with one
   // already set AND there's no prior score to fall back on. If a prior
@@ -901,6 +936,44 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
           <div className="card" style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.6 }}>
             {currentJob.application_requirements || 'Not specified.'}
           </div>
+
+          {structuredResult && (
+            <>
+              <div className="section-title">Keywords</div>
+              <div className="card">
+                {(['hard', 'soft', 'cert', 'seniority'] as const).map((cat) => {
+                  const entries = structuredResult.keywords
+                    .filter((k) => k.category === cat)
+                    .sort((a, b) => b.weight - a.weight)
+                    .slice(0, 5)
+                  if (entries.length === 0) return null
+                  return (
+                    <section key={cat} style={{ marginBottom: 12 }}>
+                      <h4 style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', marginBottom: 6 }}>{CATEGORY_LABELS[cat]}</h4>
+                      <div className="chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {entries.map((e) => (
+                          <span
+                            key={`${e.phrase}-${e.source}`}
+                            className="chip"
+                            style={{
+                              display: 'inline-block',
+                              padding: '2px 8px',
+                              borderRadius: 10,
+                              background: 'var(--bg-secondary)',
+                              fontSize: 11,
+                              color: 'var(--text-muted)'
+                            }}
+                          >
+                            {e.phrase}
+                          </span>
+                        ))}
+                      </div>
+                    </section>
+                  )
+                })}
+              </div>
+            </>
+          )}
         </div>
 
         <div>
@@ -1019,6 +1092,15 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
               <p style={{ fontSize: 13, color: '#22c55e', marginTop: 8 }}>✓ Verified and ready to apply</p>
             )}
           </div>
+
+          {structuredResult && (
+            <div className="card">
+              <KeywordGapsPanel
+                result={structuredResult}
+                documentText={cv?.content ?? coverLetter?.content ?? docContent}
+              />
+            </div>
+          )}
 
           <div className="card">
             <h4 style={{ marginBottom: 8 }}>3. Submit application</h4>

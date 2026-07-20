@@ -9,6 +9,7 @@ import type {
   Interview,
   Job,
   JobStatus,
+  KeywordResult,
   ScanFilters,
   ScanResult,
   ScanStatus,
@@ -41,6 +42,7 @@ export interface Api {
   updateDocument: (id: number, title: string, content: string) => Promise<Document>
   deleteDocument: (id: number) => Promise<void>
   exportDocumentPdf: (title: string, content: string, docType: string, documentId: number | null, company?: string, position?: string) => Promise<string | null>
+  extractJobKeywords: (jobId: number) => Promise<KeywordResult>
   listApplications: () => Promise<(Application & { job_title: string; company: string })[]>
   getOrCreateApplication: (jobId: number) => Promise<Application>
   updateApplication: (id: number, fields: Partial<Application>) => Promise<Application>
