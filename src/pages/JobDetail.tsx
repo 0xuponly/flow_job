@@ -124,6 +124,15 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
     load()
   }, [job.id])
 
+  // Sidebar refresh button: re-run load() to pick up latest job,
+  // application, and documents from the store. Same pattern as
+  // JobsPage's app:refresh handler.
+  useEffect(() => {
+    const onRefresh = () => { load() }
+    window.addEventListener('app:refresh', onRefresh)
+    return () => window.removeEventListener('app:refresh', onRefresh)
+  }, [])
+
   // Local mirror of the job prop. The parent owns navigation (it decides
   // whether JobDetail is shown at all), but it intentionally does NOT push
   // in-place mutations back into the `job` prop on the next render — that
