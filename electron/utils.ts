@@ -126,7 +126,7 @@ const COUNTRIES: Record<string, string> = {
   'india': 'IN', 'china': 'CN', 'japan': 'JP', 'south korea': 'KR', 'korea': 'KR',
   'singapore': 'SG', 'hong kong': 'HK', 'taiwan': 'TW',
   'brazil': 'BR', 'mexico': 'MX', 'argentina': 'AR', 'chile': 'CL', 'colombia': 'CO',
-  'israel': 'IL', 'united arab emirates': 'AE', 'uae': 'AE',
+  'united arab emirates': 'AE', 'uae': 'AE',
   'south africa': 'ZA', 'nigeria': 'NG', 'egypt': 'EG', 'kenya': 'KE',
   'turkey': 'TR', 'russia': 'RU', 'ukraine': 'UA'
 }
