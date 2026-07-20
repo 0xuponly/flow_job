@@ -301,6 +301,7 @@ export interface ScanResult {
   totalFound: number
   totalAdded: number
   totalSkipped: number
+  totalSkippedByFilter: number
   boards: ScanBoardResult[]
   errors: string[]
   startedAt: number | null
