@@ -20,6 +20,7 @@
   --danger: #ef4444;
   --radius: 10px;
   --sidebar-width: 172px;
+  --sidebar-width-collapsed: 64px;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   font-size: 14px;
   line-height: 1.5;
@@ -75,6 +76,32 @@ textarea {
   flex-direction: column;
   padding: 16px 12px;
   flex-shrink: 0;
+  transition: width 0.15s ease;
+}
+
+.sidebar--collapsed {
+  width: var(--sidebar-width-collapsed);
+}
+
+.sidebar--collapsed .sidebar-logo {
+  text-align: center;
+}
+
+.sidebar--collapsed .nav-item {
+  justify-content: center;
+}
+
+.sidebar--collapsed .nav-item .nav-label {
+  display: none;
+}
+
+.sidebar--collapsed .sidebar-bottom-actions {
+  align-items: center;
+}
+
+.sidebar--collapsed .sidebar-scan-indicator {
+  font-size: 0;
+  padding: 8px;
 }
 
 .sidebar-logo {
@@ -1069,4 +1096,32 @@ input[type="checkbox"]:disabled {
   color: var(--text-muted);
   font-size: 12px;
   font-style: italic;
+}
+
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+  z-index: 10;
+}
+
+[data-tooltip]:hover::after,
+[data-tooltip]:focus-visible::after {
+  opacity: 1;
 }
