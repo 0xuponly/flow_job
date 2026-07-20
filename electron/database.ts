@@ -5,6 +5,7 @@ import { cleanDescription, scrapePostingDateFromUrl } from './jobScraper'
 import { getOrCreateDek, encryptJson, decryptJson, deleteDek, encryptionMode } from './secureStore'
 import { formatLocation, decodeEntities, normalizeTitle, normalizeCompany, normalizeSalary } from './utils'
 import { normalizeEmploymentType, normalizeWorkMode } from './employmentType'
+import { matchGradeFor } from './matchGrade'
 import type {
   ApiModelConfig,
   AIQueueItem,
@@ -313,6 +314,10 @@ function loadStore(): Store {
         j.fit_error_toasted = null
         jobsMigrated = true
       }
+      if (j.match_grade === undefined) {
+        j.match_grade = matchGradeFor(j.score ?? null)
+        jobsMigrated = true
+      }
     }
     if (typeof store.settings.cv_version !== 'number') {
       store.settings.cv_version = 0
@@ -597,6 +602,7 @@ export function createJob(
     fit_score_version: input.fit_score_version ?? null,
     fit_last_error: input.fit_last_error ?? null,
     fit_error_toasted: null,
+    match_grade: matchGradeFor(input.score ?? null),
     notes: de(input.notes ?? null),
     date_posted: input.date_posted ?? null,
     application_deadline: input.application_deadline ?? null,
@@ -679,6 +685,7 @@ export function updateJob(
     source: fields.source !== undefined ? (fields.source ?? null) : existing.source,
     status: fields.status ?? existing.status,
     score: fields.score !== undefined ? (fields.score ?? null) : existing.score,
+    match_grade: fields.score !== undefined ? matchGradeFor(fields.score ?? null) : existing.match_grade,
     fit_rationale: fields.fit_rationale !== undefined ? (fields.fit_rationale ?? null) : existing.fit_rationale,
     fit_breakdown: fields.fit_breakdown !== undefined ? (fields.fit_breakdown ?? null) : existing.fit_breakdown,
     fit_score_version: fields.fit_score_version !== undefined ? (fields.fit_score_version ?? null) : existing.fit_score_version,

@@ -609,6 +609,119 @@ export default function SettingsPage() {
                 Auto-scans use all job boards, all work types, and your saved Preferred location. The scan runs while the app is open; you'll see progress in the Scan Jobs tab.
               </p>
             </div>
+            <div className="form-group" style={{ marginTop: 12 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={settings.auto_tailor_on_scan}
+                  onChange={(e) => {
+                    update('auto_tailor_on_scan', e.target.checked)
+                    api.updateSettings({ auto_tailor_on_scan: e.target.checked })
+                  }}
+                />
+                Queue CV + cover letter tailoring when a new job is added
+              </label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, marginLeft: 24 }}>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Only for jobs with fit score at or above</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  style={{ width: 80 }}
+                  value={settings.auto_tailor_min_fit}
+                  onChange={(e) => {
+                    const n = parseFloat(e.target.value)
+                    if (!isNaN(n) && n >= 0 && n <= 1) update('auto_tailor_min_fit', n)
+                  }}
+                  onBlur={() => {
+                    if (settings) api.updateSettings({ auto_tailor_min_fit: settings.auto_tailor_min_fit })
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="section-title">Match filters</div>
+          <div className="card">
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+              Skip new scan results that don't meet your minimums. A job with a missing field is admitted (we don't penalize postings that don't state salary or years).
+            </p>
+            <div className="form-group">
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={settings.match_filters.min_salary != null}
+                  onChange={(e) => {
+                    const next = e.target.checked ? 100000 : null
+                    const updated = { ...settings, match_filters: { ...settings.match_filters, min_salary: next } }
+                    setSettings(updated)
+                    api.updateSettings({ match_filters: updated.match_filters })
+                  }}
+                />
+                Require minimum salary
+              </label>
+              {settings.match_filters.min_salary != null && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, marginLeft: 24 }}>
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>$</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={5000}
+                    style={{ width: 120 }}
+                    value={settings.match_filters.min_salary}
+                    onChange={(e) => {
+                      const n = parseInt(e.target.value, 10)
+                      if (!isNaN(n) && n > 0) {
+                        const updated = { ...settings, match_filters: { ...settings.match_filters, min_salary: n } }
+                        setSettings(updated)
+                      }
+                    }}
+                    onBlur={() => {
+                      if (settings) api.updateSettings({ match_filters: settings.match_filters })
+                    }}
+                  />
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>annual (USD equivalent)</span>
+                </div>
+              )}
+            </div>
+            <div className="form-group" style={{ marginTop: 12 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={settings.match_filters.min_years != null}
+                  onChange={(e) => {
+                    const next = e.target.checked ? 3 : null
+                    const updated = { ...settings, match_filters: { ...settings.match_filters, min_years: next } }
+                    setSettings(updated)
+                    api.updateSettings({ match_filters: updated.match_filters })
+                  }}
+                />
+                Require minimum years of experience
+              </label>
+              {settings.match_filters.min_years != null && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, marginLeft: 24 }}>
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    style={{ width: 80 }}
+                    value={settings.match_filters.min_years}
+                    onChange={(e) => {
+                      const n = parseInt(e.target.value, 10)
+                      if (!isNaN(n) && n >= 0) {
+                        const updated = { ...settings, match_filters: { ...settings.match_filters, min_years: n } }
+                        setSettings(updated)
+                      }
+                    }}
+                    onBlur={() => {
+                      if (settings) api.updateSettings({ match_filters: settings.match_filters })
+                    }}
+                  />
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>years (parsed from the posting)</span>
+                </div>
+              )}
+            </div>
           </div>
         </>
       )}

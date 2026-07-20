@@ -245,6 +245,13 @@ export interface ScanResult {
   totalSkipped: number
   totalErrors: number
   totalIncompatible: number
+  // Optional: only present when match filters are wired. Listings that
+  // survived the workType/location/score filters but were dropped at
+  // the createJob boundary by the user's `match_filters` (min salary,
+  // min years). Surfaced as "Filtered out N jobs by your match
+  // filters" in the scan summary. Older results persisted before this
+  // field was added won't have it.
+  totalSkippedByFilter?: number
   boards: ScanBoardResult[]
   errors: string[]
   startedAt: number | null
