@@ -301,3 +301,15 @@ export function findByPrefix(query: string, limit = 10): LocationNode[] {
   }
   return out;
 }
+
+/**
+ * Regex matching the leading token of a location string when it's a
+ * remote/anywhere marker. Mirrors REMOTE_TOKENS in electron/utils.ts.
+ * The decider in src/pages/JobsPage.tsx uses this to short-circuit
+ * currency lookup for remote jobs.
+ *
+ * Matches if the entire trimmed string equals a remote token, OR if
+ * the first comma-separated segment does. Case-insensitive.
+ */
+export const REMOTE_TOKEN_RE =
+  /^(remote|anywhere|worldwide|global|wfh|work from home|distributed|fully remote|100%\s*remote)(?=,|$)/i
