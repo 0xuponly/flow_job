@@ -1,5 +1,4 @@
 import { createJob, findDuplicateJob, getSeenUrls, getSettings, listJobs, recordBoardResults, JobBlacklistedError, JobDuplicateError } from './database'
-import { passesMatchFilters } from './matchGrade'
 import { decodeEntities } from './utils'
 import { scrapeJobFromUrl } from './jobScraper'
 import { createLogger, log as categoryLog } from './logger'
@@ -631,14 +630,6 @@ export interface ScanResult {
   totalSkipped: number
   totalErrors: number
   totalIncompatible: number
-  // Listings that survived extraction AND the workType/location/score
-  // filters but were then dropped by the user's `match_filters` (min
-  // salary, min years). Surfaced in the scan results so the user can
-  // tell "0 added" apart from "rejected by my filter rules". This is
-  // distinct from `incompatible` (which is the workType/location/score
-  // bucket the LLM handles); the match filters run later, at the
-  // add-commit boundary.
-  totalSkippedByFilter: number
   boards: ScanBoardResult[]
   errors: string[]
   addedJobs: { id: number; title: string; company: string }[]
@@ -1084,12 +1075,6 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
   const HEURISTIC_FLOOR = 0.15
   const heuristicScore = scoreCompatibility(input.title, desc, baseCv)
   if (baseCv && heuristicScore < HEURISTIC_FLOOR) {
-    // User-configured match filters run at the createJob boundary, per
-    // the design spec. Admit when the job's signal is missing — only
-    // a present-and-too-low signal rejects.
-    if (!passesMatchFilters(input, getSettings().match_filters)) {
-      return { action: 'skipped', reason: 'Failed match filters (salary/years)' }
-    }
     try {
       const { job } = createJob({
         ...input,
@@ -1152,12 +1137,6 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
 
   try {
     const isHeuristic = fit.source === 'heuristic'
-    // User-configured match filters run at the createJob boundary, per
-    // the design spec. Admit when the job's signal is missing — only
-    // a present-and-too-low signal rejects.
-    if (!passesMatchFilters(input, getSettings().match_filters)) {
-      return { action: 'skipped', reason: 'Failed match filters (salary/years)' }
-    }
     const { job } = createJob({
       ...input,
       // Heuristic fallbacks must NEVER be persisted as a real fit score.
@@ -1200,7 +1179,7 @@ export async function scanAllBoards(
   filters?: ScanFilters,
   onProgress?: (msg: string) => void,
   signal?: AbortSignal,
-  onCounters?: (counters: Pick<ScanResult, 'totalFound' | 'totalAdded' | 'totalSkipped' | 'totalIncompatible' | 'totalErrors' | 'totalSkippedByFilter'>) => void
+  onCounters?: (counters: Pick<ScanResult, 'totalFound' | 'totalAdded' | 'totalSkipped' | 'totalIncompatible' | 'totalErrors'>) => void
 ): Promise<ScanResult> {
   const settings = getSettings()
   const keywords = (filters?.keywords || settings.job_search_keywords || '').trim()
@@ -1216,7 +1195,7 @@ export async function scanAllBoards(
   const scanSeenUrls = new Set<string>()
 
   const startedAt = Date.now()
-  const result: ScanResult = { totalFound: 0, totalAdded: 0, totalSkipped: 0, totalErrors: 0, totalIncompatible: 0, totalSkippedByFilter: 0, boards: [], errors: [], startedAt, durationMs: 0, cancelled: false, addedJobs: [] }
+  const result: ScanResult = { totalFound: 0, totalAdded: 0, totalSkipped: 0, totalErrors: 0, totalIncompatible: 0, boards: [], errors: [], startedAt, durationMs: 0, cancelled: false, addedJobs: [] }
   const _seenProgress = new Set<string>()
   const progress = (msg: string) => {
     if (_seenProgress.has(msg)) return
@@ -1235,7 +1214,7 @@ export async function scanAllBoards(
   // counter site uses it so the live emit can never be skipped. Falls
   // back to a direct mutation when no onCounters callback is wired
   // (e.g. the existing direct callers / unit tests).
-  const bump = (field: 'totalAdded' | 'totalSkipped' | 'totalIncompatible' | 'totalErrors' | 'totalSkippedByFilter') => {
+  const bump = (field: 'totalAdded' | 'totalSkipped' | 'totalIncompatible' | 'totalErrors') => {
     result[field]++
     if (onCounters) {
       onCounters({
@@ -1244,7 +1223,6 @@ export async function scanAllBoards(
         totalSkipped: result.totalSkipped,
         totalIncompatible: result.totalIncompatible,
         totalErrors: result.totalErrors,
-        totalSkippedByFilter: result.totalSkippedByFilter
       })
     }
   }
@@ -1408,10 +1386,6 @@ export async function scanAllBoards(
           if (!matchesLocation(input.location ?? null, location)) {
             br.incompatible++; bump('totalIncompatible'); continue
           }
-          // User-configured match filters run at the createJob boundary.
-          if (!passesMatchFilters(input, getSettings().match_filters)) {
-            br.skipped++; bump('totalSkipped'); bump('totalSkippedByFilter'); continue
-          }
           try {
             const heuristicScore = scoreCompatibility(input.title, input.description ?? '', baseCv)
             const { job } = createJob({
@@ -1567,13 +1541,6 @@ export async function scanAllBoards(
             } else if (r.value.action === 'skipped') {
               br.skipped++
               bump('totalSkipped')
-              if (r.value.reason === 'Failed match filters (salary/years)') {
-                // Track filter-rejected skips as a separate total so
-                // the scan summary can surface "Filtered out N jobs by
-                // your match filters" without re-deriving from per-board
-                // counts at the renderer.
-                bump('totalSkippedByFilter')
-              }
             } else if (r.value.action === 'incompatible') {
               br.incompatible++
               bump('totalIncompatible')

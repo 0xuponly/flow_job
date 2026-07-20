@@ -108,7 +108,6 @@ function defaultStore(): Store {
       passphrase: '',
       auto_tailor_on_scan: false,
       auto_tailor_min_fit: 0.6,
-      match_filters: { min_salary: null, min_years: null },
       quick_apply_shortcut: null
     },
     api_models: [],
@@ -260,9 +259,6 @@ function loadStore(): Store {
     }
     if (typeof store.settings.auto_tailor_min_fit !== 'number') {
       store.settings.auto_tailor_min_fit = 0.6
-    }
-    if (!store.settings.match_filters) {
-      store.settings.match_filters = { min_salary: null, min_years: null }
     }
     if (typeof store.settings.quick_apply_shortcut !== 'string' && store.settings.quick_apply_shortcut !== null) {
       store.settings.quick_apply_shortcut = null

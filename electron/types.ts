@@ -205,16 +205,10 @@ export interface Settings {
   disabled_boards: string[]
   auto_tailor_on_scan: boolean
   auto_tailor_min_fit: number
-  match_filters: MatchFilters
   quick_apply_shortcut: string | null
 }
 
 export type MatchGrade = 'S' | 'A' | 'B' | 'C' | 'D' | 'F' | null
-
-export interface MatchFilters {
-  min_salary: number | null
-  min_years: number | null
-}
 
 export type AtsPlatform = 'greenhouse' | 'lever' | 'ashby' | 'workday' | 'smartrecruiters'
 
@@ -301,7 +295,6 @@ export interface ScanResult {
   totalFound: number
   totalAdded: number
   totalSkipped: number
-  totalSkippedByFilter: number
   boards: ScanBoardResult[]
   errors: string[]
   startedAt: number | null
