@@ -101,6 +101,21 @@ export type VerificationResult =
     }
   | { kind: 'skip'; reason: 'deleted' | 'parse_failed' | 'no_ai_response'; feedback: string }
 
+export type KeywordCategory = 'hard' | 'soft' | 'cert' | 'seniority'
+export type KeywordSource = 'title' | 'required' | 'preferred' | 'body'
+
+export interface KeywordEntry {
+  phrase: string
+  weight: number
+  category: KeywordCategory
+  source: KeywordSource
+}
+
+export interface KeywordResult {
+  keywords: KeywordEntry[]
+  refinedByLlm: boolean
+}
+
 export interface Application {
   id: number
   job_id: number
