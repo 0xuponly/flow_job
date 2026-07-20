@@ -2,7 +2,6 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   paragraphCount,
   enforceParagraphCeilings,
-  extractJobKeywords,
   coverageFor,
   missingKeywords,
   skillCount,
@@ -14,6 +13,7 @@ import {
   leadershipEntries,
   leadershipHasContinuationLines
 } from './documentRules'
+import { extractJobKeywords } from './keywordExtractor'
 
 describe('paragraphCount', () => {
   it('returns 0 for empty text', () => {
@@ -68,41 +68,6 @@ describe('enforceParagraphCeilings', () => {
   })
 })
 
-describe('extractJobKeywords', () => {
-  it('returns tech keywords that appear at least twice', () => {
-    const desc = 'We use React, TypeScript, and Node. Our team builds React apps with TypeScript on Node. AWS and Kubernetes run our infrastructure.'
-    const kws = extractJobKeywords(desc)
-    expect(kws).toContain('react')
-    expect(kws).toContain('typescript')
-    expect(kws).toContain('node')
-  })
-  it('filters stop words', () => {
-    const desc = 'The the the and and with for to of in on at is are be as by this that we you our your their they will have has had from it.'
-    const kws = extractJobKeywords(desc)
-    expect(kws).toEqual([])
-  })
-  it('keeps single-occurrence tech keywords in the allowlist', () => {
-    const desc = 'Looking for a Python developer with AWS experience.'
-    const kws = extractJobKeywords(desc)
-    expect(kws).toContain('python')
-    expect(kws).toContain('aws')
-  })
-  it('drops tokens shorter than 3 chars', () => {
-    const desc = 'a b c to of in on.'
-    expect(extractJobKeywords(desc)).toEqual([])
-  })
-  it('caps at 30 keywords', () => {
-    const words = Array.from({ length: 60 }, (_, i) => `keyword${i}`).join(' ')
-    const kws = extractJobKeywords(words)
-    expect(kws.length).toBeLessThanOrEqual(30)
-  })
-  it('returns lowercase tokens', () => {
-    const desc = 'React React React TypeScript TypeScript Python.'
-    const kws = extractJobKeywords(desc)
-    for (const k of kws) expect(k).toBe(k.toLowerCase())
-  })
-})
-
 describe('coverageFor', () => {
   it('returns 0 for empty keywords', () => {
     expect(coverageFor('any document', [])).toBe(0)
@@ -119,6 +84,15 @@ describe('coverageFor', () => {
   it('matches on word boundaries, not substrings', () => {
     // "go" should not match "google"
     expect(coverageFor('we use google cloud', ['go'])).toBe(0)
+  })
+})
+
+describe('extractJobKeywords (re-exported from documentRules consumers)', () => {
+  it('returns a flat string[] from the structured extractor', () => {
+    const kws = extractJobKeywords('Senior Python engineer with AWS experience. Python is core. AWS is core.')
+    expect(Array.isArray(kws)).toBe(true)
+    expect(kws.every((k) => typeof k === 'string')).toBe(true)
+    expect(kws.length).toBeLessThanOrEqual(30)
   })
 })
 

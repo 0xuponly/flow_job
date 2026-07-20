@@ -3,34 +3,8 @@
 // See .superpowers/specs/2026-07-19-cover-letter-one-page-and-verifier-rules-design.md
 
 import { enforceOnePageCeilings } from './cvOnePage'
-
-const STOP_WORDS = new Set([
-  'the', 'a', 'an', 'and', 'or', 'with', 'to', 'for', 'of', 'in', 'on', 'at',
-  'is', 'are', 'be', 'as', 'by', 'this', 'that', 'we', 'you', 'our', 'your',
-  'their', 'they', 'will', 'have', 'has', 'had', 'from', 'it', 'using', 'use',
-  'used', 'work', 'working', 'experience', 'knowledge', 'ability', 'able',
-  'strong', 'good', 'great', 'plus', 'must', 'may', 'can', 'should', 'would',
-  'also', 'etc', 'e.g', 'i.e'
-])
-
-// Hand-maintained tech-keyword allowlist. Single-occurrence tokens in this
-// set are kept even if their frequency is 1 (which would otherwise be
-// filtered out below). Add to this when a new common tech term appears
-// in job descriptions the user is targeting.
-const TECH_KEYWORDS = new Set([
-  'javascript', 'typescript', 'python', 'java', 'kotlin', 'swift', 'go', 'rust',
-  'c++', 'c#', 'ruby', 'php', 'scala', 'elixir', 'haskell', 'clojure',
-  'react', 'vue', 'angular', 'svelte', 'next.js', 'nuxt', 'remix', 'solid',
-  'node', 'deno', 'bun', 'express', 'fastify', 'nestjs', 'django', 'flask',
-  'rails', 'spring', 'laravel',
-  'aws', 'gcp', 'azure', 'kubernetes', 'docker', 'terraform', 'helm',
-  'postgres', 'mysql', 'mongodb', 'redis', 'kafka', 'rabbitmq', 'elasticsearch',
-  'graphql', 'grpc', 'rest', 'websocket', 'oauth', 'jwt', 'saml',
-  'argocd', 'prometheus', 'grafana', 'datadog', 'splunk', 'snowflake',
-  'spark', 'hadoop', 'airflow', 'dbt', 'kafka', 'flink', 'beam',
-  'tensorflow', 'pytorch', 'scikit-learn', 'pandas', 'numpy', 'langchain',
-  'llm', 'rag', 'embeddings', 'vector', 'embeddings'
-])
+import { extractJobKeywords, extractJobKeywordsStructured } from './keywordExtractor'
+export { extractJobKeywords, extractJobKeywordsStructured }
 
 export function paragraphCount(text: string): number {
   return text
@@ -55,22 +29,6 @@ export function enforceParagraphCeilings(
   const trimmed = paragraphs.slice(0, max).join('\n\n')
   log(`paragraph cull: ${paragraphs.length}→${max}`)
   return trimmed
-}
-
-export function extractJobKeywords(description: string): string[] {
-  const tokens = description.toLowerCase().split(/[^a-z0-9+#.-]+/).filter(Boolean).map((t) => t.replace(/\.+$/, '')).filter(Boolean)
-  const freq = new Map<string, number>()
-  for (const t of tokens) {
-    if (t.length < 3) continue
-    if (STOP_WORDS.has(t)) continue
-    freq.set(t, (freq.get(t) ?? 0) + 1)
-  }
-  const kept: string[] = []
-  for (const [word, count] of freq) {
-    if (count >= 2 || TECH_KEYWORDS.has(word)) kept.push(word)
-  }
-  kept.sort((a, b) => (freq.get(b) ?? 0) - (freq.get(a) ?? 0))
-  return kept.slice(0, 30)
 }
 
 function escapeRe(s: string): string {

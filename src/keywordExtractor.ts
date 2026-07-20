@@ -3,21 +3,8 @@
 // renderer.
 
 import { loadKeywordAllowlists } from './keywordAllowlists'
-
-export type KeywordCategory = 'hard' | 'soft' | 'cert' | 'seniority'
-export type KeywordSource = 'title' | 'required' | 'preferred' | 'body'
-
-export interface KeywordEntry {
-  phrase: string
-  weight: number
-  category: KeywordCategory
-  source: KeywordSource
-}
-
-export interface KeywordResult {
-  keywords: KeywordEntry[]
-  refinedByLlm: boolean
-}
+import type { KeywordCategory, KeywordSource, KeywordEntry, KeywordResult } from './types'
+export type { KeywordCategory, KeywordSource, KeywordEntry, KeywordResult }
 
 const REQUIRED_RE = /required|must have|requirements|qualifications|what you(?:'| wi)ll need|minimum qualifications|essential/i
 const PREFERRED_RE = /preferred|nice to have|bonus|plus|would be great|desired/i
