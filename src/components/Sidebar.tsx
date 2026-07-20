@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { Page } from '../types'
+import { usePersistedState } from '../persistedState'
 
 interface Props {
   current: Page
@@ -25,6 +26,7 @@ export default function Sidebar({ current, onNavigate }: Props) {
   // resolution. Multiple concurrent clicks stack — the indicator stays
   // visible until the count returns to zero.
   const [fitPending, setFitPending] = useState(0)
+  const [collapsed, setCollapsed] = usePersistedState<boolean>('sidebarCollapsed', false)
 
   useEffect(() => {
     let mounted = true
@@ -52,9 +54,17 @@ export default function Sidebar({ current, onNavigate }: Props) {
   }, [])
 
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar${collapsed ? ' sidebar--collapsed' : ''}`}>
       <div className="sidebar-logo">
-        Flow<span>Job</span>
+        {collapsed ? (
+          <span style={{ whiteSpace: 'nowrap' }}>
+            F<span>J</span>
+          </span>
+        ) : (
+          <>
+            Flow<span>Job</span>
+          </>
+        )}
       </div>
       <nav>
         {NAV_ITEMS.map((item) => (
@@ -62,16 +72,17 @@ export default function Sidebar({ current, onNavigate }: Props) {
             key={item.id}
             className={`nav-item ${current === item.id ? 'active' : ''}`}
             onClick={() => onNavigate(item.id)}
+            data-tooltip={item.label}
           >
             <span>{item.icon}</span>
-            {item.label}
+            <span className="nav-label">{item.label}</span>
           </button>
         ))}
       </nav>
       {scanning && (
         <div
           className="sidebar-scan-indicator"
-          title="A job scan is currently running"
+          data-tooltip="A job scan is currently running"
           onClick={() => onNavigate('scanjobs')}
         >
           <span className="scan-pulse" />
@@ -81,7 +92,7 @@ export default function Sidebar({ current, onNavigate }: Props) {
       {fitPending > 0 && (
         <div
           className="sidebar-scan-indicator"
-          title={`${fitPending} fit recompute${fitPending === 1 ? '' : 's'} in progress`}
+          data-tooltip={`${fitPending} fit recompute${fitPending === 1 ? '' : 's'} in progress`}
           onClick={() => onNavigate('jobs')}
         >
           <span className="scan-pulse" />
@@ -91,11 +102,19 @@ export default function Sidebar({ current, onNavigate }: Props) {
       <div className="sidebar-bottom-actions">
         <button
           className="sidebar-action"
-          title="Refresh current page"
           aria-label="Refresh current page"
           onClick={() => window.dispatchEvent(new CustomEvent('app:refresh'))}
+          data-tooltip="Refresh current page"
         >
           <span aria-hidden="true">⟳</span>
+        </button>
+        <button
+          className="sidebar-action"
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          onClick={() => setCollapsed((v) => !v)}
+          data-tooltip={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          <span aria-hidden="true">{collapsed ? '⟹' : '⟸'}</span>
         </button>
       </div>
     </aside>
