@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
-import { usePersistedState } from '../persistedState'
 import type { Job } from '../types'
 
 // Apply Queue (Task 4).
@@ -27,20 +26,6 @@ import type { Job } from '../types'
 export function ApplyQueuePage() {
   const [jobs, setJobs] = useState<Job[]>([])
   const [baseCv, setBaseCv] = useState<string>('')
-  // Per-row selection for bulk mark-submitted. Stored in renderer
-  // state; the brief's "bulk mark-submitted selection" spec lands in
-  // a follow-up if/when we wire the "Mark N submitted" button.
-  const [, setSelected] = useState<Set<number>>(new Set())
-  // Hook used to silence the unused-locals linter on `selected` while
-  // we don't yet render a "Mark N submitted" bulk action. When that
-  // action lands, `setSelected` is the setter for the bulk-selection
-  // state. Keeping the hook here so the next addition is a one-line
-  // wire-up.
-  void setSelected
-  // Persisted filter is `loading` to re-trigger a queueList fetch
-  // when the user navigates back to the page. The state is local —
-  // a global scan form is a different concern.
-  const [refreshKey] = usePersistedState<number>('applyQueueRefreshKey', 0)
 
   useEffect(() => {
     let mounted = true
@@ -50,7 +35,7 @@ export function ApplyQueuePage() {
       setJobs(queue)
     })
     return () => { mounted = false }
-  }, [refreshKey])
+  }, [])
 
   // Sidebar refresh button: re-fetch both the settings and the queue.
   useEffect(() => {
