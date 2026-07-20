@@ -1,5 +1,14 @@
-import type { Job, MatchFilters, MatchGrade } from './types'
+import type { MatchFilters, MatchGrade } from './types'
 import { normalizeSalary } from './utils'
+
+// Narrow structural input — the only fields `passesMatchFilters` reads.
+// Lets `createJob` pass a `CreateJobInput` directly without a cast; full
+// `Job` and `CreateJobInput` are both structurally compatible.
+export interface MatchFilterInput {
+  salary_range?: string | null
+  description?: string | null
+  requirements?: string | null
+}
 
 export function matchGradeFor(fitScore: number | null): MatchGrade {
   if (fitScore == null) return null
@@ -8,7 +17,7 @@ export function matchGradeFor(fitScore: number | null): MatchGrade {
   return 'C'
 }
 
-export function passesMatchFilters(job: Job, filters: MatchFilters): boolean {
+export function passesMatchFilters(job: MatchFilterInput, filters: MatchFilters): boolean {
   // min_salary: admit if missing signal
   if (filters.min_salary != null) {
     const low = parseSalaryLow(job.salary_range, job.description)
@@ -41,7 +50,7 @@ function parseSalaryLow(salary: string | null, description: string | null): numb
   return Number.isFinite(n) ? n : null
 }
 
-function parseYearsMin(job: Job): number | null {
+function parseYearsMin(job: MatchFilterInput): number | null {
   const text = job.requirements ?? job.description ?? ''
   const m = text.match(/(\d+)\+?\s*years?/i)
   return m ? Number(m[1]) : null

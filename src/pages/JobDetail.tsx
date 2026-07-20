@@ -1169,6 +1169,11 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
           <label>Contact name</label>
           <input value={contactName} onChange={(e) => setContactName(e.target.value)} />
         </div>
+        {job.status === 'applied' && job.response_at == null && (
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+            Marks first response received.
+          </p>
+        )}
       </Modal>
 
       <Modal

@@ -695,10 +695,19 @@ ${htmlBody}
     // the user creating a follow-up on an applied-but-unanswered job
     // is the moment we first hear back. We only fire once (response_at
     // is set; subsequent follow-ups won't re-trigger).
+    //
+    // When `app.job_id` points to a deleted job, `getJob` returns
+    // undefined: silently skip the response-time hook and let the
+    // follow-up persist as-is. The follow-up itself is still useful
+    // (the application row survives; only the job row was deleted),
+    // and surfacing an error here would block the create, which is
+    // worse UX than a missed response-time stamp.
     const app = db.getApplication(appId)
     if (app) {
       const job = db.getJob(app.job_id)
-      if (job && job.status === 'applied' && job.response_at == null) {
+      if (!job) {
+        log.startup.warn('followup_missing_job', { appId, jobId: app.job_id })
+      } else if (job.status === 'applied' && job.response_at == null) {
         db.markResponse(job.id, Date.now())
       }
     }

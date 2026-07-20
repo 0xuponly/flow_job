@@ -236,7 +236,7 @@ function TimeSavedWidget({ jobs }: { jobs: Job[] }) {
   }
   if (totalMs <= 0) return null
   const minutes = Math.round(totalMs / 60000)
-  const rounded = Math.max(5, Math.round(minutes / 5) * 5)
+  const rounded = Math.round(minutes / 5) * 5
   return (
     <div className="card">
       <div className="section-title" style={{ marginBottom: 4 }}>Time saved</div>

@@ -1087,7 +1087,7 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
     // User-configured match filters run at the createJob boundary, per
     // the design spec. Admit when the job's signal is missing — only
     // a present-and-too-low signal rejects.
-    if (!passesMatchFilters(input as unknown as Job, getSettings().match_filters)) {
+    if (!passesMatchFilters(input, getSettings().match_filters)) {
       return { action: 'skipped', reason: 'Failed match filters (salary/years)' }
     }
     try {
@@ -1155,7 +1155,7 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
     // User-configured match filters run at the createJob boundary, per
     // the design spec. Admit when the job's signal is missing — only
     // a present-and-too-low signal rejects.
-    if (!passesMatchFilters(input as unknown as Job, getSettings().match_filters)) {
+    if (!passesMatchFilters(input, getSettings().match_filters)) {
       return { action: 'skipped', reason: 'Failed match filters (salary/years)' }
     }
     const { job } = createJob({
@@ -1409,7 +1409,7 @@ export async function scanAllBoards(
             br.incompatible++; bump('totalIncompatible'); continue
           }
           // User-configured match filters run at the createJob boundary.
-          if (!passesMatchFilters(input as unknown as Job, getSettings().match_filters)) {
+          if (!passesMatchFilters(input, getSettings().match_filters)) {
             br.skipped++; bump('totalSkipped'); bump('totalSkippedByFilter'); continue
           }
           try {
@@ -1713,8 +1713,11 @@ export async function scanAllBoards(
         .slice(0, 25)
     }
     for (const j of autoTailorEligible) {
-      const live = listJobs().find((x) => x.id === j.id)
-      const score = live?.score ?? j.score ?? 0
+      // `withScores` above already attached the live score to each entry
+      // (`{ id, score }`), so re-reading the entire store per item via
+      // `listJobs().find(...)` would re-parse the encrypted file on every
+      // iteration. Use the score that was just looked up.
+      const score = j.score
       if (score >= settings.auto_tailor_min_fit) {
         enqueue({ type: 'tailor_job_docs', jobId: j.id })
       }
