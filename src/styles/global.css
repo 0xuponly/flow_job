@@ -1186,11 +1186,14 @@ input[type="checkbox"]:disabled {
   white-space: nowrap;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 0.1s ease;
-  z-index: 10;
+  /* z-80: above sticky page headers (z-10) and location-suggestion
+     dropdowns (z-50) so the tooltip is never painted under them,
+     still below the modal overlay (z-100) so a dialog wins. */
+  z-index: 80;
 }
 
 [data-tooltip]:hover::after,
 [data-tooltip]:focus-visible::after {
   opacity: 1;
+  transition: opacity 0.08s ease;
 }
