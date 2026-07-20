@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import Modal from '../components/Modal'
 import { LocationAutocomplete } from '../components/LocationAutocomplete'
@@ -1437,10 +1437,32 @@ export default function JobsPage() {
     setForm((prev) => ({ ...prev, [field]: value }))
   }
 
+  // Sibling navigation from JobDetail's back/forward buttons. Fetch
+  // the target job fresh from the DB so any edits/fit updates made
+  // since the user last saw the list are reflected. If the job has
+  // been deleted out from under us, fall back to the row already in
+  // our local state (covers the rare case where the list was updated
+  // in this same tick).
+  const handleNavigateSibling = useCallback(async (id: number) => {
+    try {
+      const fresh = await api.getJob(id)
+      const next = fresh ?? jobs.find((j) => j.id === id) ?? null
+      if (!next) {
+        notify('Job no longer available', 'info')
+        return
+      }
+      setSelectedJob(cleanJob(next))
+    } catch (err) {
+      notify(`Could not open job: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+    }
+  }, [jobs])
+
   if (selectedJob) {
     return (
       <JobDetail
         job={selectedJob}
+        filteredJobIds={filteredJobs.map((j) => j.id)}
+        onNavigateSibling={handleNavigateSibling}
         onBack={() => {
           setSelectedJob(null)
           loadJobs()
