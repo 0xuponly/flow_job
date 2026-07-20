@@ -905,13 +905,17 @@ export function writeTailorTimingFields(input: {
   const idx = s.jobs.findIndex((j) => j.id === input.jobId)
   if (idx === -1) return
   const existing = s.jobs[idx]
-  // If lastError is non-null AND differs from the existing
-  // tailor_error_toasted value, also set tailor_error_toasted to a
-  // sentinel ("pending") so the renderer can fire the toast once and
-  // clear it on a future success. Mirrors the fit_error_toasted
-  // dedupe pattern from the doc-comment on Job.fit_error_toasted.
+  // tailor_error_toasted stores the most recent error text that was
+  // surfaced to the user via a toast, mirroring fit_error_toasted
+  // (see the doc-comment on Job.fit_error_toasted in electron/types.ts).
+  // On success: clear to null. On a new error text: set to input.lastError
+  // so the renderer can detect a new error and fire a toast. On the
+  // same error text as the last toast: leave the field as-is so the
+  // toast does not re-fire.
   const newToasted = input.lastError
-    ? (existing.tailor_error_toasted === input.lastError ? existing.tailor_error_toasted : 'pending')
+    ? (existing.tailor_error_toasted === input.lastError
+        ? existing.tailor_error_toasted
+        : input.lastError)
     : null
   s.jobs[idx] = {
     ...existing,
