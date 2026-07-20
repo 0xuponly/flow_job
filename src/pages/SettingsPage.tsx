@@ -573,7 +573,7 @@ export default function SettingsPage() {
 
       {tab === 'scan' && (
         <>
-          <div className="section-title">Scan</div>
+          <div className="section-title">Auto-Scan</div>
           <div className="card">
             <div className="form-group">
               <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -610,7 +610,8 @@ export default function SettingsPage() {
               </p>
             </div>
           </div>
-          <div className="card" style={{ marginTop: 16 }}>
+          <div className="section-title">Auto-Queue</div>
+          <div className="card">
             <div className="form-group">
               <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <input
