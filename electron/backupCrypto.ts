@@ -193,6 +193,23 @@ export function detectSyncedFolder(folderPath: string): SyncedFolderInfo {
 
 // --- Append-only audit log --------------------------------------------
 
+// Lazy backup logger. Lives here (not imported at module top) so the
+// electron `app` import is only resolved if audit fails — the happy
+// path of a successful backup never touches it.
+let _backupLog: ReturnType<typeof createLogger> | undefined
+function writeBackupLog(level: 'info' | 'warn' | 'error', msg: string): void {
+  try {
+    if (!_backupLog) {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { createLogger } = require('./logger') as typeof import('./logger')
+      _backupLog = createLogger('backup')
+    }
+    _backupLog[level](msg)
+  } catch {
+    // Last-resort: silently swallow. We must not throw from audit.
+  }
+}
+
 /**
  * Append a single line to <parentDir>/backup.log. If the file is
  * bigger than 1 MiB before the write, rotate to backup.log.1 (single
@@ -202,7 +219,20 @@ export function detectSyncedFolder(folderPath: string): SyncedFolderInfo {
 export function appendAudit(parentDir: string, evt: AuditEvent): void {
   try {
     const logPath = join(parentDir, 'backup.log')
-    if (existsSync(logPath) && statSync(logPath).size > AUDIT_MAX_BYTES) {
+    // Rotation precheck. existsSync/statSync can fail with EPERM on
+    // macOS when the parent dir is TCC-restricted for reads even
+    // though writes are allowed (which is exactly the case for
+    // ~/Documents in a default install). When that happens, the
+    // append would still succeed — so on any precheck error, just
+    // skip the rotation and let appendFileSync try.
+    let shouldRotate = false
+    try {
+      shouldRotate =
+        existsSync(logPath) && statSync(logPath).size > AUDIT_MAX_BYTES
+    } catch {
+      shouldRotate = false
+    }
+    if (shouldRotate) {
       try {
         renameSync(logPath, logPath + '.1')
       } catch {
@@ -213,8 +243,11 @@ export function appendAudit(parentDir: string, evt: AuditEvent): void {
     const line = `${ts} ${evt.event} ${evt.folder} ${evt.outcome}\n`
     appendFileSync(logPath, line, { encoding: 'utf-8' })
   } catch (err) {
+    // Audit must never break the backup/restore. The append itself
+    // is the source of truth; if it failed, surface to <userData>/logs
+    // via the backup logger rather than the terminal, which the
+    // user has explicitly asked us to keep clean.
     const msg = err instanceof Error ? err.message : String(err)
-    // eslint-disable-next-line no-console
-    console.error('[backup] audit log write failed:', msg)
+    writeBackupLog('error', `audit log write failed: ${msg}`)
   }
 }
