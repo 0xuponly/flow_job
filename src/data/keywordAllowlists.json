@@ -1,0 +1,55 @@
+{
+  "hard": [
+    "javascript", "typescript", "python", "java", "kotlin", "swift", "go", "rust",
+    "c++", "c#", "ruby", "php", "scala", "elixir", "haskell", "clojure",
+    "react", "vue", "angular", "svelte", "next.js", "nuxt", "remix", "solid",
+    "node", "deno", "bun", "express", "fastify", "nestjs", "django", "flask",
+    "rails", "spring", "laravel",
+    "aws", "gcp", "azure", "kubernetes", "docker", "terraform", "helm",
+    "postgres", "mysql", "mongodb", "redis", "kafka", "rabbitmq", "elasticsearch",
+    "graphql", "grpc", "rest", "websocket", "oauth", "jwt", "saml",
+    "argocd", "prometheus", "grafana", "datadog", "splunk", "snowflake",
+    "spark", "hadoop", "airflow", "dbt", "flink", "beam",
+    "tensorflow", "pytorch", "scikit-learn", "pandas", "numpy", "langchain",
+    "llm", "rag", "embeddings", "vector",
+    "tdd", "ci/cd", "agile", "scrum", "linux", "git"
+  ],
+  "soft": [
+    "leadership", "communication", "stakeholder management", "problem solving",
+    "cross-functional collaboration", "mentorship", "decision making",
+    "strategic thinking", "conflict resolution", "negotiation", "presentation",
+    "coaching", "team building", "time management", "prioritization",
+    "customer focus", "ownership", "accountability", "adaptability", "empathy",
+    "active listening", "storytelling", "public speaking", "writing", "facilitation"
+  ],
+  "cert": [
+    "PMP", "PMI-ACP", "CSM", "CSPO", "PSM",
+    "AWS Solutions Architect", "AWS Developer",
+    "GCP Professional", "Azure Administrator", "Azure Solutions Architect",
+    "CKA", "CKAD", "Terraform Associate",
+    "CISSP", "CISM", "CISA", "OSCP",
+    "CPA", "CFA", "FRM",
+    "SHRM-CP", "SHRM-SCP",
+    "Six Sigma Green Belt", "Six Sigma Black Belt",
+    "ITIL"
+  ],
+  "seniority": [
+    "intern", "junior", "entry level", "mid-level", "senior", "staff", "principal",
+    "lead", "manager", "senior manager", "director", "senior director",
+    "vp", "head of", "chief"
+  ],
+  "phrase_boost": [
+    "machine learning", "deep learning", "natural language processing",
+    "computer vision", "data science", "data engineering", "data analysis",
+    "distributed systems", "microservices architecture", "event-driven architecture",
+    "system design", "test driven development", "pair programming", "code review",
+    "agile methodology", "scrum master", "product management", "project management",
+    "stakeholder management", "change management", "risk management",
+    "performance management", "talent management", "customer success",
+    "user experience", "user research", "a/b testing",
+    "continuous integration", "continuous deployment", "infrastructure as code",
+    "site reliability engineering", "devops", "platform engineering",
+    "cloud native", "serverless", "real time", "high availability",
+    "scalability", "security", "compliance"
+  ]
+}
