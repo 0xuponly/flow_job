@@ -279,7 +279,7 @@ function DateFilterSelect({ filter, onChange }: {
           <div style={{ borderTop: '1px solid var(--border)', marginTop: 4, padding: '8px 12px 4px' }}>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Custom range</div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginBottom: 4 }}>
-              From
+              <span style={{ width: 32 }}>From</span>
               <input
                 type="date"
                 value={filter.from}
@@ -288,7 +288,7 @@ function DateFilterSelect({ filter, onChange }: {
               />
             </label>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-              To
+              <span style={{ width: 32 }}>To</span>
               <input
                 type="date"
                 value={filter.to}
