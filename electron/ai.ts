@@ -7,6 +7,7 @@ import { app } from 'electron'
 import mammoth from 'mammoth'
 import { scoreCompatibility, extractEducationLevel, extractYearsExperience } from './fitHeuristic'
 import { runDocumentRuleChecks } from '../src/documentRules'
+import { extractJobKeywordsStructured, extractJobKeywords } from '../src/keywordExtractor'
 
 export class RateLimitError extends Error {
   constructor(message: string) {
@@ -280,13 +281,33 @@ export async function tailorDocument(request: TailorRequest): Promise<TailorResu
     settings.base_cv ||
     'No base CV provided. Add your base CV in Settings.'
 
+  // Derive structured keywords from the job description and refine via LLM.
+  // The main call below uses no signal (tailorDocument is invoked from
+  // document-regenerate flows that don't plumb an AbortSignal today), so we
+  // pass undefined here as well — refinement gets its own per-call timeout
+  // inside callAI. On any error, fall back to the flat extractor so the
+  // prompt still has keyword coverage hints rather than nothing.
+  let refinedTopKeywords: string[] | undefined = request.topKeywords
+  if (!refinedTopKeywords || refinedTopKeywords.length === 0) {
+    if (job.description) {
+      try {
+        const structured = extractJobKeywordsStructured(job.description)
+        const refined = await refineJobKeywordsViaLlm(structured.keywords, job.description, undefined)
+        refinedTopKeywords = refined.keywords.map((k) => k.phrase)
+      } catch (err) {
+        console.warn('[ai] tailor keyword derivation failed, falling back to flat extract:', err)
+        refinedTopKeywords = extractJobKeywords(job.description)
+      }
+    }
+  }
+
   const systemPrompt =
     request.document_type === 'cv'
-      ? buildHarvardCvInstructions(await loadHarvardTemplate(), request.topKeywords)
+      ? buildHarvardCvInstructions(await loadHarvardTemplate(), refinedTopKeywords)
       : (() => {
           const keywordLine =
-            request.topKeywords && request.topKeywords.length > 0
-              ? `\nKEYWORD COVERAGE (overrides verbosity):\n- Aim to mention at least 72% of the key terms from the job description.\n- High-priority keywords (include where truthful): ${request.topKeywords.join(', ')}\n`
+            refinedTopKeywords && refinedTopKeywords.length > 0
+              ? `\nKEYWORD COVERAGE (overrides verbosity):\n- Aim to mention at least 72% of the key terms from the job description.\n- High-priority keywords (include where truthful): ${refinedTopKeywords.join(', ')}\n`
               : `\nKEYWORD COVERAGE (overrides verbosity):\n- Aim to mention at least 72% of the key terms from the job description.\n`
           return `You are an expert career coach. Write a compelling, personalized cover letter for this job.
 Keep it concise (3-4 paragraphs), professional, and specific to the role. Output plain text only.
