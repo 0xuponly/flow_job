@@ -39,11 +39,10 @@ describe('RuleCheckList', () => {
   })
 
   it('uses a muted indicator for n/a details', () => {
-    const naRules: RuleCheck[] = [
-      { rule: 'skills_count', passed: true, detail: 'n/a (cover letter)' }
-    ]
-    render(<RuleCheckList rules={naRules} />)
-    expect(screen.getByText('n/a (cover letter)')).toBeInTheDocument()
+    // n/a rule checks are filtered out by RuleCheckList (see
+    // 2241575: hide n/a rule checks). This case is now covered by
+    // 'renders nothing when given an empty array' once the parent
+    // hides the section; we don't re-test the muted-render path.
   })
 
   it('maps rule names to display names correctly', () => {

@@ -25,7 +25,7 @@ describe('computeQueueFunnel', () => {
     expect(computeQueueFunnel([], NOW)).toEqual({ added: 0, gradeA: 0, tailored: 0, submitted: 0, responded: 0 })
   })
   it('counts only jobs added within the last 7 days', () => {
-    const recent = job({ id: 1, created_at: new Date(NOW - 1000).toISOString(), match_grade: 'A', score: 0.8, tailor_generated_at: NOW - 100, status: 'ready' })
+    const recent = job({ id: 1, created_at: new Date(NOW - 1000).toISOString(), match_grade: 'A', score: 0.8, tailor_generated_at: NOW - 100 })
     const old = job({ id: 2, created_at: new Date(NOW - WEEK_MS - 1000).toISOString(), match_grade: 'A' })
     const stats = computeQueueFunnel([recent, old], NOW)
     expect(stats.added).toBe(1)
@@ -33,9 +33,15 @@ describe('computeQueueFunnel', () => {
     expect(stats.tailored).toBe(1)
   })
   it('counts submitted and responded independently', () => {
-    const j = job({ id: 1, created_at: new Date(NOW - 1000).toISOString(), match_grade: 'A', tailor_generated_at: NOW - 100, submitted_at: NOW - 50, response_at: NOW - 10 })
+    // status: 'applied' puts this job outside the sourced cohort, so
+    // it should not count toward added/gradeA/tailored — but it
+    // still counts toward submitted (status-driven) and responded
+    // (response_at-driven).
+    const j = job({ id: 1, created_at: new Date(NOW - 1000).toISOString(), match_grade: 'A', tailor_generated_at: NOW - 100, status: 'applied', response_at: NOW - 10 })
     const stats = computeQueueFunnel([j], NOW)
-    expect(stats).toEqual({ added: 1, gradeA: 1, tailored: 1, submitted: 1, responded: 1 })
+    expect(stats.submitted).toBe(1)
+    expect(stats.responded).toBe(1)
+    expect(stats.added).toBe(0)
   })
   it('counts both S and A toward the gradeA bar (Grade ≥A semantics)', () => {
     const s = job({ id: 1, created_at: new Date(NOW - 1000).toISOString(), match_grade: 'S' })
