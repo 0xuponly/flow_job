@@ -1183,10 +1183,14 @@ export async function scanAllBoards(
 ): Promise<ScanResult> {
   const settings = getSettings()
   const keywords = (filters?.keywords || settings.job_search_keywords || '').trim()
+  // The location filter is a single full location string (e.g. "Vancouver,
+  // British Columbia, Canada"). A picked entry from LocationAutocomplete can
+  // contain its own `, ` separators, so splitting on commas here is wrong —
+  // it would turn one full location into several bogus "Vancouver",
+  // "British Columbia", "Canada" searches. Treat the whole field as one
+  // location; multi-location scanning is a future feature.
   const locationInput = (filters?.location || settings.job_search_location || '').trim()
-  const locations = locationInput
-    ? locationInput.split(',').map((s) => s.trim()).filter(Boolean)
-    : ['']
+  const locations = locationInput ? [locationInput] : ['']
   const workType = filters?.workType || 'any'
   const baseCv = settings.base_cv || ''
 
