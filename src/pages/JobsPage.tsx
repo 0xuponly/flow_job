@@ -6,7 +6,7 @@ import { notify } from '../components/Notifications'
 import Tooltip from '../components/Tooltip'
 import { COUNTRY_TO_CURRENCY } from '../currency'
 import { condenseLocation, REMOTE_TOKEN_RE } from '../locations'
-import type { CreateJobInput, Document, Job } from '../types'
+import type { CreateJobInput, Job } from '../types'
 
 // Lives at module scope so a single ResizeObserver can measure the
 // sticky wrapper height across the page's lifetime without re-binding.
@@ -717,9 +717,6 @@ export default function JobsPage() {
   // loadJobs sync.
   const [tailoringIds, setTailoringIds] = useState<Set<number>>(new Set())
   const [settings, setSettings] = useState<{ base_cv?: string } | null>(null)
-  const [generating, setGenerating] = useState<'cv' | 'cover_letter' | null>(null)
-  const [genCount, setGenCount] = useState(0)
-  const [genTotal, setGenTotal] = useState(0)
   const linkInputRef = useRef<HTMLInputElement>(null)
 
   const fitLabel = (s: number | null) => {
@@ -1316,90 +1313,6 @@ export default function JobsPage() {
     }
   }
 
-  async function handleBatchTailor(type: 'cv' | 'cover_letter') {
-    const allDocs = await api.listDocuments()
-    const existing = new Set(
-      allDocs.filter((d: Document) => d.job_id !== null && d.type === type).map((d: Document) => d.job_id!)
-    )
-    // Only process jobs that match the current filter/search and don't yet
-    // have a document of this type. Without a filter, this is just all jobs.
-    const eligible = filteredJobs.filter((j) => !existing.has(j.id))
-    // Never generate for low-Fit jobs (red in the first column, score <= 0.3).
-    // A null score is treated as unscored-eligible, since we don't yet know
-    // the fit; only explicitly low scores are skipped.
-    const lowFitSkipped = eligible.filter((j) => j.score != null && j.score <= 0.3)
-    const needs = eligible.filter((j) => j.score == null || j.score > 0.3)
-    if (needs.length === 0) {
-      if (lowFitSkipped.length > 0) {
-        notify(
-          `All eligible jobs are low-Fit (${lowFitSkipped.length} skipped). ` +
-            `Low-Fit jobs are skipped by design — clear or delete them instead.`,
-          'info'
-        )
-      } else {
-        notify(`All visible jobs already have a ${type === 'cv' ? 'CV' : 'cover letter'}.`, 'info')
-      }
-      return
-    }
-
-    setGenerating(type)
-    setGenCount(0)
-    setGenTotal(needs.length)
-    let queued = 0
-    let failed = 0
-    let success = 0
-    const failedReasons: { job: Job; reason: string }[] = []
-    try {
-      const CONCURRENCY = 3
-      for (let i = 0; i < needs.length; i += CONCURRENCY) {
-        const batch = needs.slice(i, i + CONCURRENCY)
-        await Promise.allSettled(
-          batch.map(async (job) => {
-            try {
-              const result = await api.tailorDocument({ job_id: job.id, document_type: type })
-              if (result && typeof result === 'object' && 'queued' in result) {
-                queued++
-                return
-              }
-              const app = await api.getOrCreateApplication(job.id)
-              await api.updateApplication(app.id, {
-                [type === 'cv' ? 'cv_document_id' : 'cover_letter_document_id']: result.document_id
-              })
-              success++
-            } catch (err) {
-              failed++
-              if (failedReasons.length < 3) {
-                failedReasons.push({
-                  job,
-                  reason: err instanceof Error ? err.message : 'Unknown error'
-                })
-              }
-            }
-            setGenCount((c) => c + 1)
-          })
-        )
-      }
-    } finally {
-      setGenerating(null)
-    }
-    const label = type === 'cv' ? 'CVs' : 'cover letters'
-    const parts: string[] = []
-    if (success > 0) parts.push(`${success} ${label} generated`)
-    if (queued > 0) parts.push(`${queued} rate-limited and queued`)
-    if (failed > 0) parts.push(`${failed} failed`)
-    if (lowFitSkipped.length > 0) parts.push(`${lowFitSkipped.length} low-Fit skipped`)
-    if (parts.length > 0) {
-      notify(parts.join(' · '), failed > 0 ? 'error' : queued > 0 ? 'info' : 'success')
-    }
-    if (failedReasons.length > 0) {
-      const sample = failedReasons
-        .map((f) => `• ${f.job.title} @ ${f.job.company}: ${f.reason}`)
-        .join('\n')
-      const more = failed - failedReasons.length > 0 ? `\n…and ${failed - failedReasons.length} more.` : ''
-      notify(`Failure details (first ${failedReasons.length}):\n${sample}${more}`, 'error', 12000)
-    }
-  }
-
   function updateField(field: keyof CreateJobInput, value: string) {
     setForm((prev) => ({ ...prev, [field]: value }))
   }
@@ -1479,34 +1392,14 @@ export default function JobsPage() {
               Delete selected ({selectedIds.size})
             </button>
           )}
-          {jobs.length > 0 && (
-            <>
-              <button
-                className="btn btn-secondary btn-sm"
-                onClick={() => handleBatchTailor('cv')}
-                disabled={!!generating}
-                style={{ marginRight: 4 }}
-              >
-                {generating === 'cv' ? `Generating CVs (${genCount}/${genTotal})...` : 'Generate CVs'}
-              </button>
-              <button
-                className="btn btn-secondary btn-sm"
-                onClick={() => handleBatchTailor('cover_letter')}
-                disabled={!!generating}
-                style={{ marginRight: 8 }}
-              >
-                {generating === 'cover_letter' ? `Generating letters (${genCount}/${genTotal})...` : 'Generate Cover Letters'}
-              </button>
-              {jobs.some((j) => j.score != null && j.score < 0.3) && (
-                <button
-                  className="btn btn-danger btn-sm"
-                  onClick={handleDeleteLowFit}
-                  style={{ marginRight: 8 }}
-                >
-                  Delete Low Fit ({jobs.filter((j) => j.score != null && j.score < 0.3).length})
-                </button>
-              )}
-            </>
+          {jobs.length > 0 && jobs.some((j) => j.score != null && j.score < 0.3) && (
+            <button
+              className="btn btn-danger btn-sm"
+              onClick={handleDeleteLowFit}
+              style={{ marginRight: 8 }}
+            >
+              Delete Low Fit ({jobs.filter((j) => j.score != null && j.score < 0.3).length})
+            </button>
           )}
           <button className="btn btn-primary" onClick={() => setShowAddLink(true)}>
             + Add from link
