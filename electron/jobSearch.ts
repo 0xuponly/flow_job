@@ -1239,14 +1239,15 @@ export async function scanAllBoards(
 ): Promise<ScanResult> {
   const settings = getSettings()
   const keywords = (filters?.keywords || settings.job_search_keywords || '').trim()
-  // The location filter is a single full location string (e.g. "Vancouver,
-  // British Columbia, Canada"). A picked entry from LocationAutocomplete can
-  // contain its own `, ` separators, so splitting on commas here is wrong —
-  // it would turn one full location into several bogus "Vancouver",
-  // "British Columbia", "Canada" searches. Treat the whole field as one
-  // location; multi-location scanning is a future feature.
-  const locationInput = (filters?.location || settings.job_search_location || '').trim()
-  const locations = locationInput ? [locationInput] : ['']
+  // Resolve the location list from filters → settings → empty. Each
+  // entry is one full location (e.g. "Vancouver, British Columbia,
+  // Canada") — internal commas are not separators. The list is
+  // normalized for trim + dedup before iteration.
+  const settingsLocations = parseLocationPicks(settings.job_search_locations)
+  const locations: LocationPick[] = normalizeLocations(
+    filters?.locations,
+    settingsLocations
+  )
   const workType = filters?.workType || 'any'
   const baseCv = settings.base_cv || ''
 
@@ -1577,7 +1578,7 @@ export async function scanAllBoards(
         const settled = await Promise.race([
           Promise.allSettled(
             batch.map(async (l) => {
-              progress(`Scraping ${board.name}${location ? ` (${location})` : ''} — ${decodeEntities(l.company || l.title || l.url)}`)
+              progress(`Scraping ${board.name}${locTag} — ${decodeEntities(l.company || l.title || l.url)}`)
               return fetchAndScore(l.url, baseCv, seenUrls, scanSeenUrls, workType, location, signal)
             })
           ),
@@ -1665,8 +1666,17 @@ export async function scanAllBoards(
   const browserBoards = selectedBoards.filter((b) => b.useBrowser)
   // Track per-board totals across locations for health recording
   const boardTotals = new Map<string, { found: number; errored: boolean }>()
-  for (const location of locations) {
-    if (location) progress(`Searching in: ${location}`)
+  if (locations.length > 0) {
+    const shown = locations.slice(0, 3).map(p => p.display).join(', ')
+    const more = locations.length > 3 ? `, +${locations.length - 3} more` : ''
+    progress(`Scanning ${locations.length} location(s): ${shown}${more}`)
+  }
+  for (let locIdx = 0; locIdx < locations.length; locIdx++) {
+    const pick = locations[locIdx]
+    const location = pick.display
+    const locTag = locations.length > 1
+      ? ` (loc ${locIdx + 1}/${locations.length} — ${location})`
+      : (location ? ` (${location})` : '')
     if (signal?.aborted) break
 
     async function runTrack(track: BoardConfig[], concurrency: number, trackName: 'http' | 'browser') {
