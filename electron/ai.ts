@@ -1,5 +1,5 @@
 import { getSettings, listApiModels, getDocument, updateDocument, updateDocumentVerification, listApplications, updateApplication } from './database'
-import type { ApiModelConfig, FitBreakdown, Job, KeywordEntry, KeywordResult, RuleCheck, TailorRequest, TailorResult, VerificationResult } from './types'
+import type { ApiModelConfig, FitBreakdown, Job, KeywordCategory, KeywordEntry, KeywordResult, KeywordSource, RuleCheck, TailorRequest, TailorResult, VerificationResult } from './types'
 import { createDocument, getJob } from './database'
 import { readFileSync } from 'fs'
 import { join } from 'path'
@@ -7,7 +7,18 @@ import { app } from 'electron'
 import mammoth from 'mammoth'
 import { scoreCompatibility, extractEducationLevel, extractYearsExperience } from './fitHeuristic'
 import { runDocumentRuleChecks } from '../src/documentRules'
-import { extractJobKeywordsStructured, extractJobKeywords } from '../src/keywordExtractor'
+import { extractJobKeywordsStructured, extractJobKeywords, mergeKeywordResults } from '../src/keywordExtractor'
+import { loadKeywordAllowlists } from '../src/keywordAllowlists'
+
+export class KeywordExtractionError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'KeywordExtractionError'
+  }
+}
+
+const KEYWORD_CATEGORIES: ReadonlySet<KeywordCategory> = new Set(['hard', 'soft', 'cert', 'seniority'])
+const KEYWORD_SOURCES: ReadonlySet<KeywordSource> = new Set(['title', 'required', 'preferred', 'body'])
 
 export class RateLimitError extends Error {
   constructor(message: string) {
@@ -202,73 +213,138 @@ async function callAI(
   return { content, modelUsed, rateLimited: false, errors: [] }
 }
 
-const REFINEMENT_SYSTEM_PROMPT = `You refine job-description keyword lists for ATS and recruiter screening.
-Given the candidate keywords and the original JD, return JSON only:
+const EXTRACTION_SYSTEM_PROMPT = `You extract keywords from a job description for ATS and recruiter screening.
+Return JSON only, no markdown, no prose.
+
 {
-  "keywords": [{ "phrase": string, "weight": 0-1, "category": "hard" | "soft" | "cert" | "seniority" }],
-  "dropped":   [string]
+  "keywords": [
+    {
+      "phrase":   string,
+      "weight":   number,
+      "category": "hard" | "soft" | "cert" | "seniority",
+      "source":   "title" | "required" | "preferred" | "body"
+    }
+  ]
 }
-- Confirm or change each category.
-- Re-rank by importance to ATS + recruiter attention.
-- Drop phrases that are pure boilerplate ("we offer competitive salary", "must be a team player" with no specifics, generic verbs without object).
-- Add NO new phrases — only refine the candidate set.
-- Output JSON only, no markdown, no prose.`
 
-function refineResultFromPure(candidates: KeywordEntry[]): KeywordResult {
-  return {
-    keywords: candidates.slice(0, 30),
-    refinedByLlm: false
+Rules:
+- Extract ONLY what the JD explicitly says. Do not infer.
+- 1-3 word phrases. Never single letters. Never sentence fragments.
+- Multi-word phrases beat unigrams: "machine learning" not "learning".
+- source='title' if the phrase appears in the JD title line; else 'required'
+  if it is in a Required/Qualifications block; else 'preferred' if it is in
+  a Preferred/Nice-to-have block; else 'body'.
+- weight reflects how important the phrase is for ATS + recruiter screening,
+  not how many times it appears.
+- Aim for 25-40 candidates. Err on the side of more.
+- Output JSON only.`
+
+/**
+ * v3 LLM keyword extractor. Produces structured candidates from the JD
+ * directly; the rule pipeline (extractJobKeywordsStructured) is the
+ * deterministic safety net and the source of the section source field.
+ *
+ * Throws KeywordExtractionError on any parse failure or zero valid entries.
+ * Callers should catch and fall back to the rule-only result.
+ */
+export async function extractJobKeywordsLLM(
+  description: string,
+  signal?: AbortSignal
+): Promise<KeywordEntry[]> {
+  const userPrompt = `JD:\n${description}`
+
+  let result: Awaited<ReturnType<typeof callAI>>
+  try {
+    result = await callAI(EXTRACTION_SYSTEM_PROMPT, userPrompt, 0.3, 20000, signal)
+  } catch (err) {
+    throw new KeywordExtractionError(
+      `callAI failed: ${err instanceof Error ? err.message : String(err)}`
+    )
   }
+
+  if (!result.content) {
+    throw new KeywordExtractionError('callAI returned no content')
+  }
+
+  const match = result.content.match(/\{[\s\S]*\}/)
+  if (!match) {
+    throw new KeywordExtractionError('No JSON object found in LLM response')
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(match[0])
+  } catch {
+    throw new KeywordExtractionError('Failed to parse JSON from LLM response')
+  }
+
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new KeywordExtractionError('LLM JSON is not an object')
+  }
+  const obj = parsed as Record<string, unknown>
+  if (!Array.isArray(obj.keywords)) {
+    throw new KeywordExtractionError('LLM JSON missing "keywords" array')
+  }
+
+  const entries: KeywordEntry[] = []
+  for (const item of obj.keywords) {
+    if (typeof item !== 'object' || item === null) continue
+    const it = item as Record<string, unknown>
+    if (typeof it.phrase !== 'string' || it.phrase.trim() === '') continue
+    if (typeof it.weight !== 'number' || it.weight < 0 || it.weight > 1) continue
+    if (typeof it.category !== 'string' || !KEYWORD_CATEGORIES.has(it.category as KeywordCategory)) continue
+    if (typeof it.source !== 'string' || !KEYWORD_SOURCES.has(it.source as KeywordSource)) continue
+    entries.push({
+      phrase: it.phrase.toLowerCase().trim(),
+      weight: it.weight,
+      category: it.category as KeywordCategory,
+      source: it.source as KeywordSource
+    })
+  }
+
+  if (entries.length === 0) {
+    throw new KeywordExtractionError('LLM produced no valid entries')
+  }
+
+  return entries
 }
 
-export async function refineJobKeywordsViaLlm(
-  candidates: KeywordEntry[],
+/**
+ * v3 orchestrator. Runs the rule pipeline (sync) and the LLM extractor
+ * (async) in parallel-ish: rule finishes first (CPU-only, ~5ms), then LLM
+ * runs. If LLM fails for any reason, returns the rule-only result with
+ * refinedByLlm=false. The LLM and rule candidates are merged by
+ * mergeKeywordResults: LLM wins category+weight, rule wins section source,
+ * and LLM-only-not-in-allowlist phrases are downweighted 0.8x and surfaced
+ * in unknownPhrases for allowlist review.
+ */
+export async function extractJobKeywordsV3(
   description: string,
   signal?: AbortSignal
 ): Promise<KeywordResult> {
-  if (candidates.length === 0) return { keywords: [], refinedByLlm: false }
+  const ruleResult = extractJobKeywordsStructured(description)
+  const ruleCandidates = ruleResult.keywords
+
+  let llmCandidates: KeywordEntry[] = []
   try {
-    const userPrompt = `JD:\n${description}\n\nCANDIDATE KEYWORDS:\n${JSON.stringify(candidates)}`
-    const result = await callAI(REFINEMENT_SYSTEM_PROMPT, userPrompt, 0.3, 20000, signal)
-    if (!result.content) return refineResultFromPure(candidates)
-    const match = result.content.match(/\{[\s\S]*\}/)
-    if (!match) {
-      console.warn('[ai] keyword refinement skipped: no JSON object in response')
-      return refineResultFromPure(candidates)
-    }
-    const parsed = JSON.parse(match[0]) as {
-      keywords?: unknown
-      dropped?: unknown
-    }
-    if (!Array.isArray(parsed.keywords)) {
-      console.warn('[ai] keyword refinement skipped: keywords is not an array')
-      return refineResultFromPure(candidates)
-    }
-    const allowedCat = new Set(['hard', 'soft', 'cert', 'seniority'])
-    const allowedSrc = new Set(['title', 'required', 'preferred', 'body'])
-    const refined: KeywordEntry[] = []
-    for (const e of parsed.keywords) {
-      if (typeof e !== 'object' || e === null) continue
-      const o = e as Record<string, unknown>
-      if (typeof o.phrase !== 'string') continue
-      if (typeof o.weight !== 'number' || !Number.isFinite(o.weight)) continue
-      if (typeof o.category !== 'string' || !allowedCat.has(o.category)) continue
-      // source is optional in the LLM response; if missing, infer from candidates.
-      const source = (typeof o.source === 'string' && allowedSrc.has(o.source))
-        ? o.source as KeywordEntry['source']
-        : (candidates.find((c) => c.phrase === (o.phrase as string).toLowerCase())?.source ?? 'body')
-      refined.push({
-        phrase: (o.phrase as string).toLowerCase(),
-        weight: Math.max(0, Math.min(1, o.weight)),
-        category: o.category as KeywordEntry['category'],
-        source
-      })
-    }
-    return { keywords: refined.slice(0, 30), refinedByLlm: true }
+    llmCandidates = await extractJobKeywordsLLM(description, signal)
   } catch (err) {
-    console.warn('[ai] keyword refinement skipped:', err instanceof Error ? err.message : String(err))
-    return refineResultFromPure(candidates)
+    console.warn(
+      '[ai] v3 LLM extraction failed, falling back to rule-only:',
+      err instanceof Error ? err.message : String(err)
+    )
+    return {
+      keywords: ruleCandidates,
+      refinedByLlm: false,
+      unknownPhrases: []
+    }
   }
+
+  const merged = mergeKeywordResults(llmCandidates, ruleCandidates, loadKeywordAllowlists())
+  if (merged.unknownPhrases.length > 0) {
+    console.info('[ai] v3 unknown phrases:', merged.unknownPhrases)
+  }
+  return merged
 }
 
 export async function tailorDocument(request: TailorRequest): Promise<TailorResult> {
@@ -281,19 +357,19 @@ export async function tailorDocument(request: TailorRequest): Promise<TailorResu
     settings.base_cv ||
     'No base CV provided. Add your base CV in Settings.'
 
-  // Derive structured keywords from the job description and refine via LLM.
-  // The main call below uses no signal (tailorDocument is invoked from
-  // document-regenerate flows that don't plumb an AbortSignal today), so we
-  // pass undefined here as well — refinement gets its own per-call timeout
-  // inside callAI. On any error, fall back to the flat extractor so the
-  // prompt still has keyword coverage hints rather than nothing.
+  // Derive structured keywords from the job description via the v3
+  // orchestrator (LLM-first with rule-pipeline safety net). The orchestrator
+  // returns the refined topKeywords + unknownPhrases. If the LLM is
+  // unavailable, the orchestrator falls back to the rule-only result; the
+  // prompt still gets keyword coverage hints rather than nothing.
   let refinedTopKeywords: string[] | undefined = request.topKeywords
+  let keywordRefinedByLlm = false
   if (!refinedTopKeywords || refinedTopKeywords.length === 0) {
     if (job.description) {
       try {
-        const structured = extractJobKeywordsStructured(job.description)
-        const refined = await refineJobKeywordsViaLlm(structured.keywords, job.description, undefined)
-        refinedTopKeywords = refined.keywords.map((k) => k.phrase)
+        const result = await extractJobKeywordsV3(job.description, undefined)
+        refinedTopKeywords = result.keywords.map((k) => k.phrase)
+        keywordRefinedByLlm = result.refinedByLlm
       } catch (err) {
         console.warn('[ai] tailor keyword derivation failed, falling back to flat extract:', err)
         refinedTopKeywords = extractJobKeywords(job.description)

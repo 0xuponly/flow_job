@@ -6,7 +6,7 @@ import type { KeywordResult } from '../types'
 describe('KeywordGapsPanel', () => {
   it('renders nothing when there are no keywords', () => {
     const { container } = render(
-      <KeywordGapsPanel result={{ keywords: [], refinedByLlm: false }} documentText="" />
+      <KeywordGapsPanel result={{ keywords: [], refinedByLlm: false, unknownPhrases: [] }} documentText="" />
     )
     expect(container.firstChild).toBeNull()
   })
@@ -18,7 +18,8 @@ describe('KeywordGapsPanel', () => {
         { phrase: 'aws', weight: 0.7, category: 'hard', source: 'required' },
         { phrase: 'leadership', weight: 0.6, category: 'soft', source: 'body' }
       ],
-      refinedByLlm: false
+      refinedByLlm: false,
+      unknownPhrases: []
     }
     render(<KeywordGapsPanel result={result} documentText="I have some python experience" />)
     // aws and leadership are missing; python is present.
@@ -33,7 +34,8 @@ describe('KeywordGapsPanel', () => {
         { phrase: 'aws', weight: 0.7, category: 'hard', source: 'required' },
         { phrase: 'leadership', weight: 0.6, category: 'soft', source: 'body' }
       ],
-      refinedByLlm: false
+      refinedByLlm: false,
+      unknownPhrases: []
     }
     render(<KeywordGapsPanel result={result} documentText="" />)
     expect(screen.getByText(/hard/i)).toBeInTheDocument()
