@@ -126,6 +126,7 @@ export interface Settings {
   base_cv: string
   job_search_keywords: string
   job_search_location: string
+  job_search_locations: string
   deleted_jobs_cap: number
   auto_scan_enabled: boolean
   auto_scan_interval_minutes: number

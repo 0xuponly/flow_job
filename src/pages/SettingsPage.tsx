@@ -2,9 +2,23 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { ApiModelConfig, Settings } from '../types'
 import { notify } from '../components/Notifications'
-import { LocationAutocomplete } from '../components/LocationAutocomplete'
+import { LocationPicker } from '../components/LocationPicker'
+import type { LocationPick } from '../locations'
 import Modal from '../components/Modal'
 import { BOARD_TYPES } from '../boardTypes'
+
+function parseLocationPicks(raw: string): LocationPick[] {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (p): p is LocationPick => !!p && typeof p === 'object' && typeof (p as LocationPick).display === 'string'
+    )
+  } catch {
+    return []
+  }
+}
 
 const PRESETS: { name: string; desc: string; model: Omit<ApiModelConfig, 'id'> }[] = [
   { name: 'Big Pickle', desc: 'Free, no API key needed', model: { name: 'Big Pickle', base_url: 'https://opencode.ai/zen/v1', api_key: '', model: 'big-pickle' } },
@@ -546,11 +560,11 @@ export default function SettingsPage() {
                 />
               </div>
               <div className="form-group">
-                <label>Preferred location</label>
-                <LocationAutocomplete
-                  value={settings.job_search_location}
-                  onChange={(v) => update('job_search_location', v)}
-                  placeholder="e.g. London, Remote"
+                <label>Preferred locations</label>
+                <LocationPicker
+                  value={parseLocationPicks(settings.job_search_locations)}
+                  onChange={(picks) => update('job_search_locations', JSON.stringify(picks))}
+                  placeholder="Add a location (e.g. London, Remote)"
                 />
               </div>
             </div>
