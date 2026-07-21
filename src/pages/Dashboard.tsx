@@ -1,8 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
-import Tooltip from '../components/Tooltip'
 import type { DashboardStats, FollowUp, Interview, Job } from '../types'
-import { computeQueueFunnel, type FunnelWindow } from '../queueStats'
 
 export default function Dashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null)
@@ -73,7 +71,6 @@ export default function Dashboard() {
       )}
 
       {jobs.length > 0 && <MatchQualityTrendWidget jobs={jobs} />}
-      <QueueFunnelWidget jobs={jobs} />
 
       <div className="section-title">Action items</div>
       {followUps.length === 0 && interviews.length === 0 ? (
@@ -112,7 +109,7 @@ export default function Dashboard() {
 // default), 30 days, and 90 days. Bails only when there are zero
 // days with data in the window. Null days are visual gaps; the line
 // connects through them so the trend stays readable.
-type WindowKey = FunnelWindow
+type WindowKey = 'week' | '30d' | '90d' | 'all'
 const WINDOW_DAYS: Record<WindowKey, number | 'all'> = { week: 7, '30d': 30, '90d': 90, all: 'all' }
 const WINDOW_LABELS: Record<WindowKey, string> = { week: '7d', '30d': '30d', '90d': '90d', all: 'All' }
 
@@ -274,61 +271,5 @@ function Sparkline({ points, labels }: { points: (number | null)[]; labels: stri
         </g>
       ))}
     </svg>
-  )
-}
-
-// QueueFunnelWidget (Task 4). Five-bar horizontal funnel: jobs added
-// in the last 7 days → grade A → tailored → submitted → responded.
-// Per `feedback-terse-result-headers` the headline leads with the
-// head count (jobs added this week) and the label "Queue funnel";
-// each bar carries a small conversion % as secondary text below the
-// headline. Hides entirely when `added === 0` so the card doesn't
-// take up space before the user has run a scan.
-function QueueFunnelWidget({ jobs }: { jobs: Job[] }) {
-  const [window, setWindow] = useState<WindowKey>('week')
-  const stats = computeQueueFunnel(jobs, Date.now(), window)
-  if (stats.added === 0 && window !== 'all') {
-    // Fall through and render — selector lets the user widen the
-    // window. (If 'all' is also zero there really is nothing.)
-  }
-  if (stats.added === 0 && window === 'all') return null
-  const bars: { label: string; value: number; pct: number }[] = [
-    { label: 'Added', value: stats.added, pct: 100 },
-    { label: 'Grade ≥A', value: stats.gradeA, pct: stats.added ? (stats.gradeA / stats.added) * 100 : 0 },
-    { label: 'Tailored', value: stats.tailored, pct: stats.added ? (stats.tailored / stats.added) * 100 : 0 },
-    // Applied is all-time relative to the cohort; clamp pct at 100 so
-    // the bar height stays bounded when applied > added.
-    { label: 'Applied', value: stats.submitted, pct: stats.added ? Math.min(100, (stats.submitted / stats.added) * 100) : 0 },
-    { label: 'Responded', value: stats.responded, pct: stats.added ? (stats.responded / stats.added) * 100 : 0 },
-  ]
-  return (
-    <div className="card">
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
-        <div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Funnel</div>
-          <div style={{ fontSize: 22, fontWeight: 600 }}>{stats.added} {window === 'all' ? 'all time' : `last ${WINDOW_DAYS[window]}d`}</div>
-        </div>
-        <WindowSelector value={window} onChange={setWindow} />
-      </div>
-      <div style={{ display: 'flex', gap: 4, alignItems: 'flex-end', height: 88, marginTop: 12 }}>
-        {bars.map((b) => (
-          <div key={b.label} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-            <Tooltip label={`${b.label}: ${b.value} (${Math.round(b.pct)}%)`}>
-              <div
-                title={`${b.label}: ${b.value} (${Math.round(b.pct)}%)`}
-                style={{
-                  width: '100%',
-                  height: `${Math.max(4, (b.pct / 100) * 40)}px`,
-                  background: 'var(--accent, #3b82f6)',
-                  borderRadius: 2
-                }}
-              />
-            </Tooltip>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 6 }}>{b.label}</div>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{Math.round(b.pct)}%</div>
-          </div>
-        ))}
-      </div>
-    </div>
   )
 }
