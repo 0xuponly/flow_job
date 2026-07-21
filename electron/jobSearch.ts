@@ -14,7 +14,7 @@ import { fetchRssFeed } from './rssFetcher'
 import { scoreJobFit } from './ai'
 import { scoreCompatibility } from './fitHeuristic'
 export { scoreCompatibility } from './fitHeuristic'
-import type { CreateJobInput, Job, ScanFilters, WorkType } from './types'
+import type { CreateJobInput, Job, LocationPick, ScanFilters, WorkType } from './types'
 
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
@@ -1021,6 +1021,62 @@ function matchesWorkType(text: string, workType: WorkType): boolean {
   if (workType === 'hybrid') return isHybrid
   if (workType === 'in_office') return isInOffice || (!isRemote && !isHybrid)
   return true
+}
+
+/**
+ * Resolve the user-supplied location list for a scan, returning a
+ * normalized, deduped array of LocationPick. `fromFilters` wins when
+ * present; otherwise `fromSettings`. Returns [] when both are empty,
+ * which callers treat as "no location filter".
+ *
+ * Normalization: trim each display, drop empty entries, dedup picks by
+ * id (first occurrence wins) and free-text entries by case-folded
+ * display. A single full location like "Vancouver, British Columbia,
+ * Canada" is preserved as-is — internal commas are not separators.
+ */
+export function normalizeLocations(
+  fromFilters: LocationPick[] | undefined,
+  fromSettings: LocationPick[] | undefined
+): LocationPick[] {
+  const source = fromFilters ?? fromSettings ?? []
+  const seenIds = new Set<string>()
+  const seenDisplay = new Set<string>()
+  const out: LocationPick[] = []
+  for (const raw of source) {
+    const display = raw.display.trim()
+    if (!display) continue
+    if (raw.id) {
+      if (seenIds.has(raw.id)) continue
+      seenIds.add(raw.id)
+      out.push({ id: raw.id, display })
+    } else {
+      const key = display.toLowerCase()
+      if (seenDisplay.has(key)) continue
+      seenDisplay.add(key)
+      out.push({ display })
+    }
+  }
+  return out
+}
+
+/**
+ * Parse the JSON-encoded `job_search_locations` setting into a
+ * LocationPick[]. Returns [] on any failure (empty string, invalid
+ * JSON, wrong shape, missing display) so callers can recover silently
+ * and let the user re-pick.
+ */
+export function parseLocationPicks(raw: string | null | undefined): LocationPick[] {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (p): p is LocationPick =>
+        !!p && typeof p === 'object' && typeof (p as LocationPick).display === 'string'
+    )
+  } catch {
+    return []
+  }
 }
 
 function matchesLocation(jobLocation: string | null, filterLocation: string): boolean {
