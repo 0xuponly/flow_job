@@ -11,10 +11,9 @@ import {
   verifyManifest,
   wrapDekWithPassphrase
 } from './backupCrypto'
-import { tailorDocument, generateFollowUpMessage, regenerateSection, verifyDocumentContent, scoreJobFit, RateLimitError } from './ai'
+import { tailorDocument, generateFollowUpMessage, regenerateSection, verifyDocumentContent, scoreJobFit, extractJobKeywordsV3, RateLimitError } from './ai'
 import { countPdfPages } from '../src/cvOnePage'
 import { enforceAllCvCeilings, enforceParagraphCeilings } from '../src/documentRules'
-import { extractJobKeywordsStructured } from '../src/keywordExtractor'
 import { scrapeJobFromUrl } from './jobScraper'
 import { scanAllBoards, BOARDS } from './jobSearch'
 import { createLogger } from './logger'
@@ -348,8 +347,12 @@ function registerIpc(): void {
 
   ipcMain.handle('keywords:extract', async (_e, jobId: number) => {
     const job = db.getJob(jobId)
-    if (!job) return { keywords: [], refinedByLlm: false }
-    return extractJobKeywordsStructured(job.description ?? '')
+    if (!job) return { keywords: [], refinedByLlm: false, unknownPhrases: [] }
+    // v3: LLM-first with rule-pipeline safety net. On LLM failure, the
+    // orchestrator falls back to the rule-only result with
+    // refinedByLlm=false. The unknown-phrase list is surfaced in JobDetail
+    // so the user can review and decide whether to add to the allowlist.
+    return extractJobKeywordsV3(job.description ?? '')
   })
 
   ipcMain.handle('jobs:recomputeFit', async (_e, id: number) => {
