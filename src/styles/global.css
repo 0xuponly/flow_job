@@ -1166,3 +1166,50 @@ input[type="checkbox"]:disabled {
   font-size: 12px;
   font-style: italic;
 }
+
+/* Multi-location picker. Renders picked locations as a vertical list
+   of pills with a remove button, with the autocomplete as the add
+   input below. */
+.location-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.location-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.location-picker-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.location-picker-pill-text {
+  flex: 1;
+}
+
+.location-picker-remove {
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.location-picker-remove:hover {
+  color: var(--text);
+}

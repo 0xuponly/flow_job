@@ -12,6 +12,14 @@ export type LocationNode = {
   display(): string;
 };
 
+// Renderer-side mirror of electron/types.ts LocationPick. Kept here so
+// renderer components and LocationAutocomplete don't need to import
+// from the main-process types.
+export interface LocationPick {
+  id?: string;
+  display: string;
+}
+
 const byId = new Map<string, LocationNode>();
 let memoized: LocationNode[] | null = null;
 
