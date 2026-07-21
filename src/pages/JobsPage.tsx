@@ -668,88 +668,6 @@ function dedupeJobs(jobs: Job[]): Job[] {
   })
 }
 
-// Fast hover tooltip for the Fit orb in the Job Board. Shows the score
-// as a percentage within ~80ms of hover (vs. the ~500ms native browser
-// title= delay) and renders a styled dark pill above the dot so it
-// matches the rest of the app's visual language. Single-instance: the
-// tooltip is positioned relative to the orb's bounding rect on each
-// show, so re-mounting on every cell doesn't pile up listeners.
-function FitTooltip({ score, children }: { score: number; children: React.ReactNode }) {
-  const [visible, setVisible] = useState(false)
-  const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
-  const wrapRef = useRef<HTMLSpanElement>(null)
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  function show() {
-    if (timerRef.current) clearTimeout(timerRef.current)
-    // 80ms feels instant on intentional hover, but skips stray passes.
-    timerRef.current = setTimeout(() => {
-      const el = wrapRef.current
-      if (!el) return
-      const r = el.getBoundingClientRect()
-      // Center horizontally on the dot; sit ~6px above.
-      setPos({ left: r.left + r.width / 2, top: r.top - 6 })
-      setVisible(true)
-    }, 80)
-  }
-
-  function hide() {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current)
-      timerRef.current = null
-    }
-    setVisible(false)
-  }
-
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current)
-    }
-  }, [])
-
-  const pct = `${Math.round(score * 100)}%`
-  return (
-    <span
-      ref={wrapRef}
-      onMouseEnter={show}
-      onMouseLeave={hide}
-      onFocus={show}
-      onBlur={hide}
-      style={{ display: 'inline-block' }}
-    >
-      {children}
-      {visible && pos && (
-        <span
-          role="tooltip"
-          style={{
-            position: 'fixed',
-            left: pos.left,
-            top: pos.top,
-            transform: 'translate(-50%, -100%)',
-            padding: '4px 8px',
-            borderRadius: 6,
-            background: 'rgba(15, 17, 23, 0.95)',
-            backdropFilter: 'blur(8px)',
-            WebkitBackdropFilter: 'blur(8px)',
-            border: '1px solid rgba(255, 255, 255, 0.12)',
-            color: '#fff',
-            fontSize: 11,
-            fontWeight: 600,
-            letterSpacing: 0.2,
-            whiteSpace: 'nowrap',
-            pointerEvents: 'none',
-            zIndex: 9999,
-            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.4)',
-            animation: 'fit-tooltip-in 0.12s ease-out'
-          }}
-        >
-          {pct}
-        </span>
-      )}
-    </span>
-  )
-}
-
 export default function JobsPage() {
   const [jobs, setJobs] = useState<Job[]>([])
   const [search, setSearch] = useState('')
@@ -1684,7 +1602,7 @@ export default function JobsPage() {
                 </td>
                 <td className="col-fit">
                   {job.score != null && (
-                    <FitTooltip score={job.score}>
+                    <Tooltip label={`${Math.round(job.score * 100)}%`} placement="top">
                       <span
                         className="fit-dot"
                         style={{
@@ -1693,7 +1611,7 @@ export default function JobsPage() {
                           background: job.score >= 0.9 ? '#3b82f6' : job.score >= 0.75 ? '#22c55e' : job.score >= 0.6 ? '#eab308' : job.score >= 0.45 ? '#f97316' : '#ef4444'
                         }}
                       />
-                    </FitTooltip>
+                    </Tooltip>
                   )}
                 </td>
                 <td><strong>{job.company}</strong></td>
