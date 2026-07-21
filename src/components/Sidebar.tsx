@@ -3,6 +3,7 @@ import { api } from '../api'
 import type { Page } from '../types'
 import { usePersistedState } from '../persistedState'
 import RefreshIcon from './RefreshIcon'
+import Tooltip from './Tooltip'
 
 interface Props {
   current: Page
@@ -70,54 +71,58 @@ export default function Sidebar({ current, onNavigate }: Props) {
       </div>
       <nav>
         {NAV_ITEMS.map((item) => (
-          <button
-            key={item.id}
-            className={`nav-item ${current === item.id ? 'active' : ''}`}
-            onClick={() => onNavigate(item.id)}
-            data-tooltip={item.label}
-          >
-            <span>{item.icon}</span>
-            <span className="nav-label">{item.label}</span>
-          </button>
+          <Tooltip key={item.id} label={item.label} disabled={!collapsed}>
+            <button
+              className={`nav-item ${current === item.id ? 'active' : ''}`}
+              onClick={() => onNavigate(item.id)}
+            >
+              <span>{item.icon}</span>
+              <span className="nav-label">{item.label}</span>
+            </button>
+          </Tooltip>
         ))}
       </nav>
       {scanning && (
-        <div
-          className="sidebar-scan-indicator"
-          data-tooltip="A job scan is currently running"
-          onClick={() => onNavigate('scanjobs')}
-        >
-          <span className="scan-pulse" />
-          Scanning…
-        </div>
+        <Tooltip label="A job scan is currently running">
+          <div
+            className="sidebar-scan-indicator"
+            onClick={() => onNavigate('scanjobs')}
+          >
+            <span className="scan-pulse" />
+            Scanning…
+          </div>
+        </Tooltip>
       )}
       {fitPending > 0 && (
-        <div
-          className="sidebar-scan-indicator"
-          data-tooltip={`${fitPending} fit recompute${fitPending === 1 ? '' : 's'} in progress`}
-          onClick={() => onNavigate('jobs')}
-        >
-          <span className="scan-pulse" />
-          Calculating Fit…
-        </div>
+        <Tooltip label={`${fitPending} fit recompute${fitPending === 1 ? '' : 's'} in progress`}>
+          <div
+            className="sidebar-scan-indicator"
+            onClick={() => onNavigate('jobs')}
+          >
+            <span className="scan-pulse" />
+            Calculating Fit…
+          </div>
+        </Tooltip>
       )}
       <div className="sidebar-bottom-actions">
-        <button
-          className="sidebar-action"
-          aria-label="Refresh current page"
-          onClick={() => window.dispatchEvent(new CustomEvent('app:refresh'))}
-          data-tooltip="Refresh current page"
-        >
-          <RefreshIcon size={16} />
-        </button>
-        <button
-          className="sidebar-action"
-          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          onClick={() => setCollapsed((v) => !v)}
-          data-tooltip={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        >
-          <span aria-hidden="true">{collapsed ? '⟹' : '⟸'}</span>
-        </button>
+        <Tooltip label="Refresh current page">
+          <button
+            className="sidebar-action"
+            aria-label="Refresh current page"
+            onClick={() => window.dispatchEvent(new CustomEvent('app:refresh'))}
+          >
+            <RefreshIcon size={16} />
+          </button>
+        </Tooltip>
+        <Tooltip label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
+          <button
+            className="sidebar-action"
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            onClick={() => setCollapsed((v) => !v)}
+          >
+            <span aria-hidden="true">{collapsed ? '⟹' : '⟸'}</span>
+          </button>
+        </Tooltip>
       </div>
     </aside>
   )
