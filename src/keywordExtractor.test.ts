@@ -3,8 +3,11 @@ import {
   parseSections,
   extractPhases,
   extractJobKeywordsStructured,
-  extractJobKeywords
+  extractJobKeywords,
+  mergeKeywordResults
 } from './keywordExtractor'
+import { loadKeywordAllowlists } from './keywordAllowlists'
+import type { KeywordEntry } from './types'
 
 describe('parseSections', () => {
   it('returns the first non-empty line as title', () => {
@@ -215,5 +218,101 @@ describe('extractJobKeywordsStructured', () => {
     const phrases = extractJobKeywords(jd)
     expect(phrases.length).toBeLessThanOrEqual(30)
     expect(phrases.every((p) => typeof p === 'string')).toBe(true)
+  })
+})
+
+describe('mergeKeywordResults', () => {
+  const lists = loadKeywordAllowlists()
+
+  it('LLM wins category+weight, rule wins source when both have the same phrase', () => {
+    const llm: KeywordEntry[] = [
+      { phrase: 'python', weight: 0.9, category: 'hard', source: 'body' }
+    ]
+    const rule: KeywordEntry[] = [
+      { phrase: 'python', weight: 0.5, category: 'soft', source: 'required' }
+    ]
+    const r = mergeKeywordResults(llm, rule, lists)
+    expect(r.keywords).toHaveLength(1)
+    expect(r.keywords[0]).toMatchObject({
+      phrase: 'python',
+      category: 'hard',
+      source: 'required',
+      weight: 0.9
+    })
+    expect(r.refinedByLlm).toBe(true)
+    expect(r.unknownPhrases).toEqual([])
+  })
+
+  it('downweights LLM-only phrases that are not in any allowlist', () => {
+    const llm: KeywordEntry[] = [
+      { phrase: 'obscureframework', weight: 1.0, category: 'hard', source: 'body' }
+    ]
+    const r = mergeKeywordResults(llm, [], lists)
+    expect(r.keywords).toHaveLength(1)
+    expect(r.keywords[0].weight).toBeCloseTo(0.8, 5)
+    expect(r.unknownPhrases).toEqual(['obscureframework'])
+  })
+
+  it('keeps LLM-only allowlist phrases at full weight', () => {
+    const llm: KeywordEntry[] = [
+      { phrase: 'python', weight: 1.0, category: 'hard', source: 'body' }
+    ]
+    const r = mergeKeywordResults(llm, [], lists)
+    expect(r.keywords[0].weight).toBe(1.0)
+    expect(r.unknownPhrases).toEqual([])
+  })
+
+  it('includes rule-only phrases as a safety net (LLM missed them)', () => {
+    const llm: KeywordEntry[] = [
+      { phrase: 'python', weight: 1.0, category: 'hard', source: 'body' }
+    ]
+    const rule: KeywordEntry[] = [
+      { phrase: 'pulumi', weight: 0.5, category: 'hard', source: 'body' }
+    ]
+    const r = mergeKeywordResults(llm, rule, lists)
+    expect(r.keywords.map((k) => k.phrase)).toContain('pulumi')
+    expect(r.keywords.map((k) => k.phrase)).toContain('python')
+  })
+
+  it('longer phrase wins on substring collision', () => {
+    const llm: KeywordEntry[] = [
+      { phrase: 'learning', weight: 1.0, category: 'hard', source: 'body' },
+      { phrase: 'machine learning', weight: 0.9, category: 'hard', source: 'required' }
+    ]
+    const r = mergeKeywordResults(llm, [], lists)
+    expect(r.keywords.map((k) => k.phrase)).toContain('machine learning')
+    expect(r.keywords.find((k) => k.phrase === 'learning')).toBeUndefined()
+  })
+
+  it('caps at 30', () => {
+    const llm: KeywordEntry[] = Array.from({ length: 50 }, (_, i) => ({
+      phrase: `obscure${i}`,
+      weight: 1.0 - i * 0.01,
+      category: 'hard' as const,
+      source: 'body' as const
+    }))
+    const r = mergeKeywordResults(llm, [], lists)
+    expect(r.keywords).toHaveLength(30)
+  })
+
+  it('marks refinedByLlm=false when LLM is empty', () => {
+    const rule: KeywordEntry[] = [
+      { phrase: 'python', weight: 0.9, category: 'hard', source: 'required' }
+    ]
+    const r = mergeKeywordResults([], rule, lists)
+    expect(r.refinedByLlm).toBe(false)
+    expect(r.keywords).toHaveLength(1)
+  })
+
+  it('unknownPhrases is the full set, not capped at 30', () => {
+    const llm: KeywordEntry[] = Array.from({ length: 50 }, (_, i) => ({
+      phrase: `obscure${i}`,
+      weight: 1.0 - i * 0.01,
+      category: 'hard' as const,
+      source: 'body' as const
+    }))
+    const r = mergeKeywordResults(llm, [], lists)
+    expect(r.unknownPhrases).toHaveLength(50)
+    expect(r.keywords).toHaveLength(30)
   })
 })

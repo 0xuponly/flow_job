@@ -3,6 +3,7 @@
 // renderer.
 
 import { loadKeywordAllowlists } from './keywordAllowlists'
+import type { KeywordAllowlists } from './keywordAllowlists'
 import type { KeywordCategory, KeywordSource, KeywordEntry, KeywordResult } from './types'
 export type { KeywordCategory, KeywordSource, KeywordEntry, KeywordResult }
 
@@ -139,7 +140,105 @@ export function extractJobKeywordsStructured(description: string): KeywordResult
 
   // Pre-LLM cap is 40; final cap is 30.
   const capped = weighted.slice(0, PRE_LLM_CAP)
-  return { keywords: capped.slice(0, POST_RANK_CAP), refinedByLlm: false }
+  return { keywords: capped.slice(0, POST_RANK_CAP), refinedByLlm: false, unknownPhrases: [] }
+}
+
+const UNKNOWN_DOWNWEIGHT = 0.8
+
+function isInAllowlist(phrase: string, lists: KeywordAllowlists): boolean {
+  if (lists.hard.has(phrase)) return true
+  if (lists.soft.has(phrase)) return true
+  if (lists.cert.has(phrase)) return true
+  if (lists.seniority.has(phrase)) return true
+  if (lists.phraseBoost.has(phrase)) return true
+  return false
+}
+
+function isPhraseSubstring(longer: string, shorter: string): boolean {
+  return longer !== shorter && longer.includes(shorter)
+}
+
+/**
+ * Merge LLM-extracted candidates with rule-pipeline candidates.
+ *
+ * - Phrase in both: LLM wins category+weight; rule wins source.
+ * - LLM-only:
+ *   - In allowlist: accept as-is.
+ *   - Unknown: accept with weight *= 0.8, add to unknownPhrases.
+ * - Rule-only: accept as-is (safety net for LLM omissions / failure).
+ *
+ * Pure function: no I/O, no Electron imports. Safe to unit-test.
+ */
+export function mergeKeywordResults(
+  llm: KeywordEntry[],
+  rule: KeywordEntry[],
+  lists: KeywordAllowlists
+): KeywordResult {
+  const norm = (s: string) => s.toLowerCase().trim()
+  const ruleByPhrase = new Map<string, KeywordEntry>()
+  for (const e of rule) ruleByPhrase.set(norm(e.phrase), e)
+
+  const merged: KeywordEntry[] = []
+  const unknownPhrases = new Set<string>()
+  const seen = new Set<string>()
+
+  // 1. Process LLM candidates.
+  for (const llmEntry of llm) {
+    const phraseNorm = norm(llmEntry.phrase)
+    if (!phraseNorm) continue
+    if (seen.has(phraseNorm)) continue
+    seen.add(phraseNorm)
+
+    const ruleEntry = ruleByPhrase.get(phraseNorm)
+    if (ruleEntry) {
+      // LLM wins category+weight, rule wins source.
+      merged.push({
+        phrase: phraseNorm,
+        weight: llmEntry.weight,
+        category: llmEntry.category,
+        source: ruleEntry.source
+      })
+    } else {
+      const isKnown = isInAllowlist(phraseNorm, lists)
+      if (isKnown) {
+        merged.push({ ...llmEntry, phrase: phraseNorm })
+      } else {
+        merged.push({
+          phrase: phraseNorm,
+          weight: Math.max(0, Math.min(1, llmEntry.weight * UNKNOWN_DOWNWEIGHT)),
+          category: llmEntry.category,
+          source: llmEntry.source
+        })
+        unknownPhrases.add(phraseNorm)
+      }
+    }
+  }
+
+  // 2. Append rule-only candidates (safety net).
+  for (const ruleEntry of rule) {
+    const phraseNorm = norm(ruleEntry.phrase)
+    if (!phraseNorm) continue
+    if (seen.has(phraseNorm)) continue
+    seen.add(phraseNorm)
+    merged.push({ ...ruleEntry, phrase: phraseNorm })
+  }
+
+  // 3. Substring collision: longer phrase wins.
+  const sortedByLength = [...merged].sort((a, b) => b.phrase.length - a.phrase.length)
+  const deduped: KeywordEntry[] = []
+  for (const entry of sortedByLength) {
+    if (deduped.some((kept) => isPhraseSubstring(kept.phrase, entry.phrase))) continue
+    deduped.push(entry)
+  }
+
+  // 4. Sort by weight desc, then alphabetically.
+  deduped.sort((a, b) => b.weight - a.weight || a.phrase.localeCompare(b.phrase))
+
+  return {
+    keywords: deduped.slice(0, POST_RANK_CAP),
+    refinedByLlm: llm.length > 0,
+    unknownPhrases: [...unknownPhrases]
+  }
 }
 
 export function extractJobKeywords(description: string): string[] {
