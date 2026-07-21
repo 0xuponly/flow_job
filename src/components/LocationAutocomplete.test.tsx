@@ -70,18 +70,6 @@ describe('LocationAutocomplete', () => {
     expect(onChange).toHaveBeenCalled();
   });
 
-  it('multiSegment mode only replaces the last comma-separated segment', () => {
-    const onChange = vi.fn();
-    render(<LocationAutocomplete value="Paris, van" onChange={onChange} multiSegment />);
-    const input = screen.getByRole('combobox');
-    fireEvent.keyDown(input, { key: 'ArrowDown' });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    const lastCall = onChange.mock.calls[onChange.mock.calls.length - 1][0] as string;
-    // "Paris, " prefix preserved, segment replaced.
-    expect(lastCall.startsWith('Paris, ')).toBe(true);
-    expect(lastCall).not.toBe('Paris, ');
-  });
-
   it('shows an empty state when no matches exist after focus', () => {
     render(<LocationAutocomplete value="xyzzzz" onChange={() => {}} />);
     fireEvent.focus(screen.getByRole('combobox'));

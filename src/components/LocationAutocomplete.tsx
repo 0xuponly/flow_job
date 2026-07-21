@@ -5,46 +5,38 @@ type Props = {
   value: string;
   onChange: (next: string) => void;
   onPick?: (node: LocationNode) => void;
+  onBlur?: () => void;
+  onKeyDownFreeText?: (text: string) => void;
   placeholder?: string;
   id?: string;
   className?: string;
   ariaLabel?: string;
-  multiSegment?: boolean;
 };
 
 export function LocationAutocomplete({
   value,
   onChange,
   onPick,
+  onBlur,
+  onKeyDownFreeText,
   placeholder,
   id,
   className,
   ariaLabel,
-  multiSegment = false,
 }: Props) {
   const reactId = useId();
   const inputId = id ?? reactId;
   const listboxId = `${inputId}-listbox`;
 
-  // Split value into prefix (everything up to and including the last ", ")
-  // and the current segment being edited. When multiSegment is false, the
-  // whole value is the current segment.
-  const { prefix, currentSegment } = useMemo(() => {
-    if (!multiSegment) return { prefix: '', currentSegment: value };
-    const idx = value.lastIndexOf(', ');
-    if (idx === -1) return { prefix: '', currentSegment: value };
-    return { prefix: value.slice(0, idx + 2), currentSegment: value.slice(idx + 2) };
-  }, [value, multiSegment]);
-
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
 
   const matches = useMemo(() => {
-    if (!currentSegment.trim()) return [];
-    return findByPrefix(currentSegment, 10);
-  }, [currentSegment]);
+    if (!value.trim()) return [];
+    return findByPrefix(value, 10);
+  }, [value]);
 
-  const hasNoMatches = currentSegment.trim().length > 0 && matches.length === 0;
+  const hasNoMatches = value.trim().length > 0 && matches.length === 0;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -63,14 +55,13 @@ export function LocationAutocomplete({
   // Reset highlight when the match set changes.
   useEffect(() => {
     setHighlight(0);
-  }, [currentSegment]);
+  }, [value]);
 
-  const showList = open && currentSegment.trim().length > 0;
+  const showList = open && value.trim().length > 0;
 
   function commitPick(node: LocationNode) {
-    const next = multiSegment ? `${prefix}${node.display()}` : node.display();
-    onChange(next);
     onPick?.(node);
+    onChange(node.display());
     setOpen(false);
   }
 
@@ -86,6 +77,11 @@ export function LocationAutocomplete({
       if (showList && matches[highlight]) {
         e.preventDefault();
         commitPick(matches[highlight]);
+      } else if (value.trim()) {
+        e.preventDefault();
+        onKeyDownFreeText?.(value.trim());
+        onChange('');
+        setOpen(false);
       }
     } else if (e.key === 'Escape') {
       setOpen(false);
@@ -115,6 +111,7 @@ export function LocationAutocomplete({
           setOpen(true);
         }}
         onFocus={() => setOpen(true)}
+        onBlur={() => onBlur?.()}
         onKeyDown={onKeyDown}
         autoComplete="off"
         spellCheck={false}
