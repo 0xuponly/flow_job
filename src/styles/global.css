@@ -1016,6 +1016,7 @@ input[type="checkbox"]:disabled {
   cursor: pointer;
   color: var(--text-muted);
   font-size: 16px;
+  line-height: 1;
   padding: 0;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }

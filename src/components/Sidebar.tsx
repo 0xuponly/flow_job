@@ -120,7 +120,15 @@ export default function Sidebar({ current, onNavigate }: Props) {
             aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             onClick={() => setCollapsed((v) => !v)}
           >
-            <span aria-hidden="true">{collapsed ? '⟹' : '⟸'}</span>
+            {collapsed ? (
+              <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M9 6l6 6-6 6" />
+              </svg>
+            ) : (
+              <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M15 6l-6 6 6 6" />
+              </svg>
+            )}
           </button>
         </Tooltip>
       </div>
