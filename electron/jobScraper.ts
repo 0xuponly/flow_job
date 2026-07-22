@@ -748,6 +748,26 @@ function formatSalary(salary: any): string | undefined {
   return undefined
 }
 
+// Heuristic for LinkedIn's public-JSON-LD description stub. The stub is
+// a short blurb the site shows to logged-out / unscraped viewers, ending
+// in LinkedIn meta text rather than a real JD. We treat it as a stub when
+// any of the known markers appear in the body, or when the text is
+// suspiciously short for a real posting.
+const LINKEDIN_STUB_MARKERS = [
+  /see this and similar jobs on linkedin/i,
+  /sign in to (see this job|apply|view)/i,
+  /create an account to (see|apply|view)/i,
+  /you'll need a linkedin account/i
+]
+const LINKEDIN_STUB_MAX_LENGTH = 400
+
+function isLinkedInStubDescription(desc: string): boolean {
+  if (desc.length <= LINKEDIN_STUB_MAX_LENGTH) {
+    if (LINKEDIN_STUB_MARKERS.some((re) => re.test(desc))) return true
+  }
+  return false
+}
+
 function applyLinkedIn(result: ScrapedJob, html: string): void {
   const titleMatch = html.match(/"jobPostingTitle"\s*:\s*"([^"]+)"/)
   const companyMatch = html.match(/"companyName"\s*:\s*"([^"]+)"/)
@@ -759,7 +779,13 @@ function applyLinkedIn(result: ScrapedJob, html: string): void {
   if (locationMatch) result.location = unescapeJson(locationMatch[1]).trim()
   if (descMatch) {
     const desc = stripHtml(unescapeJson(descMatch[1])).trim()
-    if (desc) result.description = desc
+    // LinkedIn's public JSON-LD ships a truncated stub when the full
+    // description isn't available (login wall, scrape gate, etc.). The
+    // stub always ends in LinkedIn meta ("See this and similar jobs
+    // on LinkedIn.", "Sign in to see this job", etc.) and is far
+    // shorter than a real JD. Reject it so the generic og:description
+    // / meta description fallback below can supply the real body.
+    if (desc && !isLinkedInStubDescription(desc)) result.description = desc
   }
 
   const salaryMatch = html.match(/"salary"[\s\S]*?"text"\s*:\s*"([^"]+)"/i) || html.match(/compensation[\s\S]*?"text"\s*:\s*"([^"]+)"/i)
