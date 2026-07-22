@@ -945,6 +945,6 @@ Return the JSON object now.`
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error'
-    return fallbackWithError(`LLM scorer failed: ${msg}`)
+    return fallbackWithError(msg)
   }
 }

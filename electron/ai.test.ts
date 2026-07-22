@@ -17,7 +17,7 @@ vi.mock('./database', () => ({
 }))
 
 import * as database from './database'
-import { callAI, extractJobKeywordsV3, KeywordExtractionError, RateLimitError } from './ai'
+import { callAI, extractJobKeywordsV3, KeywordExtractionError, RateLimitError, scoreJobFit } from './ai'
 
 describe('extractJobKeywordsV3 (orchestrator)', () => {
   beforeEach(() => {
@@ -171,5 +171,34 @@ describe('callAI failure summary', () => {
     const msg = (caught as Error).message
     const firstLine = msg.split('\n')[0]
     expect(firstLine).toContain('3')
+  })
+})
+
+describe('scoreJobFit error passthrough', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('surfaces the callAI failure with the configured model count and no extra wrapper prefix', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 1, name: 'a', enabled: true } as any,
+      { id: 2, name: 'b', enabled: true } as any,
+      { id: 3, name: 'c', enabled: true } as any,
+      { id: 4, name: 'd', enabled: true } as any
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 429 })))
+    const result = await scoreJobFit({
+      title: 'Senior Engineer',
+      description: 'jd',
+      requirements: null,
+      baseCv: 'cv',
+      cvEduLevel: 0,
+      cvYears: 0
+    })
+    expect(result.source).toBe('heuristic')
+    expect(result.error).toBeDefined()
+    const firstLine = (result.error ?? '').split('\n')[0]
+    expect(firstLine).toContain('4')
+    expect(firstLine).not.toMatch(/^LLM scorer failed/)
   })
 })

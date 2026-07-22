@@ -12,10 +12,10 @@ import { STATUS_COLORS, STATUS_LABELS } from '../types'
 import { EMPLOYMENT_TYPES, EMPLOYMENT_TYPE_LABELS, WORK_MODES, formatEmploymentType } from '../employmentType'
 import { enqueueFitRecompute, isJobInFitQueue } from '../fitQueue'
 
-// fit_last_error / result.error is a multi-line dump ("All AI models
-// failed (rate limited):\n<model>: <error>..."). The toast should
-// show only the first line, with any trailing ":" stripped so the
-// rendered string ends with a sentence terminator (".") instead of
+// fit_last_error / result.error is a multi-line dump ("All N configured
+// AI models are rate limited — try again in a minute:\n<model>: <reason>...").
+// The toast should show only the first line, with any trailing ":" stripped
+// so the rendered string ends with a sentence terminator (".") instead of
 // a dangling colon. The full text is still on the job for inspection.
 function toastErrorSummary(raw: string): string {
   return raw.split('\n')[0].replace(/:+\s*$/, '')
