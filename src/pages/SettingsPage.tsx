@@ -80,7 +80,6 @@ export default function SettingsPage() {
   const [boards, setBoards] = useState<{ name: string; useBrowser: boolean; enabled: boolean }[]>([])
   const [disabled, setDisabled] = useState<Set<string>>(new Set())
   const [boardsSaving, setBoardsSaving] = useState(false)
-  const [relinkRunning, setRelinkRunning] = useState(false)
 
   // Lazy-load the boards list the first time the user opens the
   // Boards tab. Cheaper than loading on every Settings mount, and
@@ -1369,47 +1368,6 @@ export default function SettingsPage() {
             <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
               How many manually-deleted low-fit jobs to remember so the scanner doesn't re-add them. Older entries are dropped when this cap is exceeded.
             </p>
-          </div>
-
-          <div className="section-title">LinkedIn stub descriptions</div>
-
-          <div className="card" style={{ marginBottom: 12 }}>
-            <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
-              Imports made before the scraper learned to reject LinkedIn's paywall stub
-              (commit <code>ba2de25</code>) may still hold a 1-paragraph stub like
-              "Posted 1:47 AM. … See this and similar jobs on LinkedIn." in the
-              description field. This re-fetches every LinkedIn row whose description
-              still matches that pattern and writes the real body. Each match triggers
-              a network call, so this only runs on demand.
-            </p>
-            <button
-              className="btn"
-              disabled={relinkRunning}
-              onClick={async () => {
-                if (!window.confirm('Re-scrape every LinkedIn row whose description still matches the paywall stub? This will trigger one network request per match and overwrite each row\'s description.')) return
-                setRelinkRunning(true)
-                try {
-                  const result = await api.relinkLinkedInStubs()
-                  if (result.alreadyMigrated) {
-                    notify('Already rescaned — the flag is set. Clear it from the data file if you want to re-run.', 'info', 6000)
-                  } else {
-                    const parts = [`${result.updated} updated`]
-                    if (result.skipped) parts.push(`${result.skipped} still gated`)
-                    if (result.errors) parts.push(`${result.errors} errors`)
-                    notify(`LinkedIn rescrape done. ${parts.join(', ')} (${result.scanned} scanned).`, result.errors ? 'warning' : 'success', 6000)
-                    // Force a reload so every list view picks up the
-                    // rewritten descriptions without a manual refresh.
-                    setTimeout(() => window.location.reload(), 1200)
-                  }
-                } catch (err) {
-                  notify(`LinkedIn rescrape failed: ${err instanceof Error ? err.message : 'unknown error'}`, 'error', 8000)
-                } finally {
-                  setRelinkRunning(false)
-                }
-              }}
-            >
-              {relinkRunning ? 'Rescanning…' : 'Rescan LinkedIn descriptions'}
-            </button>
           </div>
 
           <div className="section-title" style={{ color: 'var(--danger)' }}>Danger zone</div>

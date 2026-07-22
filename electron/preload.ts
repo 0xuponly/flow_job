@@ -86,7 +86,6 @@ export interface Api {
   clearSeenUrls: () => Promise<void>
   clearAllData: () => Promise<void>
   retrofitLocations: () => Promise<{ updated: number; total: number }>
-  relinkLinkedInStubs: () => Promise<{ scanned: number; updated: number; skipped: number; errors: number; alreadyMigrated: boolean }>
   listAIQueue: () => Promise<AIQueueItem[]>
   listBoards: () => Promise<{ name: string; useBrowser: boolean; enabled: boolean }[]>
   getBoardHealth: () => Promise<Record<string, number[]>>
@@ -198,7 +197,6 @@ const api: Api = {
   clearSeenUrls: () => ipcRenderer.invoke('db:clearSeenUrls'),
   clearAllData: () => ipcRenderer.invoke('db:clearAllData'),
   retrofitLocations: () => ipcRenderer.invoke('db:retrofitLocations'),
-  relinkLinkedInStubs: () => ipcRenderer.invoke('db:relinkLinkedInStubs'),
   listAIQueue: () => ipcRenderer.invoke('aiQueue:list'),
   listBoards: () => ipcRenderer.invoke('boards:list'),
   getBoardHealth: () => ipcRenderer.invoke('boards:health'),

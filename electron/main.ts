@@ -867,18 +867,6 @@ ${htmlBody}
     return result
   })
 
-  // Re-scrape LinkedIn rows whose description still holds the
-  // paywall stub. User-initiated from Settings → Scan Memory
-  // because every match triggers a network call; we'd rather the
-  // user accept the latency than auto-blast N HTTP requests on
-  // launch. Gated by the linkedin_stub_rescraped setting.
-  ipcMain.handle('db:relinkLinkedInStubs', async () => {
-    return db.relinkLinkedInStubDescriptions(async (url: string) => {
-      const scraped = await scrapeJobFromUrl(url)
-      return { description: scraped.description ?? undefined }
-    })
-  })
-
   // Company blacklist
   ipcMain.handle('blacklist:list', () => db.listBlacklistedCompanies())
   ipcMain.handle('blacklist:add', (_e, name: string) => db.addBlacklistedCompany(name))
