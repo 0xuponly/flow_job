@@ -17,7 +17,7 @@ vi.mock('./database', () => ({
 }))
 
 import * as database from './database'
-import { extractJobKeywordsV3, KeywordExtractionError } from './ai'
+import { callAI, extractJobKeywordsV3, KeywordExtractionError, RateLimitError } from './ai'
 
 describe('extractJobKeywordsV3 (orchestrator)', () => {
   beforeEach(() => {
@@ -127,5 +127,49 @@ describe('KeywordExtractionError', () => {
     }), { status: 200 })))
     const { extractJobKeywordsLLM } = await import('./ai')
     await expect(extractJobKeywordsLLM('any jd')).rejects.toBeInstanceOf(KeywordExtractionError)
+  })
+})
+
+describe('callAI failure summary', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('throws RateLimitError whose first line names the configured model count when all are rate limited', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 1, name: 'a', enabled: true } as any,
+      { id: 2, name: 'b', enabled: true } as any,
+      { id: 3, name: 'c', enabled: true } as any,
+      { id: 4, name: 'd', enabled: true } as any,
+      { id: 5, name: 'e', enabled: true } as any
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 429 })))
+    let caught: unknown
+    try {
+      await callAI('sys', 'user')
+    } catch (err) { caught = err }
+    expect(caught).toBeInstanceOf(RateLimitError)
+    const msg = (caught as Error).message
+    const firstLine = msg.split('\n')[0]
+    expect(firstLine).toContain('5')
+    expect(firstLine.toLowerCase()).toContain('rate limit')
+  })
+
+  it('throws Error whose first line names the configured model count when all fail without rate limiting', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 1, name: 'a', enabled: true } as any,
+      { id: 2, name: 'b', enabled: true } as any,
+      { id: 3, name: 'c', enabled: true } as any
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 500 })))
+    let caught: unknown
+    try {
+      await callAI('sys', 'user')
+    } catch (err) { caught = err }
+    expect(caught).toBeInstanceOf(Error)
+    expect(caught).not.toBeInstanceOf(RateLimitError)
+    const msg = (caught as Error).message
+    const firstLine = msg.split('\n')[0]
+    expect(firstLine).toContain('3')
   })
 })

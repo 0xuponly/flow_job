@@ -121,7 +121,7 @@ interface CallAIResult {
  * - If all fail and at least one returned 429, throws RateLimitError.
  * - If all fail for other reasons, throws Error with collected error messages.
  */
-async function callAI(
+export async function callAI(
   systemPrompt: string,
   userPrompt: string,
   temperature = 0.7,
@@ -204,10 +204,10 @@ async function callAI(
   }
 
   if (!content && rateLimited) {
-    throw new RateLimitError(`All AI models failed (rate limited):\n${errors.join('\n')}`)
+    throw new RateLimitError(`All ${models.length} configured AI models are rate limited — try again in a minute:\n${errors.join('\n')}`)
   }
   if (!content) {
-    throw new Error(`All AI models failed:\n${errors.join('\n')}`)
+    throw new Error(`All ${models.length} configured AI models failed — check Settings → Models:\n${errors.join('\n')}`)
   }
 
   return { content, modelUsed, rateLimited: false, errors: [] }
