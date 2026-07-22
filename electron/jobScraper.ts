@@ -783,9 +783,28 @@ function applyLinkedIn(result: ScrapedJob, html: string): void {
     // description isn't available (login wall, scrape gate, etc.). The
     // stub always ends in LinkedIn meta ("See this and similar jobs
     // on LinkedIn.", "Sign in to see this job", etc.) and is far
-    // shorter than a real JD. Reject it so the generic og:description
-    // / meta description fallback below can supply the real body.
+    // shorter than a real JD. Reject it so we fall through to the
+    // description__text--rich div / og:description fallback below.
     if (desc && !isLinkedInStubDescription(desc)) result.description = desc
+  }
+
+  // For LinkedIn specifically: the public job-view page renders the
+  // real body into <div class="description__text--rich">. When
+  // LinkedIn's paywall / scrape gate is up, that div is *also* gated
+  // (the body becomes "Posted …" + the same paywall stub as the meta
+  // tags). We prefer this div over the JSON-LD description because
+  // it is the rendered real body, and we still run the stub check so
+  // a gated div doesn't silently re-introduce the same stub.
+  // Critically this runs even when JSON-LD already wrote a value, so
+  // a stub set by the generic applyJobPosting() path is overridden.
+  const bodyMatch = html.match(
+    /<div[^>]*class=["'][^"']*description__text--rich[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*<div[^>]*class=["'][^"']*description__job-criteria/i
+  )
+  if (bodyMatch) {
+    const desc = stripHtml(bodyMatch[1]).trim()
+    if (desc && !isLinkedInStubDescription(desc) && desc.length > 200) {
+      result.description = desc
+    }
   }
 
   const salaryMatch = html.match(/"salary"[\s\S]*?"text"\s*:\s*"([^"]+)"/i) || html.match(/compensation[\s\S]*?"text"\s*:\s*"([^"]+)"/i)
@@ -1844,12 +1863,30 @@ function applyGeneric(result: ScrapedJob, html: string, pageUrl: string): void {
   }
 
   if (!result.description) {
+    // LinkedIn ships the same paywall stub in og:description and
+    // <meta name="description"> when the full body is gated. We
+    // already block the JSON-LD variant (ba2de25) and pull the real
+    // body from description__text--rich above; this is the safety
+    // net so the stub can never reach result.description from any
+    // meta field when the host is LinkedIn.
+    const isLinkedIn = (() => {
+      try { return new URL(pageUrl).hostname.includes('linkedin.com') } catch { return false }
+    })()
     const ogDesc = extractMeta(html, 'og:description')
-    if (ogDesc && ogDesc.length > 100) result.description = stripHtml(ogDesc).trim()
+    if (ogDesc && ogDesc.length > 100
+        && !(isLinkedIn && isLinkedInStubDescription(ogDesc))) {
+      result.description = stripHtml(ogDesc).trim()
+    }
   }
   if (!result.description) {
+    const isLinkedIn = (() => {
+      try { return new URL(pageUrl).hostname.includes('linkedin.com') } catch { return false }
+    })()
     const metaDesc = extractMeta(html, 'description')
-    if (metaDesc && metaDesc.length > 100) result.description = stripHtml(metaDesc).trim()
+    if (metaDesc && metaDesc.length > 100
+        && !(isLinkedIn && isLinkedInStubDescription(metaDesc))) {
+      result.description = stripHtml(metaDesc).trim()
+    }
   }
   if (!result.description) {
     const contentDiv = html.match(/<div[^>]*class="[^"]*(?:job-description|jobDescription|posting-description|description|content)[^"]*"[^>]*>([\s\S]*?)<\/div>/i)
