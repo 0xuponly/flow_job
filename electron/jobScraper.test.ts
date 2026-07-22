@@ -22,8 +22,15 @@ import { isLinkedInStubDescription, scrapeJobFromUrl } from './jobScraper'
 // the public LinkedIn job-view page when the full JD is gated behind
 // the LinkedIn paywall / scrape gate: a short meta description stub
 // pointing at the LinkedIn account wall, plus the real body sitting
-// in <div class="description__text--rich">. This is the exact shape
-// the user reported on 2026-07-22 for job 4398322407 (Instacart).
+// in <div class="description__text--rich">. The rich div wraps the
+// body in a <section class="show-more-less-html"> (LinkedIn's
+// "Show more" / "Show less" collapse) followed by a sibling
+// <div class="description__job-criteria-list"> — the show-more-less
+// button sits BETWEEN the rich div's </div> and the criteria list,
+// which is why the old extractor (anchored on a sibling
+// description__job-criteria div) produced zero matches. This is the
+// exact shape the user reported on 2026-07-22 for job 4398322407
+// (Instacart) — extracted from the actual fetched page.
 const STUB_META_HTML = `<!doctype html>
 <html>
 <head>
@@ -34,15 +41,20 @@ const STUB_META_HTML = `<!doctype html>
 </head>
 <body>
   <div class="description__text description__text--rich">
-    <p>About the job</p>
-    <p>We&#39;re transforming the grocery industry</p>
-    <p>At Instacart, we invite the world to share love through food because we believe everyone should have access to the food they love and more time to enjoy it together.</p>
-    <p>About The Role</p>
-    <p>We are seeking a highly skilled and intellectually curious analyst to shape the future of financial data at Instacart. The successful candidate will join the Financial Data Analytics team.</p>
-    <p>Key Responsibilities</p>
-    <ul><li>Bridge Data &amp; Business Needs</li><li>Own Data Initiatives End-to-End</li></ul>
-    <p>CAN $126,000—$133,000 CAD</p>
+    <section class="show-more-less-html" data-max-lines="5">
+      <div class="show-more-less-html__markup show-more-less-html__markup--clamp-after-5">
+        <p>About the job</p>
+        <p>We&#39;re transforming the grocery industry</p>
+        <p>At Instacart, we invite the world to share love through food because we believe everyone should have access to the food they love and more time to enjoy it together.</p>
+        <p>About The Role</p>
+        <p>We are seeking a highly skilled and intellectually curious analyst to shape the future of financial data at Instacart. The successful candidate will join the Financial Data Analytics team.</p>
+        <p>Key Responsibilities</p>
+        <ul><li>Bridge Data &amp; Business Needs</li><li>Own Data Initiatives End-to-End</li></ul>
+        <p>CAN $126,000—$133,000 CAD</p>
+      </div>
+    </section>
   </div>
+  <button class="show-more-less-html__button show-more-less-button" data-tracking-control-name="public_jobs_show-more-html-btn">Show more</button>
   <div class="description__job-criteria-list">criteria goes here</div>
 </body>
 </html>`

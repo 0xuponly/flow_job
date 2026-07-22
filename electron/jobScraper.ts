@@ -794,19 +794,28 @@ function applyLinkedIn(result: ScrapedJob, html: string): void {
   }
 
   // For LinkedIn specifically: the public job-view page renders the
-  // real body into <div class="description__text--rich">. When
-  // LinkedIn's paywall / scrape gate is up, that div is *also* gated
-  // (the body becomes "Posted …" + the same paywall stub as the meta
-  // tags). We prefer this div over the JSON-LD description because
-  // it is the rendered real body, and we still run the stub check so
-  // a gated div doesn't silently re-introduce the same stub.
-  // Critically this runs even when JSON-LD already wrote a value, so
-  // a stub set by the generic applyJobPosting() path is overridden.
-  const bodyMatch = html.match(
-    /<div[^>]*class=["'][^"']*description__text--rich[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*<div[^>]*class=["'][^"']*description__job-criteria/i
-  )
-  if (bodyMatch) {
-    const desc = stripHtml(bodyMatch[1]).trim()
+  // real body into <div class="description__text--rich">. Two real
+  // shapes observed on the public page:
+  //   1) Rich div wraps a <section class="show-more-less-html"> that
+  //      holds the body plus a "Show more" button. Anchor: the
+  //      </section></div> pair.
+  //   2) Rich div is not wrapped — just a flat div with body. Anchor:
+  //      the </div> directly, OR the next sibling <div
+  //      class="description__...">.
+  // The old regex required the immediate </div><div ...criteria>
+  // sibling, which the show-more-less button broke (the button is
+  // the only thing between the rich div's </div> and the criteria
+  // list). We try (1) first, then (2). The stub check still runs so
+  // a gated rich div never re-introduces the same paywall stub.
+  const richMatch =
+    html.match(/<div[^>]*class=["'][^"']*description__text--rich[^"']*["'][^>]*>([\s\S]*?)<\/section>\s*<\/div>/i) ||
+    html.match(/<div[^>]*class=["'][^"']*description__text--rich[^"']*["'][^>]*>([\s\S]*?)<\/div>/i)
+  if (richMatch) {
+    let desc = stripHtml(richMatch[1]).trim()
+    // The show-more-less wrapper appends "Show more / Show less"
+    // toggle text after the body; strip the trailing toggle so we
+    // don't write that into the description field.
+    desc = desc.replace(/\s*Show more\s*Show less\s*$/i, '').trim()
     if (desc && !isLinkedInStubDescription(desc) && desc.length > 200) {
       result.description = desc
     }
