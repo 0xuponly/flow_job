@@ -1044,12 +1044,12 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
               <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {cv && (
                   <button className="btn btn-secondary btn-sm" onClick={() => handleViewDoc(cv)}>
-                    View CV{cv.model_used ? ` (${cv.model_used})` : ''}
+                    View CV
                   </button>
                 )}
                 {coverLetter && (
                   <button className="btn btn-secondary btn-sm" onClick={() => handleViewDoc(coverLetter)}>
-                    View cover letter{coverLetter.model_used ? ` (${coverLetter.model_used})` : ''}
+                    View cover letter
                   </button>
                 )}
               </div>
