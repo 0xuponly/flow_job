@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, beforeAll, vi } from 'vitest'
 import { render, act, fireEvent } from '@testing-library/react'
 import JobsPage from './JobsPage'
+import { api } from '../api'
 
 // jsdom doesn't implement ResizeObserver; the useLayoutEffect in JobsPage
 // constructs one. Stub it so the effect runs.
@@ -138,5 +139,46 @@ describe('JobsPage sticky thead', () => {
     // code writes "0px". The broken code leaves the sentinel.
     const offsetAfterBack = document.documentElement.style.getPropertyValue('--jobs-sticky-offset')
     expect(offsetAfterBack).not.toBe('STALE_BEFORE_BACK')
+  })
+})
+
+describe('JobsPage auto-fit-recompute', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // Re-establish the default listJobs mock after clearAllMocks wiped it.
+    ;(api.listJobs as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: 1, title: 'A', company: 'Acme', location: 'Vancouver, CA', status: 'new', score: 0.5, date_posted: null, last_updated: '2026-01-01', salary_range: null, url: '', description: '', source: '', notes: '' }
+    ])
+  })
+
+  it('does not auto-fire batchScore when mounted with unscored jobs', async () => {
+    // One unscored job: score is null. The legacy useEffect would have
+    // fired api.batchScore() in response to jobs.length changing. After
+    // the fix, the effect is gone, so batchScore must NOT be called.
+    ;(api.listJobs as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      {
+        id: 1, title: 'X', company: 'Y', status: 'sourced', score: null,
+        fit_breakdown: null, fit_score_version: null, fit_last_error: null,
+        fit_error_toasted: null, notes: null, date_posted: null,
+        application_deadline: null, last_updated: null, created_at: '',
+        updated_at: '', match_grade: null, tailor_ms_cv: null,
+        tailor_ms_cl: null, tailor_generated_at: null,
+        tailor_last_error: null, tailor_error_toasted: null,
+        submitted_at: null, response_at: null, location: null, url: null,
+        description: null, salary_range: null, requirements: null,
+        application_requirements: null, hiring_manager: null,
+        employment_type: null, work_mode: null, source: null,
+        fit_rationale: null
+      }
+    ])
+
+    await act(async () => {
+      render(<JobsPage />)
+    })
+
+    // Let any effects run.
+    await act(async () => { /* drain */ })
+
+    expect(api.batchScore).not.toHaveBeenCalled()
   })
 })

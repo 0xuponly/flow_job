@@ -968,17 +968,6 @@ export default function JobsPage() {
   }, [])
 
   useEffect(() => {
-    if (jobs.length > 0 && jobs.some((j) => j.score == null)) {
-      api.batchScore().then((res) => {
-        if (res.skipped && res.skipped.length > 0) {
-          notify(`${res.skipped.length} job${res.skipped.length === 1 ? '' : 's'} skipped (deleted mid-scan)`, 'info')
-        }
-        loadJobs()
-      })
-    }
-  }, [jobs.length])
-
-  useEffect(() => {
     if (showAddLink) {
       setLinkUrl('')
       setLinkError('')
