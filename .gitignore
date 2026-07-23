@@ -8,8 +8,9 @@ docs/*
 .superpowers/
 *.tsbuildinfo
 
-# Claude Code hook config (local-only)
+# Claude Code hook config + agent instruction file (local-only)
 .openclaude/
+CLAUDE.md
 
 # Log files (audit, scraper, hook) — could contain user URLs and job content
 *.log
