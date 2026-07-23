@@ -1380,11 +1380,11 @@ app.whenReady().then(() => {
 
   // v4 retrofit (2026-07-23): the writer's 1-part branch no longer
   // appends the defaultCountry when the input is already a known
-  // full country name (so "Canada" + user_country "CA" doesn't
-  // round-trip to "Canada, CA"). Pre-existing rows that were
-  // written by the older writer still hold the redundant trailing
-  // 2-letter code — collapse them back to the bare country name.
-  // Gated by locations_normalized_v4 so it runs once per store.
+  // full country name. Pre-existing rows that were written by the
+  // older writer still hold the redundant trailing 2-letter code.
+  // Note: the v4 nameAsCC check only matched 2-letter tokens, so
+  // the first v4 run was a no-op for "Canada, CA"-style rows. The
+  // v5 retrofit below re-runs the work with the fixed lookup.
   if (!db.hasLocationsNormalizedV4() && db.listJobs().length > 0) {
     try {
       const result = db.retrofitLocationsV4()
@@ -1393,6 +1393,26 @@ app.whenReady().then(() => {
       }
     } catch (err) {
       log.startup.error('Location retrofit v4 failed:', err)
+    }
+  }
+
+  // v5 retrofit (2026-07-23): follow-up to v4. The v4 retrofit's
+  // nameAsCC check only matched 2-letter tokens (the
+  // canonicalizeCountry shortcut) and skipped full country names
+  // like "Canada" that the COUNTRIES map would resolve — so the
+  // first v4 run set v4='1' without rewriting any rows, and the
+  // gate would have skipped subsequent runs. v5 re-runs the
+  // collapse with the fixed lookup so pre-existing "Canada, CA"
+  // / "United States, US" rows actually get rewritten. Gated by
+  // locations_normalized_v5; once set, never runs again.
+  if (!db.hasLocationsNormalizedV5() && db.listJobs().length > 0) {
+    try {
+      const result = db.retrofitLocationsV5()
+      if (result.updated > 0) {
+        log.startup.info(`Collapsed ${result.updated}/${result.total} redundant country suffixes (v5).`)
+      }
+    } catch (err) {
+      log.startup.error('Location retrofit v5 failed:', err)
     }
   }
 

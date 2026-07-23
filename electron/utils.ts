@@ -158,7 +158,7 @@ function canonicalizeRegion(token: string): string | null {
   return null
 }
 
-function canonicalizeCountry(token: string): string | null {
+export function canonicalizeCountry(token: string): string | null {
   const cleaned = normalizeToken(token)
   if (!cleaned) return null
   const upper = cleaned.toUpperCase()

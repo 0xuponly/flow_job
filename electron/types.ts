@@ -201,6 +201,7 @@ export interface Settings {
   locations_normalized_v2: string
   locations_normalized_v3: string
   locations_normalized_v4: string
+  locations_normalized_v5: string
   employment_type_normalized: string
   work_mode_normalized: string
   backup_path: string

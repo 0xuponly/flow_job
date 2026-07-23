@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { cleanDescription, isLinkedInStubDescription, scrapePostingDateFromUrl } from './jobScraper'
 import { getOrCreateDek, encryptJson, decryptJson, deleteDek, encryptionMode } from './secureStore'
-import { formatLocation, decodeEntities, normalizeTitle, normalizeCompany, normalizeSalary } from './utils'
+import { formatLocation, canonicalizeCountry, decodeEntities, normalizeTitle, normalizeCompany, normalizeSalary } from './utils'
 import { normalizeEmploymentType, normalizeWorkMode } from './employmentType'
 import { matchGradeFor } from './matchGrade'
 import type {
@@ -102,6 +102,7 @@ function defaultStore(): Store {
       locations_normalized_v2: '',
       locations_normalized_v3: '',
       locations_normalized_v4: '',
+      locations_normalized_v5: '',
       locations_array_migrated_v1: '',
       employment_type_normalized: '',
       work_mode_normalized: '',
@@ -1487,6 +1488,14 @@ export function markLocationsNormalizedV3(): void {
 // collapses pre-existing rows that have the redundant trailing
 // 2-letter code back to the bare country name. Idempotent — gated
 // on a distinct flag so it runs once per store.
+//
+// v5 gate: 2026-07-23 follow-up. The v4 retrofit's nameAsCC check
+// had a bug — it only matched when the leading token was 2 letters
+// (the canonicalizeCountry shortcut), not when it was a full
+// country name like "Canada" that the COUNTRIES map would resolve.
+// So on the first v4 run the gate set v4='1' with no rows changed,
+// and subsequent restarts skipped the work. v5 re-runs the collapse
+// with the fixed lookup so pre-existing rows actually get rewritten.
 export function hasLocationsNormalizedV4(): boolean {
   return loadStore().settings.locations_normalized_v4 === '1'
 }
@@ -1494,6 +1503,16 @@ export function hasLocationsNormalizedV4(): boolean {
 export function markLocationsNormalizedV4(): void {
   const s = loadStore()
   s.settings.locations_normalized_v4 = '1'
+  persistStore()
+}
+
+export function hasLocationsNormalizedV5(): boolean {
+  return loadStore().settings.locations_normalized_v5 === '1'
+}
+
+export function markLocationsNormalizedV5(): void {
+  const s = loadStore()
+  s.settings.locations_normalized_v5 = '1'
   persistStore()
 }
 
@@ -1781,6 +1800,32 @@ export function retrofitLocationsV4(): { updated: number; total: number } {
 }
 
 /**
+ * v5 retrofit (2026-07-23): re-runs the v4 collapse with the fixed
+ * `canonicalizeCountry` lookup. The v4 retrofit's nameAsCC check
+ * only matched when the leading token was 2 letters (the
+ * canonicalizeCountry shortcut), so full country names like
+ * "Canada" were skipped and v4 set the gate with no rows
+ * rewritten. v5 calls the same `stripRedundantCountrySuffix` (now
+ * using the full lookup) and is gated on a distinct flag so it
+ * runs exactly once.
+ */
+export function retrofitLocationsV5(): { updated: number; total: number } {
+  const s = loadStore()
+  let updated = 0
+  for (const j of s.jobs) {
+    const collapsed = stripRedundantCountrySuffix(j.location)
+    if (collapsed !== j.location) {
+      j.location = collapsed
+      j.updated_at = now()
+      updated++
+    }
+  }
+  s.settings.locations_normalized_v5 = '1'
+  persistStore()
+  return { updated, total: s.jobs.length }
+}
+
+/**
  * Collapse "Canada, CA" / "United States, US" / "Germany, DE" to the
  * bare country name when the trailing 2-letter code matches what the
  * writer's `canonicalizeCountry` would resolve the leading name to.
@@ -1797,12 +1842,13 @@ function stripRedundantCountrySuffix(location: string | null | undefined): strin
   if (parts.length !== 2) return location
   const [name, suffix] = parts
   if (suffix.length !== 2) return location
-  // 2-letter name → treat as the country code itself. Otherwise,
-  // lower-case and check against the writer's country map. (This
-  // is the same shortcut canonicalizeCountry in utils.ts uses; we
-  // re-implement the lookup inline so database.ts doesn't need to
-  // import a non-exported helper.)
-  const nameAsCC = name.length === 2 ? name.toUpperCase() : null
+  // Resolve the leading name via the writer's full-name → 2-letter
+  // map (handles "Canada" → "CA", "United States" → "US", etc.).
+  // Match the resolved code against the trailing 2-letter token;
+  // when they agree, the shape is redundant and we strip the
+  // suffix. The 2-letter shortcut in canonicalizeCountry also
+  // catches bare 2-letter codes like "USA" → "US".
+  const nameAsCC = canonicalizeCountry(name)
   if (nameAsCC && nameAsCC === suffix.toUpperCase()) return name
   return location
 }
