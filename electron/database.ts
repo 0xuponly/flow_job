@@ -101,6 +101,7 @@ function defaultStore(): Store {
       locations_normalized: '',
       locations_normalized_v2: '',
       locations_normalized_v3: '',
+      locations_normalized_v4: '',
       locations_array_migrated_v1: '',
       employment_type_normalized: '',
       work_mode_normalized: '',
@@ -1479,6 +1480,23 @@ export function markLocationsNormalizedV3(): void {
   persistStore()
 }
 
+// v4 gate: introduced 2026-07-23. The writer's 1-part branch was
+// hardened to NOT append the defaultCountry when the input is
+// already a known full country name (so "Canada" + user_country
+// "CA" no longer round-trips to "Canada, CA"). The v4 retrofit
+// collapses pre-existing rows that have the redundant trailing
+// 2-letter code back to the bare country name. Idempotent — gated
+// on a distinct flag so it runs once per store.
+export function hasLocationsNormalizedV4(): boolean {
+  return loadStore().settings.locations_normalized_v4 === '1'
+}
+
+export function markLocationsNormalizedV4(): void {
+  const s = loadStore()
+  s.settings.locations_normalized_v4 = '1'
+  persistStore()
+}
+
 export function hasSalaryNormalized(): boolean {
   return loadStore().settings.salary_normalized === '1'
 }
@@ -1730,6 +1748,63 @@ export function retrofitLocations(): { updated: number; total: number } {
   s.settings.locations_normalized_v3 = '1'
   persistStore()
   return { updated, total: s.jobs.length }
+}
+
+/**
+ * v4 retrofit (2026-07-23): the writer's 1-part branch was hardened
+ * to NOT append the defaultCountry when the input is already a known
+ * full country name. Rows persisted before this fix (when the writer
+ * would write "Canada, CA" for a 1-part "Canada" input with
+ * user_country=CA) survive in the store as the redundant shape. The
+ * renderer's condenseLocation would collapse them back to "Canada"
+ * for display, but the underlying stored value still has the trailing
+ * 2-letter code that downstream consumers (multi-location scan,
+ * location filter) interpret as a country — so the redundancy bleeds
+ * into those paths too. Strip the trailing code when the leading
+ * part is a known country name. Idempotent — gated on a distinct
+ * v4 flag so it runs once per store.
+ */
+export function retrofitLocationsV4(): { updated: number; total: number } {
+  const s = loadStore()
+  let updated = 0
+  for (const j of s.jobs) {
+    const collapsed = stripRedundantCountrySuffix(j.location)
+    if (collapsed !== j.location) {
+      j.location = collapsed
+      j.updated_at = now()
+      updated++
+    }
+  }
+  s.settings.locations_normalized_v4 = '1'
+  persistStore()
+  return { updated, total: s.jobs.length }
+}
+
+/**
+ * Collapse "Canada, CA" / "United States, US" / "Germany, DE" to the
+ * bare country name when the trailing 2-letter code matches what the
+ * writer's `canonicalizeCountry` would resolve the leading name to.
+ * Mirrors the writer's 2-letter shortcut: a 2-letter token is treated
+ * as the country code directly; a longer name is matched against the
+ * writer's COUNTRIES map (case-insensitive). Anything that doesn't
+ * fit the "<Name>, <CC>" pattern (3-part "City, REGION, CC", bare
+ * "Canada" without a suffix, unresolvable trailing codes) is
+ * returned as-is.
+ */
+function stripRedundantCountrySuffix(location: string | null | undefined): string | null {
+  if (!location) return location
+  const parts = location.split(',').map((p) => p.trim())
+  if (parts.length !== 2) return location
+  const [name, suffix] = parts
+  if (suffix.length !== 2) return location
+  // 2-letter name → treat as the country code itself. Otherwise,
+  // lower-case and check against the writer's country map. (This
+  // is the same shortcut canonicalizeCountry in utils.ts uses; we
+  // re-implement the lookup inline so database.ts doesn't need to
+  // import a non-exported helper.)
+  const nameAsCC = name.length === 2 ? name.toUpperCase() : null
+  if (nameAsCC && nameAsCC === suffix.toUpperCase()) return name
+  return location
 }
 
 /**

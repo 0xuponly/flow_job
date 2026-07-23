@@ -10,6 +10,18 @@ describe('formatLocation — country-last contract', () => {
     expect(formatLocation('Vancouver', '')).toBeNull()
   })
 
+  // 1-part input that is already a known country name should NOT
+  // have the defaultCountry appended — "Canada" + user_country "CA"
+  // would otherwise round-trip to "Canada, CA", which the
+  // renderer's condenseLocation collapses back to "Canada" anyway.
+  // Return the input as-is; the renderer's currency decider has a
+  // long-name fallback that recovers the 2-letter code.
+  it('1-part input that is a known country name returns the name verbatim (no defaultCountry append)', () => {
+    expect(formatLocation('Canada', 'CA')).toBe('Canada')
+    expect(formatLocation('United States', 'US')).toBe('United States')
+    expect(formatLocation('United Kingdom', 'GB')).toBe('United Kingdom')
+  })
+
   it('2-part input where second token is a known 2-letter country code produces City, CC', () => {
     expect(formatLocation('Vancouver, CA', 'US')).toBe('Vancouver, CA')
   })

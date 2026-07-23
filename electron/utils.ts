@@ -190,9 +190,18 @@ function formatSingleLocation(raw: string, defaultCountry: string): string {
   const defaultCC = canonicalizeCountry(defaultCountry)
 
   if (parts.length === 1) {
-    const city = parts[0]
+    const token = parts[0]
+    // If the single token is already a known full country name
+    // ("Canada", "United States"), don't append the default
+    // country — the result ("Canada, CA") is redundant and the
+    // renderer's condenseLocation would just round-trip it back
+    // to "Canada" in the Location column. Return the country
+    // name as the user typed it; the renderer's currency decider
+    // has a long-name fallback that recovers the 2-letter code
+    // for the Salary column.
+    if (canonicalizeCountry(token)) return token
     if (!defaultCC) return ''  // Unknown — no country can be determined.
-    return `${city}, ${defaultCC}`
+    return `${token}, ${defaultCC}`
   }
 
   if (parts.length === 2) {

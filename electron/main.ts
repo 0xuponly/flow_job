@@ -1378,6 +1378,24 @@ app.whenReady().then(() => {
     }
   }
 
+  // v4 retrofit (2026-07-23): the writer's 1-part branch no longer
+  // appends the defaultCountry when the input is already a known
+  // full country name (so "Canada" + user_country "CA" doesn't
+  // round-trip to "Canada, CA"). Pre-existing rows that were
+  // written by the older writer still hold the redundant trailing
+  // 2-letter code — collapse them back to the bare country name.
+  // Gated by locations_normalized_v4 so it runs once per store.
+  if (!db.hasLocationsNormalizedV4() && db.listJobs().length > 0) {
+    try {
+      const result = db.retrofitLocationsV4()
+      if (result.updated > 0) {
+        log.startup.info(`Collapsed ${result.updated}/${result.total} redundant country suffixes.`)
+      }
+    } catch (err) {
+      log.startup.error('Location retrofit v4 failed:', err)
+    }
+  }
+
   // One-shot: copy the legacy job_search_location string into the
   // job_search_locations array, then clear the old field. Gated by a
   // flag, idempotent, runs once per store.
