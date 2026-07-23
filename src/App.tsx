@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import Sidebar from './components/Sidebar'
 import Notifications from './components/Notifications'
 import ErrorBoundary from './components/ErrorBoundary'
+import NotificationDrawer from './notifications/NotificationDrawer'
 import Dashboard from './pages/Dashboard'
 import JobsPage from './pages/JobsPage'
 import { ApplyQueuePage } from './pages/ApplyQueuePage'
@@ -60,6 +61,7 @@ export default function App() {
         </main>
         <Notifications />
       </div>
+      <NotificationDrawer />
     </>
   )
 }

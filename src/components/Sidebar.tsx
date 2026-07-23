@@ -5,6 +5,8 @@ import { usePersistedState } from '../persistedState'
 import RefreshIcon from './RefreshIcon'
 import ThemeToggle from '../theme/ThemeToggle'
 import Tooltip from './Tooltip'
+import { useNotifications } from '../notifications/NotificationsProvider'
+import BellIcon from '../notifications/BellIcon'
 
 interface Props {
   current: Page
@@ -30,6 +32,7 @@ export default function Sidebar({ current, onNavigate }: Props) {
   // resolution. Multiple concurrent clicks stack — the indicator stays
   // visible until the count returns to zero.
   const [fitPending, setFitPending] = useState(0)
+  const { open, hasUnread } = useNotifications()
   const [collapsed, setCollapsed] = usePersistedState<boolean>('sidebarCollapsed', false)
 
   useEffect(() => {
@@ -106,6 +109,16 @@ export default function Sidebar({ current, onNavigate }: Props) {
         </Tooltip>
       )}
       <div className="sidebar-bottom-actions">
+        <Tooltip label="Notification center">
+          <button
+            type="button"
+            className="sidebar-action"
+            aria-label="Open notification center"
+            onClick={open}
+          >
+            <BellIcon size={16} badge={hasUnread} />
+          </button>
+        </Tooltip>
         <ThemeToggle className="sidebar-action" />
         <Tooltip label="Refresh current page">
           <button
