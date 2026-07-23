@@ -22,7 +22,7 @@ export default class ErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.error) {
       return (
-        <div style={{ padding: 32, fontFamily: 'sans-serif', color: '#ef4444' }}>
+        <div style={{ padding: 32, fontFamily: 'sans-serif', color: 'var(--danger)' }}>
           <h2 style={{ marginBottom: 12 }}>Something went wrong</h2>
           <pre style={{ background: 'var(--bg-secondary)', padding: 12, borderRadius: 6, fontSize: 12, overflow: 'auto' }}>
             {this.state.error.message}

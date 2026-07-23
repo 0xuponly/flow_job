@@ -1074,7 +1074,7 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
                 <strong>CV</strong>
                 {cv.verification_score != null ? (
                   <div style={{ marginTop: 4 }}>
-                    <span style={{ color: cv.verification_score >= 70 ? '#22c55e' : '#f59e0b', fontWeight: 600 }}>
+                    <span style={{ color: cv.verification_score >= 70 ? 'var(--success)' : 'var(--warning)', fontWeight: 600 }}>
                       {cv.verification_score}/100 {cv.verification_score >= 70 ? '✓' : '⚠'}
                     </span>
                     {cv.verification_feedback && (() => {
@@ -1109,7 +1109,7 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
                 <strong>Cover letter</strong>
                 {coverLetter.verification_score != null ? (
                   <div style={{ marginTop: 4 }}>
-                    <span style={{ color: coverLetter.verification_score >= 70 ? '#22c55e' : '#f59e0b', fontWeight: 600 }}>
+                    <span style={{ color: coverLetter.verification_score >= 70 ? 'var(--success)' : 'var(--warning)', fontWeight: 600 }}>
                       {coverLetter.verification_score}/100 {coverLetter.verification_score >= 70 ? '✓' : '⚠'}
                     </span>
                     {coverLetter.verification_feedback && (
@@ -1141,7 +1141,7 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
               </p>
             )}
             {(cv?.verification_score ?? 0) >= 70 && (coverLetter?.verification_score ?? 0) >= 70 && (
-              <p style={{ fontSize: 13, color: '#22c55e', marginTop: 8 }}>✓ Verified and ready to apply</p>
+              <p style={{ fontSize: 13, color: 'var(--success)', marginTop: 8 }}>✓ Verified and ready to apply</p>
             )}
           </div>
 

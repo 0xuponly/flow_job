@@ -966,20 +966,20 @@ export default function ScanJobsPage() {
                   <tr key={b.board}>
                     <td><strong>{b.board}</strong></td>
                     <td>{b.found - b.skipped - b.errors - b.incompatible}</td>
-                    <td style={{ color: '#22c55e', fontWeight: 600 }}>{b.added}</td>
+                    <td style={{ color: 'var(--success)', fontWeight: 600 }}>{b.added}</td>
                     {_showAllScanColumns && <td>{b.found}</td>}
                     {_showAllScanColumns && <td>{b.skipped}</td>}
                     {_showAllScanColumns && <td>{b.incompatible}</td>}
-                    {_showAllScanColumns && <td style={{ color: b.errors > 0 ? '#ef4444' : undefined }}>{b.errors}</td>}
+                    {_showAllScanColumns && <td style={{ color: b.errors > 0 ? 'var(--danger)' : undefined }}>{b.errors}</td>}
                     <td>
-                      {b.error && <span style={{ color: '#ef4444', fontSize: 12 }}>{b.error}</span>}
+                      {b.error && <span style={{ color: 'var(--danger)', fontSize: 12 }}>{b.error}</span>}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
             {result.errors.length > 0 && (
-              <div style={{ marginTop: 8, fontSize: 12, color: '#ef4444' }}>
+              <div style={{ marginTop: 8, fontSize: 12, color: 'var(--danger)' }}>
                 {Array.from(new Set(result.errors)).map((e, i) => <div key={i}>{e}</div>)}
               </div>
             )}

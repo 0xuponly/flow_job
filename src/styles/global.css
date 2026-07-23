@@ -18,6 +18,18 @@
   --success: #22c55e;
   --warning: #f59e0b;
   --danger: #ef4444;
+  --accent-tint-strong: rgba(99, 102, 241, 0.15);
+  --accent-tint-soft: rgba(99, 102, 241, 0.12);
+  --warning-tint: rgba(245, 158, 11, 0.12);
+  --danger-tint: rgba(239, 68, 68, 0.15);
+  --danger-tint-hover: rgba(239, 68, 68, 0.25);
+  --danger-tint-faint: rgba(239, 68, 68, 0.08);
+  --danger-tint-hover-soft: rgba(239, 68, 68, 0.18);
+  --danger-border: rgba(239, 68, 68, 0.35);
+  --danger-border-strong: rgba(239, 68, 68, 0.6);
+  --overlay-scrim: rgba(0, 0, 0, 0.6);
+  --shadow-popover: rgba(0, 0, 0, 0.3);
+  --shadow-suggestion: rgba(0, 0, 0, 0.4);
   --radius: 10px;
   --sidebar-width: 172px;
   --sidebar-width-collapsed: 64px;
@@ -27,6 +39,27 @@
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
+}
+
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-elevated: #f5f6f8;
+  --bg-hover: #eceef2;
+  --border: #d8dce3;
+  --text: #1a1d24;
+  --text-muted: #5b6373;
+  --accent-tint-strong: rgba(99, 102, 241, 0.10);
+  --accent-tint-soft: rgba(99, 102, 241, 0.08);
+  --warning-tint: rgba(245, 158, 11, 0.10);
+  --danger-tint: rgba(239, 68, 68, 0.12);
+  --danger-tint-hover: rgba(239, 68, 68, 0.20);
+  --danger-tint-faint: rgba(239, 68, 68, 0.06);
+  --danger-tint-hover-soft: rgba(239, 68, 68, 0.14);
+  --danger-border: rgba(239, 68, 68, 0.30);
+  --danger-border-strong: rgba(239, 68, 68, 0.5);
+  --overlay-scrim: rgba(0, 0, 0, 0.5);
+  --shadow-popover: rgba(0, 0, 0, 0.12);
+  --shadow-suggestion: rgba(0, 0, 0, 0.15);
 }
 
 html, body, #root {
@@ -200,7 +233,7 @@ textarea {
 }
 
 .nav-item.active {
-  background: rgba(99, 102, 241, 0.15);
+  background: var(--accent-tint-strong);
   color: var(--accent-hover);
 }
 
@@ -293,12 +326,12 @@ textarea {
 }
 
 .btn-danger {
-  background: rgba(239, 68, 68, 0.15);
+  background: var(--danger-tint);
   color: var(--danger);
 }
 
 .btn-danger:hover {
-  background: rgba(239, 68, 68, 0.25);
+  background: var(--danger-tint-hover);
 }
 
 .btn-sm {
@@ -416,7 +449,7 @@ textarea {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 6px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+  box-shadow: 0 8px 24px var(--shadow-popover);
   max-height: 200px;
   overflow-y: auto;
   min-width: 160px;
@@ -620,7 +653,7 @@ input[type="checkbox"]:disabled {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--overlay-scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -863,7 +896,7 @@ input[type="checkbox"]:disabled {
 }
 
 .doc-list-item.active {
-  background: rgba(99, 102, 241, 0.12);
+  background: var(--accent-tint-soft);
   border-color: var(--accent);
 }
 
@@ -915,13 +948,13 @@ input[type="checkbox"]:disabled {
 }
 
 .alert-info {
-  background: rgba(99, 102, 241, 0.12);
+  background: var(--accent-tint-soft);
   border: 1px solid rgba(99, 102, 241, 0.3);
   color: var(--accent-hover);
 }
 
 .alert-warning {
-  background: rgba(245, 158, 11, 0.12);
+  background: var(--warning-tint);
   border: 1px solid rgba(245, 158, 11, 0.3);
   color: var(--warning);
 }
@@ -1064,14 +1097,14 @@ input[type="checkbox"]:disabled {
 
 .icon-btn-danger {
   color: var(--danger);
-  border-color: rgba(239, 68, 68, 0.35);
-  background: rgba(239, 68, 68, 0.08);
+  border-color: var(--danger-border);
+  background: var(--danger-tint-faint);
 }
 
 .icon-btn-danger:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.18);
+  background: var(--danger-tint-hover-soft);
   color: var(--danger);
-  border-color: rgba(239, 68, 68, 0.6);
+  border-color: var(--danger-border-strong);
 }
 
 /* Models page: drag handle + reorder/delete visual states. The handle
@@ -1130,7 +1163,7 @@ input[type="checkbox"]:disabled {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 4px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 12px var(--shadow-suggestion);
   list-style: none;
   margin: 0;
   padding: 4px 0;
