@@ -1368,10 +1368,6 @@ export function updateSettings(partial: Partial<Settings>): Settings {
       s.settings[key] = value
     }
   }
-  // If the base CV changed, bump cv_version so any cached fit scores can be invalidated.
-  if (partial.base_cv !== undefined) {
-    s.settings.cv_version = (typeof s.settings.cv_version === 'number' ? s.settings.cv_version : 0) + 1
-  }
   persistStore()
   return getSettings()
 }
