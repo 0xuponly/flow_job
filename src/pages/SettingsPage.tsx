@@ -22,10 +22,12 @@ function parseLocationPicks(raw: string): LocationPick[] {
 
 const PRESETS: { name: string; desc: string; model: Omit<ApiModelConfig, 'id'> }[] = [
   { name: 'Big Pickle', desc: 'Free, no API key needed', model: { name: 'Big Pickle', base_url: 'https://opencode.ai/zen/v1', api_key: '', model: 'big-pickle' } },
-  { name: 'DeepSeek V4 Flash Free', desc: 'via OpenRouter (needs API key)', model: { name: 'DeepSeek V4 Flash', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'deepseek/deepseek-v4-flash:free' } },
+  { name: 'Gemma 4 31B Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Gemma 4 31B', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'google/gemma-4-31b-it:free' } },
   { name: 'MiMo V2.5 Free', desc: 'Free, no API key needed', model: { name: 'MiMo V2.5', base_url: 'https://opencode.ai/zen/v1', api_key: '', model: 'mimo-v2.5-free' } },
+  { name: 'Nemotron 3 Super 120B Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Nemotron 3 Super 120B', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'nvidia/nemotron-3-super-120b-a12b:free' } },
   { name: 'Nemotron 3 Ultra Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Nemotron 3 Ultra', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'nvidia/nemotron-3-ultra-550b-a55b:free' } },
-  { name: 'North Mini Code Free', desc: 'Free, no API key needed', model: { name: 'North Mini Code', base_url: 'https://opencode.ai/zen/v1', api_key: '', model: 'north-mini-code-free' } }
+  { name: 'North Mini Code Free', desc: 'Free, no API key needed', model: { name: 'North Mini Code', base_url: 'https://opencode.ai/zen/v1', api_key: '', model: 'north-mini-code-free' } },
+  { name: 'Poolside Laguna S 2.1 Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Poolside Laguna S 2.1', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'poolside/laguna-s-2.1:free' } }
 ]
 
 type Tab = 'profile' | 'models' | 'boards' | 'companies' | 'scan' | 'data'
