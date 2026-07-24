@@ -38,7 +38,7 @@ interface Store {
   applications: Application[]
   follow_ups: FollowUp[]
   interviews: Interview[]
-  settings: Record<string, string>
+  settings: Settings & Record<string, unknown>
   api_models: ApiModelConfig[]
   nextId: number
   seen_urls: string[]
@@ -1342,8 +1342,7 @@ export function updateJobFit(
 // Settings
 
 export function getSettings(): Settings {
-  const settings = loadStore().settings
-  return settings as unknown as Settings
+  return loadStore().settings
 }
 
 export function updateSettings(partial: Partial<Settings>): Settings {
