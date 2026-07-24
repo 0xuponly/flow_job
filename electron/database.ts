@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { cleanDescription, isLinkedInStubDescription, scrapePostingDateFromUrl } from './jobScraper'
 import { getOrCreateDek, encryptJson, decryptJson, deleteDek, encryptionMode } from './secureStore'
-import { formatLocation, canonicalizeCountry, countryNameFromCode, decodeEntities, normalizeTitle, normalizeCompany, normalizeSalary } from './utils'
+import { formatLocation, canonicalizeCountry, countryNameFromCode, decodeEntities, normalizeTitle, normalizeCompany, normalizeSalary, dedupKey } from './utils'
 import { normalizeEmploymentType, normalizeWorkMode } from './employmentType'
 import { matchGradeFor } from './matchGrade'
 import type {
@@ -24,25 +24,6 @@ import type {
 
 const ENCRYPTED_PREFIX = '$enc$'
 
-function dedupKey(url: string): string {
-  try {
-    const u = new URL(url)
-    const trackingParams = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'ref', 'source', 'src', 'tracking', 'trackingId', 'trk', 'spm', 'ta', 'refId']
-    trackingParams.forEach(p => u.searchParams.delete(p))
-    // Most sites use the hash only for in-page anchors ("#apply",
-    // "#section-2") — those aren't job identities, so we strip them.
-    // But hash-routed SPAs (e.g. WorkBC stores the jobId in
-    // `#/job-details/{id}`) put the job identity IN the hash, so two
-    // different jobs share the same path+query and only differ by
-    // fragment. Keep the hash when it looks like a path
-    // (`#/foo/bar/...` or starts with `/` after the `#`).
-    const hashLooksLikePath = u.hash.startsWith('#/') || u.hash.startsWith('/')
-    const hashPart = hashLooksLikePath ? u.hash.toLowerCase() : ''
-    return u.origin + u.pathname.replace(/\/$/, '').toLowerCase() + u.search + hashPart
-  } catch {
-    return url.toLowerCase().replace(/\/$/, '')
-  }
-}
 export function isEncryptionAvailable(): boolean {
   return safeStorage.isEncryptionAvailable()
 }

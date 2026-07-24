@@ -332,6 +332,35 @@ export function formatLocation(raw: string | null | undefined, defaultCountry?: 
 }
 
 // ---------------------------------------------------------------------------
+// URL deduplication
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize a URL for dedup comparison: lowercase, strip trailing slash,
+ * strip common tracking parameters. Preserves path-like hash fragments
+ * (e.g. WorkBC's `#/job-details/12345`) while stripping in-page anchors
+ * (e.g. `#apply`).
+ */
+const TRACKING_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'ref', 'source', 'src', 'tracking', 'trackingId', 'trk', 'spm', 'ta', 'refId']
+
+export function dedupKey(url: string): string {
+  try {
+    const u = new URL(url)
+    const trackingParams = TRACKING_PARAMS
+    trackingParams.forEach(p => u.searchParams.delete(p))
+    // Hash-routed SPAs (e.g. WorkBC's `#/job-details/{id}`) put the
+    // job identity IN the hash. Keep the hash when it looks like a path
+    // (`#/foo/bar/...` or starts with `/` after the `#`).
+    // In-page anchors like `#apply` are NOT job identities — strip them.
+    const hashLooksLikePath = u.hash.startsWith('#/') || u.hash.startsWith('/')
+    const hashPart = hashLooksLikePath ? u.hash.toLowerCase() : ''
+    return u.origin + u.pathname.replace(/\/$/, '').toLowerCase() + u.search + hashPart
+  } catch {
+    return url.toLowerCase().replace(/\/$/, '')
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Title / company normalization
 // ---------------------------------------------------------------------------
 // Both run at the persistence boundary (createJob / updateJob) so the rest

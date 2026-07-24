@@ -1,5 +1,5 @@
 import { createJob, findDuplicateJob, getSeenUrls, getSettings, listJobs, recordBoardResults, JobBlacklistedError, JobDuplicateError } from './database'
-import { decodeEntities } from './utils'
+import { decodeEntities, dedupKey } from './utils'
 import { scrapeJobFromUrl } from './jobScraper'
 import { createLogger, log as categoryLog } from './logger'
 import { enqueue } from './aiQueue'
@@ -813,21 +813,6 @@ const BOARD_NAV_TEXT_PATTERNS: Readonly<Record<string, readonly RegExp[]>> = {
     /^career advice$/i,
     /^skip to (content|main)/i
   ]
-}
-
-/** Normalize a URL for dedup comparison: lowercase, strip trailing slash, strip common tracking params */
-function dedupKey(url: string): string {
-  try {
-    const u = new URL(url)
-    u.hash = ''
-    // Remove common tracking params
-    const trackingParams = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'ref', 'source', 'src', 'tracking', 'trackingId', 'trk', 'spm', 'ta', 'refId']
-    trackingParams.forEach(p => u.searchParams.delete(p))
-    const key = u.origin + u.pathname.replace(/\/$/, '').toLowerCase() + u.search
-    return key
-  } catch {
-    return url.toLowerCase().replace(/\/$/, '')
-  }
 }
 
 function extractJobUrls(html: string, baseUrl: string, boardName: string): { url: string; title?: string; company?: string }[] {
