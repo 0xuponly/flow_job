@@ -11,6 +11,7 @@ docs/*
 # Claude Code hook config + agent instruction file (local-only)
 .openclaude/
 CLAUDE.md
+CODEBASE_REVIEW.md
 
 # Log files (audit, scraper, hook) — could contain user URLs and job content
 *.log
