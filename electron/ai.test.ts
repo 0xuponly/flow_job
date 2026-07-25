@@ -16,6 +16,15 @@ vi.mock('./database', () => ({
   getJob: vi.fn()
 }))
 
+// Self-mock of ./ai is intentionally NOT used here. Vitest's module
+// mock replaces the exported binding of `callAI`, but
+// `generateFollowUpMessage` calls `callAI` via the module-local
+// function declaration, which the mock does not intercept. So a
+// `vi.mock('./ai', ...)` self-mock cannot stub `callAI` for internal
+// callers. Instead, the `generateFollowUpMessage` tests below drive
+// the real `callAI` by stubbing `listApiModels` and global `fetch`,
+// matching the style of the `callAI failure summary` tests above.
+
 import * as database from './database'
 import { callAI, extractJobKeywordsV3, KeywordExtractionError, RateLimitError, scoreJobFit } from './ai'
 
@@ -200,5 +209,64 @@ describe('scoreJobFit error passthrough', () => {
     const firstLine = (result.error ?? '').split('\n')[0]
     expect(firstLine).toContain('4')
     expect(firstLine).not.toMatch(/^LLM scorer failed/)
+  })
+})
+
+describe('generateFollowUpMessage', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    vi.spyOn(database, 'getSettings').mockReturnValue({
+      openai_api_key: '',          // legacy field empty — must NOT trigger fallback
+      openai_base_url: 'https://example.invalid',
+      openai_model: 'legacy-model',
+      user_name: 'Test User',
+      user_email: 'test@example.invalid'
+    } as any)
+  })
+
+  it('uses callAI when a model is configured, even if openai_api_key is empty', async () => {
+    // One enabled model in api_models — the path the Settings UI writes.
+    // The legacy openai_api_key is empty, so the old code would have
+    // returned the plain-text fallback. Routing through callAI instead
+    // hits the configured model and returns its content.
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 1, name: 'mock', enabled: true, base_url: 'https://example.invalid', model: 'm1', api_key: 'k' } as any
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: 'AI follow-up body' } }]
+    }), { status: 200 })))
+
+    const { generateFollowUpMessage } = await import('./ai')
+    const out = await generateFollowUpMessage('Acme', 'Staff Engineer', 7)
+    expect(out).toBe('AI follow-up body')
+    // The fetch must have been called against the configured model's
+    // base_url — NOT the legacy openai_base_url path the old code used.
+    expect(fetch).toHaveBeenCalledWith(
+      'https://example.invalid/chat/completions',
+      expect.objectContaining({ method: 'POST' })
+    )
+  })
+
+  it('returns the plain-text fallback when callAI returns null content', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 1, name: 'mock', enabled: true, base_url: 'https://example.invalid', model: 'm1', api_key: 'k' } as any
+    ])
+    // callAI returns null content when the model responds with no choices.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: '' } }]
+    }), { status: 200 })))
+
+    const { generateFollowUpMessage } = await import('./ai')
+    const out = await generateFollowUpMessage('Acme', 'Staff Engineer', 7)
+    expect(out).toContain('Test User')   // fallback signature
+    expect(out).toContain('Staff Engineer')
+  })
+
+  it('returns the plain-text fallback when no models are configured', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([])
+    const { generateFollowUpMessage } = await import('./ai')
+    const out = await generateFollowUpMessage('Acme', 'Staff Engineer', 7)
+    expect(out).toContain('Test User')
+    expect(out).toContain('Staff Engineer')
   })
 })

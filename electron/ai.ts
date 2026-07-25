@@ -477,8 +477,22 @@ export async function generateFollowUpMessage(
 ): Promise<string> {
   const settings = getSettings()
 
-  if (!settings.openai_api_key) {
-    return `Hi,
+  const systemPrompt =
+    'Write a brief, professional follow-up email for a job application. Plain text only, no subject line.'
+  const userPrompt = `Company: ${company}\nRole: ${jobTitle}\nDays since applied: ${daysSinceApplied}\nCandidate: ${settings.user_name}`
+
+  let content: string | null = null
+  try {
+    const result = await callAI(systemPrompt, userPrompt, 0.7)
+    content = result.content
+  } catch {
+    // No enabled models, or all failed — fall through to the plain-text fallback.
+    content = null
+  }
+
+  if (content) return content
+
+  return `Hi,
 
 I wanted to follow up on my application for the ${jobTitle} position at ${company}, which I submitted ${daysSinceApplied} days ago. I remain very interested in this opportunity and would appreciate any update on the hiring process.
 
@@ -486,39 +500,6 @@ Thank you for your time.
 
 Best regards,
 ${settings.user_name || 'Your Name'}`
-  }
-
-  const response = await fetch(`${settings.openai_base_url}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${settings.openai_api_key}`
-    },
-    body: JSON.stringify({
-      model: settings.openai_model,
-      messages: [
-        {
-          role: 'system',
-          content:
-            'Write a brief, professional follow-up email for a job application. Plain text only, no subject line.'
-        },
-        {
-          role: 'user',
-          content: `Company: ${company}\nRole: ${jobTitle}\nDays since applied: ${daysSinceApplied}\nCandidate: ${settings.user_name}`
-        }
-      ],
-      temperature: 0.7
-    })
-  })
-
-  if (!response.ok) {
-    throw new Error(`AI request failed: ${response.status}`)
-  }
-
-  const data = (await response.json()) as {
-    choices: { message: { content: string } }[]
-  }
-  return data.choices[0]?.message?.content ?? ''
 }
 
 const SECTION_HEADERS = new Set([
