@@ -1,0 +1,592 @@
+// Board configuration and scan result types.
+// Extracted from jobSearch.ts to keep the scan pipeline readable.
+
+import { fetchArbeitnowJobs, fetchHimalayasJobs, fetchJobicyJobs, fetchRemotiveJobs } from './aggregatorApis'
+import { fetchAtsJobs } from './atsAdapter'
+import { fetchJobBankJobs, fetchWorkBcJobs } from './govApis'
+import { fetchRssFeed } from './rssFetcher'
+
+export interface BoardConfig {
+  name: string
+  searchUrl: (keywords: string, location: string) => string
+  useBrowser: boolean
+  paginate?: (searchUrl: string, page: number) => string
+  apiFetcher?: (keywords: string, location: string, signal?: AbortSignal) => Promise<import('./types').CreateJobInput[]>
+  sitemapListingUrls?: (keywords: string, location: string, signal?: AbortSignal) => Promise<string[]>
+}
+
+export interface ScanBoardResult {
+  board: string
+  found: number
+  added: number
+  skipped: number
+  errors: number
+  error?: string
+}
+
+export interface ScanResult {
+  totalFound: number
+  totalAdded: number
+  totalSkipped: number
+  totalErrors: number
+  totalIncompatible: number
+  boards: ScanBoardResult[]
+  errors: string[]
+  addedJobs: { id: number; title: string; company: string }[]
+}
+
+// --- Sitemap helpers (moved from jobSearch.ts for BOARDS callbacks) ---
+
+const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+async function fetchPageHtml(url: string, useBrowser: boolean, signal?: AbortSignal): Promise<string> {
+  if (useBrowser) {
+    const { fetchHtmlViaBrowser } = await import('./browserScraper')
+    try {
+      return await fetchHtmlViaBrowser(url)
+    } catch {
+      throw new Error('Blocked by anti-bot protection (Cloudflare/Cloudfront).')
+    }
+  }
+  const timeoutSignal = AbortSignal.timeout(30000)
+  const combinedSignal = signal
+    ? AbortSignal.any([signal, timeoutSignal])
+    : timeoutSignal
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': USER_AGENT,
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br'
+    },
+    signal: combinedSignal,
+    redirect: 'follow'
+  })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  const html = await response.text()
+  const { isChallengePage } = await import('./browserScraper')
+  if (isChallengePage(html)) {
+    try {
+      const { fetchHtmlViaBrowser } = await import('./browserScraper')
+      return await fetchHtmlViaBrowser(url)
+    } catch {
+      throw new Error(`HTTP ${response.status} (blocked)`)
+    }
+  }
+  return html
+}
+
+async function fetchSitemapText(url: string, useBrowser: boolean): Promise<string> {
+  return fetchPageHtml(url, useBrowser)
+}
+
+function extractSitemapUrls(xml: string): string[] {
+  const locRe = /<loc>\s*([^<]+?)\s*<\/loc>/gi
+  const out: string[] = []
+  const seen = new Set<string>()
+  let m: RegExpExecArray | null
+  while ((m = locRe.exec(xml)) !== null) {
+    const u = m[1].trim()
+    if (!seen.has(u)) {
+      seen.add(u)
+      out.push(u)
+    }
+  }
+  return out
+}
+
+export const BOARDS: BoardConfig[] = [
+  {
+    name: 'LinkedIn',
+    searchUrl: (k, l) => `https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(k)}${l ? `&location=${encodeURIComponent(l)}` : ''}`,
+    useBrowser: true
+  },
+  {
+    name: 'Indeed',
+    searchUrl: (k, l) => `https://www.indeed.com/q-${encodeURIComponent(k)}-l-${encodeURIComponent(l || '')}-jobs.html`,
+    useBrowser: true
+  },
+  {
+    name: 'Indeed Canada',
+    searchUrl: (k, l) => `https://ca.indeed.com/jobs?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
+    useBrowser: true
+  },
+  {
+    name: 'Monster',
+    searchUrl: (k, l) => `https://www.monster.com/jobs/search?q=${encodeURIComponent(k)}${l ? `&where=${encodeURIComponent(l)}` : ''}`,
+    useBrowser: false
+  },
+  {
+    name: 'ZipRecruiter',
+    searchUrl: (k, l) => `https://www.ziprecruiter.com/jobs?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
+    useBrowser: true
+  },
+  {
+    name: 'SimplyHired',
+    searchUrl: (k, l) => `https://www.simplyhired.com/search?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
+    useBrowser: false
+  },
+  {
+    name: 'Talent.com',
+    searchUrl: (k, l) => `https://www.talent.com/jobs?k=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
+    useBrowser: false
+  },
+  {
+    name: 'Jora',
+    searchUrl: (k, l) => `https://jora.com/jobs?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
+    useBrowser: true
+  },
+  {
+    name: 'Remote OK',
+    searchUrl: (k) => `https://remoteok.com/remote-${encodeURIComponent(k)}-jobs`,
+    useBrowser: false
+  },
+  {
+    name: 'We Work Remotely',
+    searchUrl: (k) => `https://weworkremotely.com/categories/remote-${encodeURIComponent(k)}-jobs`,
+    useBrowser: true
+  },
+  {
+    name: 'Remotive',
+    searchUrl: (k) => `https://remotive.com/?q=${encodeURIComponent(k)}`,
+    useBrowser: false
+  },
+  {
+    name: 'Remote.co',
+    searchUrl: (k) => `https://remote.co/remote-jobs/search/?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Working Nomads',
+    searchUrl: (k) => `https://www.workingnomads.com/jobs?keywords=${encodeURIComponent(k)}`,
+    useBrowser: false
+  },
+  {
+    name: 'JustRemote',
+    searchUrl: (k) => `https://justremote.co/search?q=${encodeURIComponent(k)}`,
+    useBrowser: false
+  },
+  {
+    name: 'Job Bank (GC)',
+    searchUrl: (k, l) => `https://www.jobbank.gc.ca/jobsearch/jobsearch?searchstring=${encodeURIComponent(k)}${l ? `&locationstring=${encodeURIComponent(l)}` : ''}`,
+    useBrowser: false
+  },
+  {
+    name: 'Eluta.ca',
+    searchUrl: (k, l) => `https://www.eluta.ca/search?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
+    useBrowser: false
+  },
+  {
+    name: 'Workopolis',
+    searchUrl: (k, l) => `https://www.workopolis.com/search?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
+    useBrowser: true
+  },
+  {
+    name: 'Jobboom',
+    searchUrl: (k) => `https://www.jobboom.com/en/jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: false
+  },
+  {
+    name: 'WorkBC',
+    // WorkBC's search is a single-page hash-based route. The hash carries
+    // `q` (keyword) and `city` (location) segments separated by `;`. We
+    // omit a segment entirely when its value is empty so the URL matches
+    // what the user sees when searching with only a keyword or only a
+    // city (e.g. `#/job-search;city=Vancouver;`).
+    searchUrl: (k, l) => {
+      const parts = ['job-search']
+      if (k) parts.push(`q=${encodeURIComponent(k)}`)
+      if (l) parts.push(`city=${encodeURIComponent(l)}`)
+      return `https://www.workbc.ca/find-job/search-jobs#/${parts.join(';')}`
+    },
+    useBrowser: true
+  },
+  {
+    name: 'WorkBC (API)',
+    // First-party search + detail API. Replaces the browser-based
+    // listing walk and the per-job HTML scrape. Faster and
+    // structured; the user can keep both enabled (the search-side
+    // dedup will skip duplicates) or disable the browser one.
+    searchUrl: () => 'https://workbc-jb.a55eb5-prod.stratus.cloud.gov.bc.ca/api/Search/SearchJobs',
+    useBrowser: false,
+    apiFetcher: (k, l, signal) => fetchWorkBcJobs(k, l, signal)
+  },
+  {
+    name: 'CareerBeacon',
+    searchUrl: (k, l) => `https://www.careerbeacon.com/en/search?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
+    useBrowser: true
+  },
+  {
+    name: 'CharityVillage',
+    searchUrl: (k, l) => `https://www.charityvillage.com/jobs/?keywords=${encodeURIComponent(k)}${l ? `&location=${encodeURIComponent(l)}` : ''}`,
+    useBrowser: false
+  },
+  {
+    name: 'Crypto Careers',
+    searchUrl: (k) => `https://www.crypto-careers.com/jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Cryptorecruit',
+    searchUrl: (k) => `https://www.cryptorecruit.com/jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Remote3',
+    searchUrl: (k) => `https://remote3.co/jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Cryptocurrency Jobs',
+    searchUrl: (k) => `https://cryptocurrencyjobs.co/?search=${encodeURIComponent(k)}`,
+    useBrowser: false
+  },
+  {
+    name: 'CryptoJobsList',
+    searchUrl: (k) => `https://cryptojobslist.com/jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'cryptojobs.com',
+    searchUrl: (k) => `https://www.cryptojobs.com/jobs?query=${encodeURIComponent(k)}`,
+    useBrowser: false
+  },
+  {
+    name: 'Crypto.jobs',
+    searchUrl: (k) => `https://crypto.jobs/jobs?search=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Web3.career',
+    searchUrl: () => `https://web3.career/`,
+    useBrowser: false
+  },
+  {
+    name: 'Startup.jobs',
+    searchUrl: (k) => `https://startup.jobs/${encodeURIComponent(k)}-jobs`,
+    useBrowser: true
+  },
+  {
+    name: 'Selby Jennings',
+    searchUrl: (k, l) => `https://www.selbyjennings.com/jobs?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
+    useBrowser: false
+  },
+  {
+    name: 'Idealist',
+    searchUrl: (k) => `https://www.idealist.org/en/jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: false
+  },
+  {
+    name: 'Built In',
+    searchUrl: (k, l) => `https://builtin.com/jobs?search=${encodeURIComponent(k)}${l ? `&city=${encodeURIComponent(l)}` : ''}`,
+    useBrowser: true
+  },
+  {
+    name: 'Vancouver Jobs',
+    searchUrl: (k) => `https://jobs.vancouver.ca/search/?q=${encodeURIComponent(k)}`,
+    useBrowser: false
+  },
+  {
+    name: 'Built In Toronto',
+    searchUrl: (k) => `https://builtintoronto.com/jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Wellfound',
+    searchUrl: (k) => `https://wellfound.com/search/jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'UToronto',
+    searchUrl: (k) => `https://jobs.entrepreneurs.utoronto.ca/jobs?search=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Y Combinator',
+    searchUrl: (k) => `https://www.ycombinator.com/jobs?search=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'CVCA',
+    searchUrl: (k) => `https://www.cvca.ca/professional-development/job-board/?search=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Top Startups',
+    searchUrl: (k) => `https://topstartups.io/jobs?search=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Rocketships',
+    searchUrl: (k) => `https://rocketships.io/jobs?search=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Built In Vancouver',
+    searchUrl: (k) => `https://www.builtinvancouver.org/jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Braintrust',
+    searchUrl: (k) => `https://app.usebraintrust.com/jobs/?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Google Careers',
+    // Google Careers search is driven by the `q` (free-text), `location`, and
+    // `hl` (locale) params. We keep `hl=en-GB` so results lean towards UK/CA
+    // listings; users can override by editing the URL after the scan starts.
+    searchUrl: (k, l) => `https://www.google.com/about/careers/applications/jobs/results/?q=${encodeURIComponent(k)}${l ? `&location=${encodeURIComponent(l)}` : ''}&hl=en-GB`,
+    useBrowser: true
+  },
+  {
+    name: 'CareerHound',
+    // CareerHound's search uses `categories` (slug) and `countries` (ISO code).
+    // The user pastes keywords into `q`; the `categories` and `countries`
+    // params stay pinned to the defaults so the result set stays broad.
+    searchUrl: (k) => `https://www.careerhound.io/job-search/all?categories=Data+and+Analytics&countries=CA&q=${encodeURIComponent(k)}`,
+    useBrowser: false
+  },
+  {
+    name: 'Northern Health',
+    // Northern Health (BC health authority) job board. URL pattern is
+    // /JobSearch/s-/{keyword}-{location}-{employeeType}-{category}-{region}-{sort}-{status}-{page}-{perPage}
+    //
+    // Quirks of the server (verified empirically):
+    //   1. The keyword segment in the path is NOT used for filtering
+    //      by the server — ASP.NET WebForms does that via form state,
+    //      not the path. The path carries pagination + perPage.
+    //   2. When the keyword segment is non-empty, the path-based page
+    //      parameter is IGNORED — the server returns page 0 of the
+    //      filtered (or unfiltered) set on every request, regardless
+    //      of the page number in the URL.
+    //   3. When the keyword segment is empty, the page parameter
+    //      works correctly — each page returns a unique set of jobs.
+    //
+    // We therefore leave the keyword segment empty and rely on the
+    // unfiltered listing + URL pagination. The unfiltered list is
+    // ~1.7k jobs ≈ 170 pages at 10 per page. The scan loop's
+    // empty-page detection is the natural terminator; no upper cap.
+    // (Keyword filtering, if wanted, would require running the search
+    // through a real browser via the form — out of scope for the
+    // plain-fetch path.)
+    //
+    // ASP.NET WebForms renders each page fully server-side, so direct
+    // URL navigation works — no browser fallback needed. The
+    // `paginate` driver swaps the page segment to walk through all
+    // result pages.
+    searchUrl: () => 'https://jobs.northernhealth.ca/JobSearch/s-/-0-0-0-0-0-false-0-0-0',
+    useBrowser: false,
+    paginate: (searchUrl, page) => {
+      // Match the trailing "-{page}-{perPage}" segment pair and
+      // rewrite only the page index. Anchoring on the END of the
+      // pathname (not on any keyword segment) keeps this driver
+      // robust regardless of which segments precede the page index.
+      const u = new URL(searchUrl)
+      const rewritten = u.pathname.replace(/-(\d+)-\d+$/, () => `-${page}-0`)
+      return `${u.origin}${rewritten}`
+    }
+  },
+  {
+    name: 'Interior Health',
+    // Interior Health (BC health authority) runs the same ASP.NET
+    // WebForms platform as Northern Health with identical URL
+    // patterns and the same per-job `JobPosting` JSON-LD block.
+    // Same pagination approach: direct URL navigation, stop on
+    // empty page. Same keyword-in-path quirk: we leave the keyword
+    // segment empty so the path-based page parameter works.
+    searchUrl: () => 'https://jobs.interiorhealth.ca/JobSearch/s-/-0-0-0-0-0-false-0-0-0',
+    useBrowser: false,
+    paginate: (searchUrl, page) => {
+      const u = new URL(searchUrl)
+      const rewritten = u.pathname.replace(/-(\d+)-\d+$/, () => `-${page}-0`)
+      return `${u.origin}${rewritten}`
+    }
+  },
+  // Aggregator API boards. Each of these is a separate BOARDS entry
+  // so the per-board stats in the scan results card are accurate
+  // (Remotive vs Arbeitnow overlap a lot but we want the user to
+  // see each one independently). All four are gated on the matching
+  // settings.aggregator_*_enabled flag.
+  {
+    name: 'Remotive (API)',
+    searchUrl: () => 'https://remotive.com/remote-jobs',
+    useBrowser: false,
+    apiFetcher: (k, _l, signal) => fetchRemotiveJobs({ keywords: k, location: '', signal })
+  },
+  {
+    name: 'Arbeitnow (API)',
+    searchUrl: () => 'https://arbeitnow.com',
+    useBrowser: false,
+    apiFetcher: (k, _l, signal) => fetchArbeitnowJobs({ keywords: k, location: '', signal })
+  },
+  {
+    name: 'Jobicy (API)',
+    searchUrl: () => 'https://jobicy.com',
+    useBrowser: false,
+    apiFetcher: (k, _l, signal) => fetchJobicyJobs({ keywords: k, location: '', signal })
+  },
+  {
+    name: 'Himalayas (API)',
+    searchUrl: () => 'https://himalayas.app',
+    useBrowser: false,
+    apiFetcher: (k, _l, signal) => fetchHimalayasJobs({ keywords: k, location: '', signal })
+  },
+  {
+    name: 'ATS boards',
+    searchUrl: () => '',
+    useBrowser: false,
+    // Pulls from the user's configured ats_boards in Settings.
+    apiFetcher: (k, l, signal) => fetchAtsJobs(k, l, signal)
+  },
+  {
+    name: 'We Work Remotely (RSS)',
+    searchUrl: () => 'https://weworkremotely.com/categories/remote-programming-jobs.rss',
+    useBrowser: false,
+    apiFetcher: (_k, _l, signal) => fetchRssFeed('https://weworkremotely.com/categories/remote-programming-jobs.rss', 'weworkremotely', { signal })
+  },
+  {
+    name: 'Authentic Jobs (RSS)',
+    searchUrl: () => 'https://authenticjobs.com/?feed=job_feed',
+    useBrowser: false,
+    apiFetcher: (_k, _l, signal) => fetchRssFeed('https://authenticjobs.com/?feed=job_feed', 'authenticjobs', { signal })
+  },
+  {
+    name: 'Job Bank GC (API)',
+    // First-party JSON-LD search endpoint. Replaces the legacy
+    // scrape path that was the most-fragile board in the list.
+    searchUrl: () => 'https://www.jobbank.gc.ca/jobsearch/search',
+    useBrowser: false,
+    apiFetcher: (k, l, signal) => fetchJobBankJobs(k, l, { signal })
+  },
+  {
+    name: 'Hiring Cafe',
+    // hiring.cafe is a remote-first job aggregator. The search
+    // page is server-rendered with JSON-LD JobPosting blocks per
+    // listing; per-job URLs are /?job_id={uuid} so the listing
+    // fetch and the per-job scrape share the same scrapeJobFromUrl
+    // path. useBrowser=true: the keyword filter is client-side and
+    // the static HTML only ships the unfiltered list, so we walk
+    // the unfiltered page and rely on the per-listing scraper to
+    // honour the keyword.
+    searchUrl: (k) => `https://hiring.cafe/?keyword=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Sprout',
+    // Sprout (sproutjobs.com) is a marketing/creative remote job
+    // board on WordPress. Per-job URLs are /jobs/{slug}/ — covered
+    // by the generic /jobs path regex. Search URL is the standard
+    // WP /?s= shape; useBrowser=true because the search is a
+    // client-rendered overlay.
+    searchUrl: (k) => `https://sproutjobs.com/jobs?s=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Arc',
+    // Arc (arc.dev) is a dev-focused remote job board. Each listing
+    // has its own /remote-jobs/{slug} URL (the slug IS the job,
+    // not a category). Per-job pages carry a single JobPosting
+    // JSON-LD block. useBrowser=true: the listing grid is rendered
+    // client-side; static HTML carries only category nav.
+    searchUrl: (k) => `https://arc.dev/remote-jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Contra',
+    // Contra (contra.com) lists freelance projects (gigs, not
+    // 1099 jobs). Per-project URLs are /projects/{slug}/. Static
+    // HTML is a thin shell — the React app fetches the listing
+    // grid from an internal API, so useBrowser=true.
+    searchUrl: (k) => `https://contra.com/jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'SkipTheDrive',
+    // SkipTheDrive (skipthedrive.com) is a remote-only job board
+    // on WordPress. Per-job URLs are /job/{slug}-{numericId}/. The
+    // search page is server-rendered, so useBrowser=false.
+    searchUrl: (k) => `https://www.skipthedrive.com/?s=${encodeURIComponent(k)}`,
+    useBrowser: false
+  },
+  {
+    name: 'Jobspresso',
+    // Jobspresso (jobspresso.co) is a curated remote job board on
+    // WordPress. Per-job URLs are bare /{slug}/ posts (not under
+    // /jobs/). The search page is server-rendered and the /search/
+    // path carries the listings; the per-job anchor pattern matches
+    // the generic /jobs|post|... regex. useBrowser=false.
+    searchUrl: (k) => `https://jobspresso.co/?s=${encodeURIComponent(k)}`,
+    useBrowser: false
+  },
+  {
+    name: 'Dynamite Jobs',
+    // Dynamite Jobs (dynamitejobs.com) is a remote-only curated
+    // board. Per-job URLs are /job/{slug}/. Static HTML is a thin
+    // shell — listings render via the SPA — so useBrowser=true.
+    searchUrl: (k) => `https://dynamitejobs.com/?s=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'DailyRemote',
+    // DailyRemote (dailyremote.com) — the search page
+    // (?s=…) is a WordPress blog post list, not a real job search.
+    // The per-job URLs are listed in two job-specific sitemaps
+    // (sitemap-jobs-01.xml + sitemap-jobs-02.xml) under
+    // /remote-job/{slug}-{numericId}. The per-job pages have
+    // JSON-LD JobPosting blocks; the per-listing scrape fills in
+    // title + company from there. Keyword filtering is applied
+    // per-listing via the existing fit / location / score funnel
+    // (the LLM fit scorer is the keyword gate in practice).
+    searchUrl: () => 'https://dailyremote.com/',
+    useBrowser: false,
+    sitemapListingUrls: async (_k, _l, signal) => {
+      const sub = [
+        'https://www.dailyremote.com/sitemap-jobs-01.xml',
+        'https://www.dailyremote.com/sitemap-jobs-02.xml'
+      ]
+      const all: string[] = []
+      for (const u of sub) {
+        if (signal?.aborted) break
+        const xml = await fetchSitemapText(u, false)
+        for (const loc of extractSitemapUrls(xml)) {
+          if (loc.includes('/remote-job/')) all.push(loc)
+        }
+      }
+      return all
+    }
+  },
+  {
+    name: 'NoDesk',
+    // NoDesk (nodesk.co) — the search page (/remote-jobs?q=…) is
+    // JS-rendered and returns an empty static HTML. The
+    // per-job URLs are listed in /sitemap-jobs.xml under
+    // /remote-jobs/{slug}/. The per-job pages have JSON-LD; the
+    // per-listing scraper fills in title + company from there.
+    searchUrl: () => 'https://nodesk.co/remote-jobs',
+    useBrowser: false,
+    sitemapListingUrls: async (_k, _l, signal) => {
+      const xml = await fetchSitemapText('https://nodesk.co/sitemap-jobs.xml', false)
+      if (signal?.aborted) return []
+      return extractSitemapUrls(xml)
+    }
+  },
+  {
+    name: 'Remote100k',
+    // Remote100k (remote100k.com) — the search page is JS-rendered
+    // and returns an empty static HTML. The per-job URLs are
+    // listed in /sitemap.xml under /remote-job/{slug} (706 active
+    // at probe time). The per-job pages have JSON-LD; the
+    // per-listing scraper fills in title + company from there.
+    searchUrl: () => 'https://remote100k.com/',
+    useBrowser: false,
+    sitemapListingUrls: async (_k, _l, signal) => {
+      const xml = await fetchSitemapText('https://remote100k.com/sitemap.xml', false)
+      if (signal?.aborted) return []
+      // The /sitemap.xml is a single <urlset> with ~706 /remote-job/
+      // entries. extractSitemapUrls returns ALL <loc>s (including
+      // nav pages like /about, /contact); filter to the job path.
+      return extractSitemapUrls(xml).filter((u) => u.includes('/remote-job/'))
+    }
+  }
+]
