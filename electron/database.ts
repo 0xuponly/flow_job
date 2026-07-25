@@ -1,5 +1,5 @@
 import { app, safeStorage } from 'electron'
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'fs'
 import { join } from 'path'
 import { cleanDescription, isLinkedInStubDescription, scrapePostingDateFromUrl } from './jobScraper'
 import { getOrCreateDek, encryptJson, decryptJson, deleteDek, encryptionMode } from './secureStore'
@@ -332,21 +332,31 @@ export function saveStore(): void {
   persistStore()
 }
 
+// Serialize concurrent persistStore() calls through a promise queue.
+// Node.js is single-threaded so in-memory mutations already cannot
+// interleave; this guard ensures the on-disk writes are also ordered,
+// preventing last-writer-wins races from concurrent IPC handlers.
+let _writeQueue: Promise<void> = Promise.resolve()
+
 function persistStore(): void {
-  if (!store) return
-  const dek = getOrCreateDek()
-  const payload = encryptJson(store, dek)
-  // Use the sync write AND explicitly sync to disk before returning.
-  // Without fsync, writeFileSync returns once the data is in the OS
-  // write cache; a crash or rapid subsequent read could see a stale
-  // file. fsync guarantees the bytes are on stable storage.
-  const fd = require('fs').openSync(getStorePath(), 'w')
-  try {
-    require('fs').writeSync(fd, payload)
-    require('fs').fsyncSync(fd)
-  } finally {
-    require('fs').closeSync(fd)
-  }
+  _writeQueue = _writeQueue.then(() => {
+    if (!store) return
+    const dek = getOrCreateDek()
+    const payload = encryptJson(store, dek)
+    const filePath = getStorePath()
+    const tmpPath = `${filePath}.tmp`
+    // Write to a temp file first, then atomically rename over the
+    // real file. On POSIX (macOS), rename(2) is atomic — the live
+    // file is never partially overwritten, so a crash mid-write
+    // cannot corrupt it.
+    writeFileSync(tmpPath, payload, 'utf8')
+    renameSync(tmpPath, filePath)
+  }).catch((err) => {
+    // Log but never throw — a failed persist should not crash the
+    // app. The in-memory store is still valid; next mutation will
+    // retry the write.
+    try { require('./logger').createLogger('database').error('persistStore failed:', err) } catch { /* logger unavailable */ }
+  })
 }
 
 function nextId(): number {

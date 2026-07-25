@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, screen, session, shell } from 'electron'
 import { join } from 'path'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs'
 import * as db from './database'
@@ -470,7 +470,7 @@ function registerIpc(): void {
     }
   })
   ipcMain.handle('documents:exportPdf', async (_e, title: string, content: string, docType: string, documentId: number | null, company?: string, position?: string) => {
-    const win = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, nodeIntegration: false } })
+    const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } })
 
     const SHRINK_SCALES = [1.0, 0.92, 0.85] as const
     let bestPdf: Buffer | null = null
@@ -1345,6 +1345,19 @@ ${htmlBody}
 }
 
 app.whenReady().then(() => {
+  // Set a strict Content-Security-Policy on the main renderer session
+  // so scraped HTML rendered in-app cannot execute injected scripts.
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [
+          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self';"
+        ]
+      }
+    })
+  })
+
   registerIpc()
   createWindow()
   startQueueProcessor()
