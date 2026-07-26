@@ -1,323 +1,140 @@
-# FlowJob
-
-Desktop assistant for the full job application lifecycle — track jobs, scan
-multiple job boards, generate tailored CVs and cover letters, manage the
-application pipeline, and track follow-ups and interviews. Built as an
-Electron + React + TypeScript app with a flat-file JSON store encrypted at
-rest.
-
-## Setup
-
-```bash
-npm install
-npm run dev
-```
-
-Requires Node.js 18+ and a working Electron environment. First launch will
-create a sealed data-encryption key in the OS keyring (macOS Keychain, Linux
-libsecret, or Windows DPAPI) and an encrypted `apply-assistant-data.json`
-store under the app's `userData` directory.
-
-### Scripts
-
-| Command | What it does |
-|---|---|
-| `npm run dev` | Start the Electron + Vite dev server with HMR. |
-| `npm run build` | Production build of main, preload, and renderer bundles. |
-| `npm run preview` | Build and run the packaged preview. |
-| `npm run start` | Same as `preview`. |
-| `npm run lint` | ESLint over the whole repo. |
-| `npm run lint:fix` | ESLint with `--fix`. |
-| `npm run typecheck` | `tsc --noEmit` over the test tsconfig. |
-| `npm run test` | Vitest run. |
-| `npm run test:watch` | Vitest watch mode. |
-
-## Navigation
-
-The sidebar exposes 8 pages, in this order: **Dashboard**, **Scan Jobs**,
-**My Jobs**, **Pipeline**, **Documents**, **Follow-ups**, **Interviews**,
-**Settings**. A sidebar refresh button re-fetches the current page; a
-status pill at the bottom shows when an auto-scan is in flight.
-
-## Features
-
-### Dashboard
-At-a-glance counts (jobs tracked, applied, interviewing, offers, pending
-follow-ups, upcoming interviews) plus the next 5 due follow-ups and 5
-upcoming interviews. Overdue follow-ups are highlighted in red.
-
-### Scan Jobs
-Run a one-shot scan across any subset of the built-in boards. Filter by
-keywords, location, and work-type (any / remote / hybrid / in-office). A
-live progress stream is rendered in the page; on completion the result card
-shows a per-board breakdown of:
-
-- **Board** — name of the source.
-- **Scraped** — derived as `Found - Skipped - Errors`. This is the number
-  of *new* jobs surfaced from that board.
-- **Added** — jobs successfully added to your store.
-- **Found / Skipped / Errors** — hidden by default; click `+` in the card
-  header to expand. Boards where Scraped, Added, and Errors are all `0`
-  are dropped from the table to keep the result view focused.
-
-A copy-log button in the same card header dumps the full scan log to the
-clipboard. A "Scan in progress" pill in the sidebar shows when a scan is
-running; cancelling the page stops all in-flight fetches.
-
-### Auto-scan
-A background scanner runs every `auto_scan_interval_minutes` (default
-`120`) when `auto_scan_enabled` is on (default `on`). The next run is
-scheduled from the last completed scan; manual scans pause the auto-timer
-until they finish. Configure both in **Settings**.
-
-### My Jobs
-A sortable, filterable, deduplicated table of every job in the store. Add
-jobs three ways:
-
-1. **Manual** — fill in the modal form.
-2. **By URL** — paste a posting URL; the app scrapes and parses it
-   (with optional browser fallback for JS-rendered pages).
-3. **By scan** — anything new from a board scan is added automatically.
-
-Each row shows a fit dot (blue ≥ 0.9, green ≥ 0.6, amber ≥ 0.3, red < 0.3)
-— jobs newly created from a scan start at the neutral default of 0.31,
-above the red cutoff. The dot is hidden until the job has a real score.
-the salary, the job title, and a quick status badge. Filters at the top
-let you narrow by status, source, work mode, employment type, location,
-and salary range; a free-text search box queries title + company. Column
-headers (Status, Source, Fit) are click-to-sort. A bulk-select toolbar
-lets you change status, delete, or trigger a batch re-score across the
-checked rows.
-
-Clicking a row opens the **Job Detail** page (also reachable from a deep
-link / direct selection). The detail view shows full description, fit
-breakdown (matched / missing skills, experience-years match), score,
-rationale, salary, hiring-manager info, location, status timeline, and the
-per-job document list. Inline edits update the row without leaving the
-page. Score and rationale regenerate from the Job Detail toolbar.
-
-### Pipeline
-A 5-column Kanban (sourced → reviewing → ready → applied → follow-up →
-interviewing) for a visual overview. Each card is a job; click to open
-the detail view.
-
-### Documents
-A two-pane editor: a list of base documents (CV / cover letter) on the
-left, a markdown editor on the right. Each document can be flagged as
-"base" (used as the source for tailoring). Per-job generated documents
-are listed under the base, organised by job. The "Verify" button runs
-the document through the AI for a review pass; the "Regenerate" toolbar
-on individual sections (Experience, Leadership & Activities, Skills &
-Interests) rewrites only the targeted section. A "Re-verify until passed"
-loop is available for documents that don't meet the bar.
-
-### Follow-ups
-A list of follow-ups tied to applications (email / call / linkedin /
-other), with a due date and a generated message draft. Overdue rows are
-red. Completing a follow-up records the date and hides it from the
-default view.
-
-### Interviews
-Scheduled interviews with type, duration, location, interviewer, and
-notes. The list defaults to upcoming only; toggle to show past.
-
-### Settings
-- **User profile** — name, email, phone, country.
-- **Base CV** — paste your master CV here; this is the source for all
-  tailoring.
-- **Job search defaults** — keywords and preferred location (used by
-  auto-scan when no overrides are set).
-- **AI Models** — add / remove / reorder LLM providers. The app tries
-  them in priority order; a model failure (rate limit, network, parse)
-  transparently falls through to the next. Built-in fallback heuristics
-  (skills overlap, years-of-experience match, education-level match)
-  run when every model fails. Each call has a default 0.5-second
-  timeout and a single retry.
-- **Boards** — per-board and per-category on/off toggles, Adzuna API
-  keys, free aggregator toggles, and per-ATS CRUD for boards that
-  support a custom feed. Disabled boards are filtered out of the
-  Scan page picker and skipped at scan time. Toggles auto-save on
-  change; no Save button.
-- **Encryption status** — current `sealed` (keyring) / `plaintext-fallback`
-  / `uninitialized` mode.
-- **Auto-scan** — enable / disable and interval in minutes.
-- **Data** — export to JSON, clear all data, clear the dedup history
-  (re-add a job that was previously skipped), and configure encrypted
-  backups. Backups write the full store, a passphrase-wrapped DEK, a
-  KDF parameter file, and a signed manifest to a folder of your choice
-  (the picker warns when the path is inside iCloud Drive, Dropbox,
-  Google Drive, OneDrive, Box, or pCloud). An append-only audit log
-  records backup / restore events. Auto-backup on quit is enabled
-  only after a passphrase is set; the passphrase itself is stored in
-  the encrypted store so it survives restarts. Restore previews show
-  manifest metadata (date, schema version, encryption mode, signed
-  flag) without decrypting.
-
-## AI / LLM integration
-
-The AI layer lives in `electron/ai.ts`. The contract is OpenAI-compatible
-`/v1/chat/completions`. Configure one or more providers in
-**Settings → AI Models**; each row is a `base_url`, `model`, optional
-`api_key`, and a friendly name. On call, the app tries each enabled model
-in order; only after all models fail (or hit a `RateLimitError`) does it
-fall through. Rate-limited calls enqueue an AI-queue item with exponential
-backoff (30s → 30m cap, up to 10 attempts) and surface a "queued" result
-to the UI.
-
-When every model fails the scorer returns a heuristic fallback
-(`source: 'heuristic'`) and persists the error to the job's
-`fit_last_error` column — the numeric score is **not** overwritten. The
-UI shows the error in place of a score so the user can tell "bad fit"
-from "scorer is broken". The "Fit assessment failed for N jobs" toast
-fires once per error per app session (tracked by `fit_error_toasted` on
-the job row) — restarting the app does not re-fire the same toast.
-
-The CV / cover-letter generator, document verifier, section regenerator,
-and follow-up message generator all share the same multi-model + queue
-plumbing.
-
-## Job board scanning
-
-`electron/jobSearch.ts` ships with a hard-coded list of ~50 boards across
-four buckets: general (LinkedIn, Indeed, Monster, ZipRecruiter, SimplyHired,
-Adzuna, Talent.com, Jora), remote (Remote OK, We Work Remotely, Remotive
-(plus a Remotive (API) variant), Remote.co, Working Nomads, JustRemote,
-Himalayas (API), Hiring Cafe, Sprout, Contra, SkipTheDrive, Jobspresso,
-Dynamite Jobs, DailyRemote, NoDesk, Remote100k), Canadian (Job Bank,
-Eluta.ca, Workopolis, Jobboom, WorkBC, CareerBeacon, Vancouver Jobs, Built
-In Vancouver/Toronto, UToronto), and startup / crypto / niche (Wellfound,
-Y Combinator, Built In, Selby Jennings, Braintrust, Google Careers,
-CareerHound, Idealist, CharityVillage, CVCA, Top Startups, Rocketships,
-Arc, plus a Crypto section: Crypto Careers, Cryptorecruit, Remote3,
-Cryptocurrency Jobs, CryptoJobsList, cryptojobs.com, Crypto.jobs,
-Web3.career, Startup.jobs).
-
-A board can be wired through one of three listing sources:
-
-- **Search page** — the board exposes a keyword-driven results page; the
-  scraper walks paginated search hits and extracts per-job URLs.
-- **Sitemap** — the board's `robots.txt` advertises a `Sitemap:` directive
-  whose `<loc>` entries are per-job URLs. Used for SPA-rendered boards
-  whose search page returns no static HTML. Three current boards
-  (DailyRemote, NoDesk, Remote100k) use this path.
-- **API** — a few sources (Remotive, Himalayas, Adzuna) expose a stable
-  JSON feed that the scraper hits directly.
-
-Individual boards can be toggled off in **Settings → Boards**; boards
-that have produced 5 or more consecutive zero-result scans are hidden
-from the Scan page picker behind a 👁/🙈 icon toggle.
-
-Each board has a per-board scraper (`scrapeBoard`) that knows the URL
-shape, the listing-card selector, and any hash-routing quirks
-(WorkBC's `#/job-details/{id}`, for example, is included in the dedup
-key so the same job across two paths still collapses). Listings are
-deduplicated by a normalized URL (`origin + pathname + query`, with
-tracking parameters stripped); the same URL is never added twice.
-
-Boards that need a JS engine use `browserScraper.ts` (a hidden Electron
-window); the rest go through `fetch` with a real `User-Agent` and
-follow-redirect handling.
-
-## Data model
-
-A single `Store` object lives at
-`~/Library/Application Support/apply-assistant/apply-assistant-data.json`
-on macOS (or the equivalent `userData` path on other platforms). The
-store holds:
-
-- `jobs[]` — every job, with `fit_score`, `fit_rationale`, `fit_breakdown`,
-  `fit_score_version`, `fit_last_error`, `fit_error_toasted`,
-  `salary_range`, `hiring_manager`, `date_posted`, `last_updated`,
-  `application_requirements`, `employment_type`, `work_mode`, etc.
-- `documents[]` — base and per-job CV / cover letters.
-- `applications[]`, `follow_ups[]`, `interviews[]` — pipeline data.
-- `settings` — user profile, base CV, search defaults, auto-scan
-  config.
-- `api_models[]` — ordered list of LLM providers.
-- `seen_urls[]` — dedup history.
-- `ai_queue[]` — pending rate-limited / failed AI calls.
-- `board_health[]` — last 5 results per board (for the "skip sick boards"
-  filter on the Scan page).
-- `deleted_jobs[]` — soft-deleted job records (capped by
-  `deleted_jobs_cap`, default 50000; used to block re-add of jobs the
-  user has already seen).
-- `blacklisted_companies[]`.
-
-### Encryption
-
-`electron/secureStore.ts` derives a 32-byte data-encryption key (DEK) on
-first run, seals it with `safeStorage` (Keychain / libsecret / DPAPI) and
-writes it to `apply-assistant-key` in the same directory. Every store
-write encrypts the whole JSON as `enc:v1:<base64(iv|tag|ct)>` with
-AES-256-GCM. If the OS keyring is unavailable the DEK falls back to a
-plaintext on-disk key with a `pln:` marker — the app surfaces this state
-in Settings; users can opt out by clearing data. The encryption status
-can be one of:
-
-- `sealed` — DEK is sealed in the OS keyring. Recommended.
-- `plaintext-fallback` — DEK is on disk in plaintext (keyring unavailable).
-- `uninitialized` — no data yet, no key created.
-
-The DEK is bound to the current user account by mixing the OS username
-into the key derivation; copying the data file to another account does
-not decrypt it without the destination account's key.
-
-## Privacy
-
-- All data lives locally; no network calls except to the configured LLM
-  providers and the scraped job boards.
-- API keys and the data store are encrypted at rest with the OS keyring
-  when available.
-- The DevTools are opened in dev mode only; production builds don't
-  expose them.
-
-## Tech
-
-Electron 34 + React 18 + TypeScript 5 + Vite 5. State is local React;
-IPC is via a `preload.ts`-exposed `api` proxy that wraps
-`ipcRenderer.invoke` with a typed `Api` interface. No external database —
-the store is a single encrypted JSON file written with `fsync` to
-guarantee durability across crashes.
-
-## Project layout
-
-```
-electron/                 Main process + scraping + DB
-  main.ts                 App lifecycle, IPC handlers
-  preload.ts              `window.api` surface
-  database.ts             Store, migrations, CRUD
-  secureStore.ts          DEK / AES-GCM helpers
-  backupCrypto.ts         Passphrase-wrapped backups + signed manifests
-  ai.ts                   Multi-model LLM client + queue types
-  aiQueue.ts              Rate-limit retry queue
-  autoScan.ts             Background scan scheduler
-  aggregatorApis.ts       Adzuna + other free-aggregator drivers
-  atsAdapter.ts           Per-ATS scraper adapters
-  govApis.ts              Government job-board adapters (Job Bank, etc.)
-  rssFetcher.ts           RSS / Atom listing sources
-  jobSearch.ts            Board definitions + per-board scrapers
-  jobScraper.ts           Single-posting URL scraper
-  browserScraper.ts       JS-engine fallback for hard boards
-  fitHeuristic.ts         Fallback scorer (skills / experience / education)
-  employmentType.ts       Normalizer for the EmploymentType enum
-  logger.ts               Per-category file loggers under <userData>/logs
-  utils.ts                HTML cleanup, dedup-key, salary normalize
-  types.ts                IPC + DB shared types
-
-src/                      Renderer
-  pages/                  One file per sidebar page
-    Dashboard.tsx         Counts, due follow-ups, upcoming interviews
-    ScanJobsPage.tsx      One-shot + auto scan configuration
-    JobsPage.tsx          Sortable, filterable, deduplicated job table
-    JobDetail.tsx         Per-job description, fit, documents, status
-    PipelinePage.tsx      5-column Kanban
-    DocumentsPage.tsx     Base + per-job CV / cover-letter editor
-    FollowUpsPage.tsx     Per-application follow-up tracking
-    InterviewsPage.tsx    Upcoming + past interviews
-    SettingsPage.tsx      All settings tabs (profile, boards, AI, data, ...)
-  components/             Sidebar, Modal, Notifications, ErrorBoundary
-  styles/global.css       Design tokens + component classes
-  api.ts                  Typed wrapper around `window.api`
-  persistedState.ts       localStorage-backed hook for UI state
-  types.ts                Renderer-side mirror of electron/types.ts
-```
+1→# FlowJob
+2→
+3→Desktop assistant for the full job application lifecycle — track jobs, scan
+4→
+5→Desktop assistant for the full job application lifecycle — track jobs, scan
+6→multiple job boards, generate tailored CVs and cover letters, manage the
+7→application pipeline, and track follow-ups and interviews. Built as an
+8→Electron + React + TypeScript app with a flat-file JSON store encrypted at
+9→rest.
+10→
+11→## Setup
+12→
+13→```bash
+14→npm install
+15→npm run dev
+16→```
+17→
+18→Requires Node.js 18+ and a working Electron environment. First launch will
+19→create a sealed data-encryption key in the OS keyring (macOS Keychain, Linux
+20→libsecret, or Windows DPAPI) and an encrypted `apply-assistant-data.json`
+21→store under the app's `userData` directory.
+22→
+23→### Scripts
+24→
+25→| Command | What it does |
+26→|---|---|
+27→| `npm run dev` | Start the Electron + Vite dev server with HMR. |
+28→| `npm run build` | Production build of main, preload, and renderer bundles. |
+29→| `npm run preview` | Build and run the packaged preview. |
+30→| `npm run start` | Same as `preview`. |
+31→| `npm run lint` | ESLint over the whole repo. |
+32→| `npm run lint:fix` | ESLint with `--fix`. |
+33→| `npm run typecheck` | `tsc --noEmit` over the test tsconfig. |
+34→| `npm run test` | Vitest run. |
+35→| `npm run test:watch` | Vitest watch mode. |
+36→
+37→## Navigation
+38→
+39→The sidebar exposes 8 pages, in this order: **Dashboard**, **Scan Jobs**,
+40→**My Jobs**, **Pipeline**, **Documents**, **Follow-ups**, **Interviews**,
+41→**Settings**. A sidebar refresh button re-fetches the current page; a
+42→status pill at the bottom shows when an auto-scan is in flight.
+43→
+44→## Features
+45→
+46→### Dashboard
+47→At-a-glance counts (jobs tracked, applied, interviewing, offers, pending
+48→follow-ups, upcoming interviews) plus the next 5 due follow-ups and 5
+49→upcoming interviews. Overdue follow-ups are highlighted in red.
+50→
+51→### Scan Jobs
+52→Run a one-shot scan across any subset of the built-in boards. Filter by
+53→keywords, location, and work-type (any / remote / hybrid / in-office). A
+54→live progress stream is rendered in the page; on completion the result card
+55→shows a per-board breakdown of:
+56→
+57→- **Board** — Job board source (e.g., LinkedIn, Remote OK).
+58→- **Scraped** — Derived as `Found - Skipped - Errors`. New jobs surfaced.
+59→- **Added** — Jobs successfully added to your store.
+60→- **Found / Skipped / Errors** — Click `+` in card header to expand.
+61→
+62→A copy-log button dumps the full scan log to the clipboard. A "Scan in progress"
+63→pill in the sidebar appears during scans; cancelling the page stops fetches.
+64→
+65→### Auto-scan
+66→Runs every `auto_scan_interval_minutes` (default 120) when enabled. Manual scans pause auto-timer until done.
+67→
+68→### My Jobs
+69→Sortable, filterable table of all jobs. Add jobs via:
+70→1. **Manual** — Fill form.
+71→2. **By URL** — Paste URL; app scrapes/parses.
+72→3. **By scan** — Auto-added from board scans.
+73→
+74→Each row shows a fit dot (blue ≥ 0.9, green ≥ 0.6, amber ≥ 0.3, red < 0.3).
+75→New scan-added jobs start at 0.31. Click rows to open Job Detail view.
+76→
+77→### Pipeline
+78→5-column Kanban: Sourced → Reviewing → Ready → Applied → Follow-up → Interviewing.
+79→
+80→### Documents
+81→Two-pane editor: Base documents (CV/cover letter) on left; tailored versions on right.
+82→Flag documents as "base" for tailoring. Use AI to verify/regenerate sections.
+83→
+84→### Follow-ups
+85→Track follow-ups (email/call/LinkedIn) with due dates and AI-generated drafts.
+86→
+87→### Interviews
+88→Manage scheduled interviews with details and notes.
+89→
+90→### Settings
+91→- **User Profile**: Name, email, phone, country.
+92→- **Base CV**: Master CV for tailoring.
+93→- **AI Models**: Configure LLM providers (priority order, API keys).
+94→- **Boards**: Toggle job boards (50+ supported).
+95→- **Encryption**: Sealed (OS keyring) / plaintext-fallback status.
+96→- **Auto-scan**: Enable/disable + interval.
+97→- **Data**: Export/clear data, manage encrypted backups.
+98→
+99→## Job Board Scanning
+100→Supports **50+ boards** across categories:
+101→- **General**: LinkedIn, Indeed, Monster
+102→- **Remote**: Remote OK, We Work Remotely
+103→- **Canadian**: Job Bank, WorkBC
+104→- **Startup/Crypto**: Wellfound, Crypto Careers
+105→
+106→![Board Categories](boards.png) <!-- Add diagram here -->
+107→
+108→Boards use search pages, sitemaps, or APIs. Disabled boards are hidden; sick boards (consecutive zero results) are toggleable.
+109→
+110→## Data Storage
+111→
+112→Single encrypted `Store` object (AES-256-GCM) at:
+113→`~/Library/Application Support/apply-assistant/apply-assistant-data.json`
+114→(platform-equivalent paths). Stores jobs, documents, applications, settings, and more.
+115→
+116→## AI Integration
+117→OpenAI-compatible `/v1/chat/completions` API. Configure providers in Settings.
+118→AI handles document generation, verification, and follow-up drafts with rate-limiting.
+119→
+120→## Project Layout
+121→```
+122→electron/                 # Main process (scraping, encryption, IPC)
+123→  main.ts                 # App lifecycle
+124→  preload.ts              # Renderer-main bridge
+125→src/                      # React frontend
+126→  pages/                  # Core pages
+127→  components/             # UI components
+128→  api.ts                  # Typed IPC client
+129→```
+130→
+131→## Privacy
+132→- All data stored locally; no network calls except to configured LLMs and job boards.
+133→- Encryption uses OS keyring when available.
+134→- DevTools disabled in production.
+135→
+136→## License
+137→MIT License - See [LICENSE](LICENSE) for details.
+138→
+139→## Support
+140→Open GitHub issues or contact support@flowjob.org.
