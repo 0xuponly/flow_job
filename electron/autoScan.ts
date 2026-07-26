@@ -1,8 +1,11 @@
 import { getSettings } from './database'
 import { scanAllBoards } from './jobSearch'
 import type { ScanResult } from './types'
+import { timerDeadlineMs } from './utils'
 
 let timer: NodeJS.Timeout | null = null
+let timerStartedAt = 0
+let timerDelayMs = 0
 let lastScanCompletedAt: number | null = null
 let running = false
 
@@ -10,6 +13,8 @@ function clearTimer() {
   if (timer) {
     clearTimeout(timer)
     timer = null
+    timerStartedAt = 0
+    timerDelayMs = 0
   }
 }
 
@@ -27,6 +32,8 @@ export function scheduleNextAutoScan(afterCompletedAt: number | null = lastScanC
   const base = afterCompletedAt ?? Date.now()
   const delay = Math.max(0, base + ms - Date.now())
   timer = setTimeout(runAutoScan, delay)
+  timerStartedAt = Date.now()
+  timerDelayMs = delay
 }
 
 export function cancelAutoScan() {
@@ -55,7 +62,7 @@ export function getAutoScanState(): { enabled: boolean; intervalMinutes: number;
     enabled: settings.auto_scan_enabled,
     intervalMinutes: settings.auto_scan_interval_minutes,
     lastCompletedAt: lastScanCompletedAt,
-    nextRunAt: timer ? Date.now() + (timer as any)._idleTimeout : null
+    nextRunAt: timer ? timerDeadlineMs(timerStartedAt, timerDelayMs) : null
   }
 }
 

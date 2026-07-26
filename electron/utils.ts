@@ -789,3 +789,21 @@ export function normalizeSalary(
   }
   return null
 }
+
+// ---------------------------------------------------------------------------
+// Timer helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute remaining milliseconds on a tracked deadline. Pair with
+ * module-level `timerStartedAt` / `timerDelayMs` variables that are
+ * set whenever a `setTimeout` is created, so we never need to reach
+ * into the opaque `NodeJS.Timeout` handle for its internal
+ * `_idleTimeout`.
+ *
+ * @returns remaining ms (always > 0) or null if the deadline has passed.
+ */
+export function timerDeadlineMs(startedAt: number, delayMs: number): number | null {
+  const remaining = startedAt + delayMs - Date.now()
+  return remaining > 0 ? remaining : null
+}

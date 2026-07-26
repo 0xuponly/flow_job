@@ -11,7 +11,7 @@ import { fetchPageHtml, fetchSitemapText, extractSitemapUrls } from './netUtils'
 import { scoreJobFit } from './ai'
 import { scoreCompatibility } from './fitHeuristic'
 export { scoreCompatibility } from './fitHeuristic'
-import type { Job, LocationPick, ScanFilters, WorkType } from './types'
+import type { CreateJobInput, Job, LocationPick, ScanFilters, WorkType } from './types'
 import { BOARDS, type BoardConfig, type ScanBoardResult, type ScanResult } from './boards'
 export { BOARDS } from './boards'
 export type { BoardConfig, ScanBoardResult, ScanResult } from './boards'
@@ -522,7 +522,7 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
   const dk = dedupKey(url)
   if (seenUrlsSet.has(dk)) return { action: 'skipped', reason: 'Already in database' }
 
-  let input: { title: string; company: string; location?: string; url?: string; description?: string; salary_range?: string; source?: string; notes?: string; requirements?: string; application_requirements?: string; hiring_manager?: string; employment_type?: string; work_mode?: string }
+  let input: CreateJobInput
   try {
     input = await scrapeJobFromUrl(url)
   } catch (err) {
@@ -534,7 +534,7 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
   }
 
   // Duplicate check by URL (normalized) and company+title
-  if (findDuplicateJob({ ...input, url: input.url || url } as any)) {
+  if (findDuplicateJob({ ...input, url: input.url || url })) {
     seenUrlsSet.add(dk)
     return { action: 'skipped', reason: 'Duplicate (already exists by URL or company+title)' }
   }

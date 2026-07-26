@@ -139,7 +139,8 @@ import type {
   ScanFilters,
   ScanResult,
   Settings,
-  TailorRequest
+  TailorRequest,
+  VerificationResult
 } from './types'
 
 // Module-level scan state — survives tab switches in the renderer
@@ -445,7 +446,7 @@ function registerIpc(): void {
     db.deleteDocument(id)
     if (target?.job_id) db.recomputeJobStatusFromDocs(target.job_id)
   })
-  ipcMain.handle('documents:verify', async (_e, jobId: number, documentId: number, docType: 'cv' | 'cover_letter') => {
+  ipcMain.handle('documents:verify', async (_e, jobId: number, documentId: number, docType: 'cv' | 'cover_letter'): Promise<VerificationResult | { queued: true }> => {
     try {
       const result = await verifyDocumentContent(jobId, documentId, docType)
       db.recomputeJobStatusFromDocs(jobId)
@@ -453,7 +454,7 @@ function registerIpc(): void {
     } catch (err) {
       if (err instanceof RateLimitError) {
         enqueue({ type: 'verify', jobId, documentId })
-        return { queued: true } as any
+        return { queued: true }
       }
       throw err
     }
