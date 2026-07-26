@@ -5,6 +5,7 @@ import { fetchArbeitnowJobs, fetchHimalayasJobs, fetchJobicyJobs, fetchRemotiveJ
 import { fetchAtsJobs } from './atsAdapter'
 import { fetchJobBankJobs, fetchWorkBcJobs } from './govApis'
 import { fetchRssFeed } from './rssFetcher'
+import { fetchPageHtml, fetchSitemapText, extractSitemapUrls } from './netUtils'
 
 export interface BoardConfig {
   name: string
@@ -33,66 +34,6 @@ export interface ScanResult {
   boards: ScanBoardResult[]
   errors: string[]
   addedJobs: { id: number; title: string; company: string }[]
-}
-
-// --- Sitemap helpers (moved from jobSearch.ts for BOARDS callbacks) ---
-
-const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-
-async function fetchPageHtml(url: string, useBrowser: boolean, signal?: AbortSignal): Promise<string> {
-  if (useBrowser) {
-    const { fetchHtmlViaBrowser } = await import('./browserScraper')
-    try {
-      return await fetchHtmlViaBrowser(url)
-    } catch {
-      throw new Error('Blocked by anti-bot protection (Cloudflare/Cloudfront).')
-    }
-  }
-  const timeoutSignal = AbortSignal.timeout(30000)
-  const combinedSignal = signal
-    ? AbortSignal.any([signal, timeoutSignal])
-    : timeoutSignal
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': USER_AGENT,
-      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Accept-Encoding': 'gzip, deflate, br'
-    },
-    signal: combinedSignal,
-    redirect: 'follow'
-  })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  const html = await response.text()
-  const { isChallengePage } = await import('./browserScraper')
-  if (isChallengePage(html)) {
-    try {
-      const { fetchHtmlViaBrowser } = await import('./browserScraper')
-      return await fetchHtmlViaBrowser(url)
-    } catch {
-      throw new Error(`HTTP ${response.status} (blocked)`)
-    }
-  }
-  return html
-}
-
-async function fetchSitemapText(url: string, useBrowser: boolean): Promise<string> {
-  return fetchPageHtml(url, useBrowser)
-}
-
-function extractSitemapUrls(xml: string): string[] {
-  const locRe = /<loc>\s*([^<]+?)\s*<\/loc>/gi
-  const out: string[] = []
-  const seen = new Set<string>()
-  let m: RegExpExecArray | null
-  while ((m = locRe.exec(xml)) !== null) {
-    const u = m[1].trim()
-    if (!seen.has(u)) {
-      seen.add(u)
-      out.push(u)
-    }
-  }
-  return out
 }
 
 export const BOARDS: BoardConfig[] = [
