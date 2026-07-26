@@ -110,8 +110,8 @@ function FilterSelect({ options, selected, onChange, displayMap }: {
     function handleClick(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
     }
-    if (open) document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
+    if (open) document.addEventListener('click', handleClick)
+    return () => document.removeEventListener('click', handleClick)
   }, [open])
 
   const selSet = useMemo(() => new Set(selected), [selected])
@@ -228,8 +228,8 @@ function DateFilterSelect({ filter, onChange }: {
     function handleClick(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
     }
-    if (open) document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
+    if (open) document.addEventListener('click', handleClick)
+    return () => document.removeEventListener('click', handleClick)
   }, [open])
 
   const bucketSet = useMemo(() => new Set(filter.buckets), [filter.buckets])
@@ -634,8 +634,8 @@ function SalaryFilterSelect({ filter, onChange }: {
     function handleClick(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
     }
-    if (open) document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
+    if (open) document.addEventListener('click', handleClick)
+    return () => document.removeEventListener('click', handleClick)
   }, [open])
 
   const active = isSalaryFilterActive(filter)
