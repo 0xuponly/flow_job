@@ -7,6 +7,7 @@ import Tooltip from '../components/Tooltip'
 import { COUNTRY_TO_CURRENCY, LONG_NAME_TO_COUNTRY } from '../currency'
 import { condenseLocation, REMOTE_TOKEN_RE } from '../locations'
 import type { CreateJobInput, Job } from '../types'
+import { formatJobDate, decodeEntities } from '../utils'
 
 // Lives at module scope so a single ResizeObserver can measure the
 // sticky wrapper height across the page's lifetime without re-binding.
@@ -357,14 +358,6 @@ const EMPTY_FORM: CreateJobInput = {
   salary_range: '',
   source: '',
   notes: ''
-}
-
-function formatJobDate(iso: string | null | undefined): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (isNaN(d.getTime())) return '—'
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${String(d.getFullYear()).slice(-2)}`
 }
 
 /**
@@ -983,10 +976,6 @@ export default function JobsPage() {
       setTimeout(() => linkInputRef.current?.focus(), 50)
     }
   }, [showAddLink])
-
-  function decodeEntities(s: string): string {
-    return s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
-  }
 
   // Ref + height measurement for the sticky header region. The wrapper
   // height is needed as the `top` offset for the sticky table header, so

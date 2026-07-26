@@ -12,6 +12,7 @@ import { STATUS_COLORS, STATUS_LABELS } from '../types'
 import { EMPLOYMENT_TYPES, EMPLOYMENT_TYPE_LABELS, WORK_MODES, formatEmploymentType } from '../employmentType'
 import { enqueueFitRecompute, isJobInFitQueue } from '../fitQueue'
 import { toastErrorSummary } from '../aiErrorSummary'
+import { formatJobDate } from '../utils'
 
 interface Props {
   job: Job
@@ -23,17 +24,6 @@ interface Props {
   // just decides which ids are prev/next relative to the open job.
   filteredJobIds: number[]
   onNavigateSibling: (id: number) => void
-}
-
-// Format an ISO date string as MM/DD/YY for the Application deadline
-// card. Mirrors formatJobDate in JobsPage.tsx — kept local until a
-// third caller shows up, at which point a shared util is justified.
-function formatJobDate(iso: string | null | undefined): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (isNaN(d.getTime())) return '—'
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${String(d.getFullYear()).slice(-2)}`
 }
 
 // Display labels for the four keyword categories. Mirrors the map in

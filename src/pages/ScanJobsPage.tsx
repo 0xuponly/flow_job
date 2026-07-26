@@ -1,22 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { LocationPicker } from '../components/LocationPicker'
+import { parseLocationPicks } from '../utils'
 import type { LocationPick } from '../locations'
 import type { ScanResult, WorkType } from '../types'
 import { BOARD_TYPES } from '../boardTypes'
-
-function parseLocationPicks(raw: string): LocationPick[] {
-  if (!raw) return []
-  try {
-    const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter(
-      (p): p is LocationPick => !!p && typeof p === 'object' && typeof (p as LocationPick).display === 'string'
-    )
-  } catch {
-    return []
-  }
-}
 import { usePersistedState } from '../persistedState'
 
 // Backfill fields that may be missing on results cached from older

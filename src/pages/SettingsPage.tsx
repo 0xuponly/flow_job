@@ -3,22 +3,9 @@ import { api } from '../api'
 import type { ApiModelConfig, Settings } from '../types'
 import { notify } from '../components/Notifications'
 import { LocationPicker } from '../components/LocationPicker'
-import type { LocationPick } from '../locations'
+import { parseLocationPicks } from '../utils'
 import Modal from '../components/Modal'
 import { BOARD_TYPES } from '../boardTypes'
-
-function parseLocationPicks(raw: string): LocationPick[] {
-  if (!raw) return []
-  try {
-    const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter(
-      (p): p is LocationPick => !!p && typeof p === 'object' && typeof (p as LocationPick).display === 'string'
-    )
-  } catch {
-    return []
-  }
-}
 
 const PRESETS: { name: string; desc: string; model: Omit<ApiModelConfig, 'id'> }[] = [
   { name: 'Big Pickle', desc: 'Free, no API key needed', model: { name: 'Big Pickle', base_url: 'https://opencode.ai/zen/v1', api_key: '', model: 'big-pickle' } },
