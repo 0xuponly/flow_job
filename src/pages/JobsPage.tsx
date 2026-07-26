@@ -115,30 +115,39 @@ function FilterSelect({ options, selected, onChange, displayMap }: {
   }, [open])
 
   const selSet = useMemo(() => new Set(selected), [selected])
-  const label = selected.length === 0 ? '—' : `${selected.length} selected`
+  // Empty selected = no filter active (show all). In the dropdown,
+  // treat every option as checked so the user can unselect the ones
+  // they don't want instead of having to manually check everything.
+  const allSelected = selSet.size === 0
+  const label = allSelected ? '—' : `(${selected.length})`
 
   return (
     <div className="filter-dropdown" ref={ref}>
       <button className="filter-dropdown-btn" onClick={() => setOpen(!open)}>
         {label}
         <span className="filter-arrow">{open ? '▲' : '▼'}</span>
-        {selected.length > 0 && (
+        {!allSelected && (
           <span className="filter-clear" onClick={(e) => { e.stopPropagation(); onChange([]) }}>✕</span>
         )}
       </button>
       {open && (
         <div className="filter-menu" ref={menuRef} style={placement}>
           {options.map((opt) => {
-            const checked = selSet.has(opt)
+            const checked = allSelected || selSet.has(opt)
             return (
               <label key={opt} className="filter-option">
                 <input
                   type="checkbox"
                   checked={checked}
                   onChange={() => {
-                    const next = new Set(selSet)
+                    // When allSelected (empty array), start from
+                    // all options so unchecking actually removes one.
+                    const next = allSelected ? new Set(options) : new Set(selSet)
                     if (checked) { next.delete(opt) } else { next.add(opt) }
-                    onChange([...next])
+                    // If every option ends up checked, collapse back
+                    // to empty array ("no filter" = show all).
+                    const result = next.size === options.length ? [] : [...next]
+                    onChange(result)
                   }}
                 />
                 <span>{displayMap?.[opt] ?? opt}</span>
