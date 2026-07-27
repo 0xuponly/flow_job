@@ -1,4 +1,7 @@
 import { BrowserWindow, session } from 'electron'
+import { existsSync } from 'fs'
+import { homedir } from 'os'
+import { join } from 'path'
 
 const LOAD_TIMEOUT_MS = 90000
 const CHALLENGE_WAIT_MS = 8000
@@ -246,7 +249,162 @@ const STEALTH_SCRIPT = `
 })();
 `
 
+// ─── Chrome path detection ────────────────────────────────────
+// Tries common Chrome/Chromium installation paths. Returns null
+// when no real browser is found — caller falls back to BrowserWindow.
+// Users can force a path via CHROME_PATH or PUPPETEER_CHROMIUM_REVISION.
+function findChromePath(): string | null {
+  if (process.env.CHROME_PATH && existsSync(process.env.CHROME_PATH)) {
+    return process.env.CHROME_PATH
+  }
+
+  // macOS: homebrew cask and standard installations
+  if (process.platform === 'darwin') {
+    const paths = [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium',
+      join(homedir(), 'Applications', 'Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome')
+    ]
+    for (const p of paths) {
+      if (existsSync(p)) return p
+    }
+    return null
+  }
+
+  // Windows
+  if (process.platform === 'win32') {
+    const paths = [
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      join(process.env.LOCALAPPDATA || 'C:\\Users\\Default', 'Google\\Chrome\\Application\\chrome.exe')
+    ]
+    for (const p of paths) {
+      if (existsSync(p)) return p
+    }
+    return null
+  }
+
+  // Linux: try PATH
+  try {
+    const { execSync } = require('child_process')
+    const candidates = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser']
+    for (const bin of candidates) {
+      try {
+        const which = execSync(`which ${bin} 2>/dev/null`, { encoding: 'utf8' }).trim()
+        if (which) return which
+      } catch {}
+    }
+  } catch {}
+  return null
+}
+
+// ─── Puppeteer-powered fetch ──────────────────────────────────
+// Uses rebrowser-puppeteer-core (patched puppeteer that fixes the
+// Runtime.Enable CDP leak detected by Cloudflare and DataDome).
+// Requires a real Chrome/Chromium installation; falls back to null
+// when that dependency isn't available.
+const _chromePath = findChromePath()
+async function fetchHtmlViaPuppeteer(url: string, opts?: { proxy?: string }): Promise<string | null> {
+  if (!_chromePath) return null
+  try {
+    // Dynamic require so the import only fails at runtime (not compile time)
+    // when rebrowser-puppeteer-core isn't installed.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const puppeteer = require('rebrowser-puppeteer-core')
+
+    const launchArgs: string[] = [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--disable-background-networking',
+      '--disable-sync',
+      '--no-first-run',
+      '--disable-extensions',
+      '--disable-default-apps',
+      // Suppress "Chrome is controlled by automated software" infobar
+      '--disable-automation',
+      '--hide-scrollbars',
+      // Match the Accept header we set in BrowserWindow
+      '--enable-features=NetworkService,NetworkServiceInProcess'
+    ]
+    if (opts?.proxy) {
+      launchArgs.push(`--proxy-server=${opts.proxy}`)
+    }
+
+    const browser = await puppeteer.launch({
+      executablePath: _chromePath,
+      headless: 'new',
+      args: launchArgs,
+      // Disable automated-flag in Chrome so navigator.webdriver isn't
+      // set by Chrome itself — our STEALTH_SCRIPT overrides it anyway.
+      ignoreDefaultArgs: ['--enable-automation']
+    })
+
+    try {
+      const page = await browser.newPage()
+
+      // Set a random UA on the page
+      const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
+      await page.setUserAgent(ua)
+
+      // Set realistic viewport to match UA hints
+      const vp = randomViewport()
+      await page.setViewport(vp)
+
+      // Inject our stealth script before every navigation.
+      // evaluateOnNewDocument registers the script to run in the
+      // page's main world before any site scripts execute — same
+      // timing as the BrowserWindow path's will-frame-navigate hook.
+      await page.evaluateOnNewDocument(STEALTH_SCRIPT)
+
+      // Navigate with network-idle wait so the page is fully loaded
+      await page.goto(url, {
+        waitUntil: 'networkidle',
+        timeout: LOAD_TIMEOUT_MS
+      })
+
+      // Wait an extra moment for any delayed JavaScript rendering
+      await new Promise((r) => setTimeout(r, 1500))
+
+      let html = await page.content()
+
+      // Challenge detection with retry (same logic as BrowserWindow path)
+      if (isChallengePage(html)) {
+        let retries = 0
+        while (retries < 3 && isChallengePage(html)) {
+          await new Promise((r) => setTimeout(r, CHALLENGE_WAIT_MS))
+          html = await page.content()
+          retries++
+        }
+        if (isChallengePage(html)) {
+          throw new Error(
+            'This site blocked automated access (Cloudflare). Open the job in your browser and try again later.'
+          )
+        }
+      }
+
+      return html
+    } finally {
+      await browser.close().catch(() => {})
+    }
+  } catch (err) {
+    // Puppeteer unavailable, Chrome not found, or navigation failed.
+    // Caller falls back to BrowserWindow.
+    return null
+  }
+}
+
 export async function fetchHtmlViaBrowser(url: string, opts?: { proxy?: string }): Promise<string> {
+  // Puppeteer path: uses rebrowser-puppeteer-core (patched puppeteer that
+  // fixes the Runtime.Enable CDP leak detected by Cloudflare/DataDome).
+  // Only available when a real Chrome/Chromium is installed on the system.
+  // Falls back to BrowserWindow when Chrome isn't available.
+  const puppeteerHtml = await fetchHtmlViaPuppeteer(url, opts)
+  if (puppeteerHtml !== null) return puppeteerHtml
+
+  // Fall through to the standard BrowserWindow path.
   return new Promise((resolve, reject) => {
     const ses = session.fromPartition(`scraper-${  Date.now()}`, { cache: false })
     const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
