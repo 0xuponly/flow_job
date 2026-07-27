@@ -246,10 +246,17 @@ const STEALTH_SCRIPT = `
 })();
 `
 
-export async function fetchHtmlViaBrowser(url: string): Promise<string> {
+export async function fetchHtmlViaBrowser(url: string, opts?: { proxy?: string }): Promise<string> {
   return new Promise((resolve, reject) => {
     const ses = session.fromPartition(`scraper-${  Date.now()}`, { cache: false })
     const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
+
+    // Configure proxy if provided. The proxy URL format follows
+    // Electron's proxy rules: "http://user:pass@host:port",
+    // "socks5://host:port", or "socks5://user:pass@host:port".
+    if (opts?.proxy) {
+      ses.setProxy({ proxyRules: opts.proxy, proxyBypassRules: '<local>;*.local' }).catch(() => {})
+    }
 
     const vp = randomViewport()
     const win = new BrowserWindow({
@@ -379,10 +386,15 @@ export async function navigateToHashViaBrowser(
   baseUrl: string,
   targetHash: string,
   markerSubstrings: string[],
-  timeoutMs = 15000
+  timeoutMs = 15000,
+  opts?: { proxy?: string }
 ): Promise<string> {
   const ses = session.fromPartition(`scraper-hashnav-${  Date.now()}`, { cache: false })
   const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
+
+  if (opts?.proxy) {
+    ses.setProxy({ proxyRules: opts.proxy, proxyBypassRules: '<local>;*.local' }).catch(() => {})
+  }
 
   const vp = randomViewport()
   const win = new BrowserWindow({
@@ -521,7 +533,8 @@ export function isChallengePage(html: string): boolean {
 export async function paginateHtmlViaBrowser(
   baseUrl: string,
   pageHashes: string[],
-  perPageWaitMs = 2500
+  perPageWaitMs = 2500,
+  opts?: { proxy?: string }
 ): Promise<string> {
   // Reuse fetchHtmlViaBrowser for the initial load — it already handles
   // stealth injection, challenge detection, and timeout. Then continue
@@ -530,11 +543,15 @@ export async function paginateHtmlViaBrowser(
   // alone, so we navigate to a SAME-PAGE URL with a cache-busting query
   // string. This forces a real document reload that re-initializes the
   // SPA with the new hash.
-  const firstPageHtml = await fetchHtmlViaBrowser(baseUrl)
+  const firstPageHtml = await fetchHtmlViaBrowser(baseUrl, opts)
   if (pageHashes.length === 0) return firstPageHtml
 
   const ses = session.fromPartition(`scraper-paginate-${  Date.now()}`, { cache: false })
   const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
+
+  if (opts?.proxy) {
+    ses.setProxy({ proxyRules: opts.proxy, proxyBypassRules: '<local>;*.local' }).catch(() => {})
+  }
 
   const vp = randomViewport()
   const win = new BrowserWindow({

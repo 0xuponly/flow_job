@@ -150,6 +150,9 @@ export interface Settings {
   auto_tailor_on_scan: boolean
   auto_tailor_min_fit: number
   quick_apply_shortcut: string | null
+  // Optional proxy URL for the browser scraper. Format: "http://user:pass@host:port"
+  // or "socks5://host:port". When empty, no proxy is used.
+  scraper_proxy: string
 }
 
 export type MatchGrade = 'S' | 'A' | 'B' | 'C' | 'D' | 'F' | null

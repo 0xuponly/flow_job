@@ -2,6 +2,7 @@ import type { CreateJobInput } from './types'
 import { fetchHtmlViaBrowser, isChallengePage } from './browserScraper'
 import { normalizeEmploymentType, normalizeWorkMode } from './employmentType'
 import { createLogger } from './logger'
+import { getSettings } from './database'
 
 // File-backed category logger. Writes to <userData>/logs/scraper.log.
 const log = createLogger('scraper')
@@ -242,8 +243,14 @@ async function fetchPageHtml(
   url: string,
   hostname: string,
   signal?: AbortSignal,
-  opts: { skipChallengeCheck?: boolean } = {}
+  opts: { skipChallengeCheck?: boolean; proxy?: string } = {}
 ): Promise<string> {
+  // Read proxy from user settings if not explicitly provided.
+  // The proxy URL flows through to the browser session so all
+  // requests from that window go through the configured proxy.
+  if (!opts.proxy) {
+    try { opts.proxy = getSettings().scraper_proxy } catch { /* settings not available */ }
+  }
   // Plain `fetch` has no built-in timeout, and Indeed (and other
   // Cloudflare-fronted sites) sometimes establishes a connection
   // that never completes a response. Without this race, the user's
@@ -307,13 +314,13 @@ async function fetchPageHtml(
     if (timeoutSignal.aborted) {
       // The request body was slow even though the headers arrived.
       // Treat the same as a timeout — fall through to the browser path.
-      return fetchHtmlViaBrowser(url)
+      return fetchHtmlViaBrowser(url, opts.proxy ? { proxy: opts.proxy } : undefined)
     }
     if (!opts.skipChallengeCheck && isChallengePage(html)) {
       if (CF_BLOCKED_HOSTS.has(hostname)) {
         throw new Error('This site blocked automated access (Cloudflare). Open the job in your browser and try again later.')
       }
-      return fetchHtmlViaBrowser(url)
+      return fetchHtmlViaBrowser(url, opts.proxy ? { proxy: opts.proxy } : undefined)
     }
     return html
   }
@@ -328,7 +335,7 @@ async function fetchPageHtml(
       if (CF_BLOCKED_HOSTS.has(hostname)) {
         throw new Error('This site blocked automated access (Cloudflare). Open the job in your browser and try again later.')
       }
-      return fetchHtmlViaBrowser(url)
+      return fetchHtmlViaBrowser(url, opts.proxy ? { proxy: opts.proxy } : undefined)
     }
   }
 
