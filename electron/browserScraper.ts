@@ -10,14 +10,41 @@ const USER_AGENTS = [
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
 ]
 
+// Randomised viewport dimensions for BrowserWindow. Using a fixed
+// default size is a detectable fingerprint — real users have varied
+// screen sizes. Pick one from the distribution per session.
+const VIEWPORT_PRESETS = [
+  { width: 1920, height: 1080 },
+  { width: 1440, height: 900 },
+  { width: 1366, height: 768 },
+  { width: 1536, height: 864 },
+  { width: 1280, height: 800 },
+  { width: 2560, height: 1440 },
+  { width: 1680, height: 1050 }
+]
+
+function randomViewport(): { width: number; height: number } {
+  return VIEWPORT_PRESETS[Math.floor(Math.random() * VIEWPORT_PRESETS.length)]
+}
+
 // Stealth script: patches navigator to hide headless/automation signals.
 // Runs in the page's main world before any site scripts execute.
+//
+// Ported from puppeteer-extra-plugin-stealth's 13 evasion modules:
+//   navigator.webdriver, chrome.app, chrome.csi, chrome.loadTimes,
+//   chrome.runtime, media.codecs, navigator.hardwareConcurrency,
+//   navigator.languages, navigator.permissions, navigator.plugins,
+//   navigator.platform, navigator.vendor, navigator.connection,
+//   webgl.vendor, window.outerdimensions, hairline, iframe.contentWindow.
 const STEALTH_SCRIPT = `
 (() => {
   try {
-    // Hide webdriver flag
+    const ua = navigator.userAgent
+
+    // ─── navigator.webdriver ────────────────────────────────────
     Object.defineProperty(navigator, 'webdriver', { get: () => false, configurable: true })
-    // Fake plugins (real Chrome has 3 default plugins)
+
+    // ─── navigator.plugins (3 default Chrome plugins) ──────────
     Object.defineProperty(navigator, 'plugins', {
       get: () => {
         const arr = [
@@ -32,18 +59,34 @@ const STEALTH_SCRIPT = `
       },
       configurable: true
     })
-    // Languages
+
+    // ─── navigator.languages ────────────────────────────────────
     Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'], configurable: true })
-    // Platform (matching UA)
-    const ua = navigator.userAgent
+
+    // ─── navigator.vendor (Chrome = "Google Inc.") ─────────────
+    Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.', configurable: true })
+
+    // ─── navigator.platform (matching UA) ──────────────────────
     let platform = 'Win32'
     if (ua.includes('Mac')) platform = 'MacIntel'
     else if (ua.includes('Linux')) platform = 'Linux x86_64'
     Object.defineProperty(navigator, 'platform', { get: () => platform, configurable: true })
-    // Hardware concurrency (looks like a real machine)
+
+    // ─── navigator.hardwareConcurrency / deviceMemory ──────────
     Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8, configurable: true })
     Object.defineProperty(navigator, 'deviceMemory', { get: () => 8, configurable: true })
-    // Permissions API: notifications default should be 'default' or 'denied', not 'prompt' in headless
+
+    // ─── navigator.connection (NetworkInformation API) ─────────
+    // Some headless browsers expose navigator.connection as undefined
+    // or with null properties. Real Chrome has an object with
+    // downlink, effectiveType, rtt, saveData.
+    if (navigator.connection) {
+      try {
+        Object.defineProperty(navigator.connection, 'rtt', { get: () => 100, configurable: true })
+      } catch {}
+    }
+
+    // ─── navigator.permissions (notifications → denied) ────────
     if (navigator.permissions && navigator.permissions.query) {
       const origQuery = navigator.permissions.query.bind(navigator.permissions)
       navigator.permissions.query = (params) =>
@@ -52,7 +95,8 @@ const STEALTH_SCRIPT = `
           return res
         })
     }
-    // WebGL vendor/renderer (avoid the SwiftShader fallback that signals headless)
+
+    // ─── WebGL vendor/renderer (avoid SwiftShader) ─────────────
     try {
       const origGetParam = WebGLRenderingContext.prototype.getParameter
       WebGLRenderingContext.prototype.getParameter = function (p) {
@@ -61,23 +105,143 @@ const STEALTH_SCRIPT = `
         return origGetParam.call(this, p)
       }
     } catch {}
-    // Chrome runtime stub (some sites check for it)
-    if (!window.chrome) {
-      window.chrome = {
-        runtime: {
-          onMessage: { addListener: () => {}, removeListener: () => {} },
-          sendMessage: () => {},
-          connect: () => ({ onMessage: { addListener: () => {} } })
-        },
-        loadTimes: () => ({}),
-        csi: () => ({}),
-        app: { isInstalled: false }
+
+    // ─── MediaDevices.enumerateDevices (avoid empty list) ──────
+    // Headless Chrome returns an empty MediaDeviceInfo list. Real
+    // Chrome returns at least a default audio output device. Some
+    // bot detectors call enumerateDevices() and check the length.
+    if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+      const origEnum = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices)
+      navigator.mediaDevices.enumerateDevices = async () => {
+        const devices = await origEnum()
+        if (devices.length === 0) {
+          return [
+            { deviceId: 'default', kind: 'audiooutput', label: '', groupId: 'default' }
+          ]
+        }
+        return devices
       }
     }
-    // Notification permission default
+
+    // ─── window.outerDimensions ────────────────────────────────
+    // Headless Chrome doesn't set outerWidth/outerHeight properly.
+    // These should match the viewport or be slightly larger.
+    if (window.outerWidth === 0) {
+      try {
+        Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth, configurable: true })
+        Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight + 85, configurable: true })
+      } catch {}
+    }
+
+    // ─── Chrome app / csi / loadTimes / runtime ────────────────
+    if (!window.chrome) {
+      window.chrome = {}
+    }
+    // chrome.app — many sites check for chrome.app.isInstalled
+    if (!window.chrome.app) {
+      window.chrome.app = {
+        isInstalled: false,
+        InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+        RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
+      }
+    }
+    // chrome.csi — Chrome's Client Side Information
+    if (!window.chrome.csi || typeof window.chrome.csi !== 'function') {
+      window.chrome.csi = () => ({
+        onloadT: Date.now(),
+        pageT: Math.floor(Math.random() * 5000) + 1000,
+        startE: Date.now() - Math.floor(Math.random() * 10000),
+        onload: Date.now(),
+        tran: Math.floor(Math.random() * 20)
+      })
+    }
+    // chrome.loadTimes — Page load timing
+    if (!window.chrome.loadTimes || typeof window.chrome.loadTimes !== 'function') {
+      window.chrome.loadTimes = () => {
+        const now = Date.now() / 1000
+        return {
+          commitLoadTime: now - 0.1,
+          connectionInfo: 'http/1.1',
+          finishDocumentLoadTime: now,
+          finishLoadTime: now + 0.05,
+          firstPaintAfterLoadTime: 0,
+          firstPaintTime: now + 0.01,
+          navigationType: 'Other',
+          npnNegotiatedProtocol: 'unknown',
+          requestTime: now - 0.2,
+          startLoadTime: now - 0.15,
+          wasAlternateProtocolAvailable: false,
+          wasFetchedViaSpdy: false,
+          wasNpnNegotiated: false
+        }
+      }
+    }
+    // chrome.runtime — messaging stub (already present but make it more complete)
+    if (!window.chrome.runtime) {
+      window.chrome.runtime = {
+        onInstalled: { addListener: () => {}, removeListener: () => {} },
+        onMessage: { addListener: () => {}, removeListener: () => {} },
+        onConnect: { addListener: () => {}, removeListener: () => {} },
+        sendMessage: () => {},
+        connect: () => ({
+          onMessage: { addListener: () => {}, removeListener: () => {} },
+          onDisconnect: { addListener: () => {}, removeListener: () => {} },
+          postMessage: () => {},
+          disconnect: () => {}
+        })
+      }
+    }
+
+    // ─── hairline detection (border-image: none check) ─────────
+    // Some fingerprinters check if the browser renders a hairline
+    // border by checking computed style. Headless Chrome doesn't
+    // render borders the same way. Patch at CSS level.
+    try {
+      const origGetProperty = CSSStyleDeclaration.prototype.getPropertyValue
+      CSSStyleDeclaration.prototype.getPropertyValue = function (prop) {
+        const val = origGetProperty.call(this, prop)
+        if (prop === 'border-image' && val === 'none') {
+          return 'url("data:image/svg+xml,...") 30 stretch'
+        }
+        return val
+      }
+    } catch {}
+
+    // ─── Notification permission default ───────────────────────
     if (window.Notification && Notification.permission === 'default') {
       try { Object.defineProperty(Notification, 'permission', { get: () => 'denied', configurable: true }) } catch {}
     }
+
+    // ─── iframe.contentWindow spoofing ─────────────────────────
+    // When an iframe is created via document.createElement('iframe'),
+    // bot detectors check if the contentWindow is accessible and
+    // behaves like a real window. Some headless environments fail
+    // this check. Patch HTMLIFrameElement.prototype to make the
+    // contentWindow look real.
+    try {
+      const origContentWindow = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow')
+      if (origContentWindow && origContentWindow.get) {
+        Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+          get: function () {
+            const win = origContentWindow.get.call(this)
+            if (win) {
+              try {
+                // Ensure document.write doesn't throw
+                if (!win.document.write.__patched) {
+                  const origWrite = win.document.write.bind(win.document)
+                  win.document.write = (...args) => {
+                    try { origWrite(...args) } catch {}
+                  }
+                  win.document.write.__patched = true
+                }
+              } catch {}
+            }
+            return win
+          },
+          configurable: true
+        })
+      }
+    } catch {}
   } catch {}
 })();
 `
@@ -87,8 +251,11 @@ export async function fetchHtmlViaBrowser(url: string): Promise<string> {
     const ses = session.fromPartition(`scraper-${  Date.now()}`, { cache: false })
     const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
 
+    const vp = randomViewport()
     const win = new BrowserWindow({
       show: false,
+      width: vp.width,
+      height: vp.height,
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
@@ -217,8 +384,11 @@ export async function navigateToHashViaBrowser(
   const ses = session.fromPartition(`scraper-hashnav-${  Date.now()}`, { cache: false })
   const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
 
+  const vp = randomViewport()
   const win = new BrowserWindow({
     show: false,
+    width: vp.width,
+    height: vp.height,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -319,7 +489,16 @@ export function isChallengePage(html: string): boolean {
     html.includes('challenge-platform') ||
     html.includes('Enable JavaScript and cookies to continue') ||
     html.includes('Verifying you are human') ||
-    html.includes('Checking your browser before accessing')
+    html.includes('Checking your browser before accessing') ||
+    html.includes('cf-turnstile') ||
+    html.includes('data-turnstile') ||
+    html.includes('_cf_chl_opt') ||
+    html.includes('_cf_chl_tk') ||
+    html.includes('turnstile.render') ||
+    html.includes('cf-browser-verification') ||
+    html.includes('data-cf-challenge') ||
+    html.includes('cf_challenge_response') ||
+    html.includes('Cloudflare') && (html.includes('challenge') || html.includes('security check'))
   )
 }
 
@@ -357,8 +536,11 @@ export async function paginateHtmlViaBrowser(
   const ses = session.fromPartition(`scraper-paginate-${  Date.now()}`, { cache: false })
   const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
 
+  const vp = randomViewport()
   const win = new BrowserWindow({
     show: false,
+    width: vp.width,
+    height: vp.height,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
