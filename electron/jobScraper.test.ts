@@ -15,7 +15,7 @@ vi.mock('./database', () => ({
   getJob: vi.fn()
 }))
 
-import { isLinkedInStubDescription, scrapeJobFromUrl } from './jobScraper'
+import { isLinkedInStubDescription, scrapeJobFromUrl, detectSource } from './jobScraper'
 
 // We don't actually hit the network — we stub fetch and feed the
 // extractor a realistic LinkedIn HTML page. The shape below mirrors
@@ -132,5 +132,22 @@ describe('isLinkedInStubDescription', () => {
   it('returns false for a 400-char real body with no marker text', () => {
     const real = "A".repeat(400)
     expect(isLinkedInStubDescription(real)).toBe(false)
+  })
+})
+
+describe('detectSource', () => {
+  it('returns RareRoles for rareroles.com', () => {
+    expect(detectSource('rareroles.com')).toBe('RareRoles')
+    expect(detectSource('www.rareroles.com')).toBe('RareRoles')
+  })
+
+  it('returns Flexa for flexa.careers', () => {
+    expect(detectSource('flexa.careers')).toBe('Flexa')
+    expect(detectSource('www.flexa.careers')).toBe('Flexa')
+  })
+
+  it('returns Jobspresso for jobspresso.co', () => {
+    expect(detectSource('jobspresso.co')).toBe('Jobspresso')
+    expect(detectSource('www.jobspresso.co')).toBe('Jobspresso')
   })
 })

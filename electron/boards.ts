@@ -1,7 +1,7 @@
 // Board configuration and scan result types.
 // Extracted from jobSearch.ts to keep the scan pipeline readable.
 
-import { fetchArbeitnowJobs, fetchHimalayasJobs, fetchJobicyJobs, fetchRemotiveJobs } from './aggregatorApis'
+import { fetchArbeitnowJobs, fetchHimalayasJobs, fetchJobicyJobs, fetchRareRolesJobs, fetchRemotiveJobs } from './aggregatorApis'
 import { fetchAtsJobs } from './atsAdapter'
 import { fetchJobBankJobs, fetchWorkBcJobs } from './govApis'
 import { fetchRssFeed } from './rssFetcher'
@@ -391,6 +391,22 @@ export const BOARDS: BoardConfig[] = [
     searchUrl: () => 'https://authenticjobs.com/?feed=job_feed',
     useBrowser: false,
     apiFetcher: (_k, _l, signal) => fetchRssFeed('https://authenticjobs.com/?feed=job_feed', 'authenticjobs', { signal })
+  },
+  {
+    name: 'RareRoles',
+    searchUrl: (k) => `https://www.rareroles.com/jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: false,
+    apiFetcher: (k, l, signal) => fetchRareRolesJobs({ keywords: k, location: l, signal })
+  },
+  {
+    name: 'Flexa',
+    // Flexa (flexa.careers) is a workplace-flexibility-focused careers
+    // platform. Search pages are Next.js client-rendered with query
+    // params on `/jobs`. Individual job pages at `/jobs/{slug}` have
+    // server-rendered meta tags (og:title, description) that the
+    // generic scraper can extract.
+    searchUrl: (k) => `https://flexa.careers/jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: true
   },
   {
     name: 'Job Bank GC (API)',

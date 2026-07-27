@@ -180,7 +180,7 @@ function normalizeUrl(raw: string): string {
   return parsed.href
 }
 
-function detectSource(hostname: string): string | undefined {
+export function detectSource(hostname: string): string | undefined {
   if (hostname.includes('linkedin.com')) return 'LinkedIn'
   if (hostname.includes('indeed.com')) return 'Indeed'
   if (hostname.includes('glassdoor.com')) return 'Glassdoor'
@@ -232,6 +232,9 @@ function detectSource(hostname: string): string | undefined {
   if (hostname.includes('ultipro.com') || hostname.includes('ultipro.ca')) return 'UltiPro'
   if (hostname.includes('brainhunter.com')) return 'Brainhunter'
   if (hostname.includes('catsone.com')) return 'CATS One'
+  if (hostname.includes('rareroles.com')) return 'RareRoles'
+  if (hostname.includes('flexa.careers')) return 'Flexa'
+  if (hostname.includes('jobspresso.co')) return 'Jobspresso'
   return undefined
 }
 
