@@ -176,3 +176,79 @@ export async function fetchHimalayasJobs({ keywords, signal }: FetchOpts): Promi
   }
   return out
 }
+
+// RareRoles: GET https://api.rareroles.com/api/jobs?search=…&limit=…
+// Public, no auth. Returns `{ jobs: [...] }` from an aggregated feed of
+// ATS postings (Ashby, Greenhouse, etc.). Each job has `title`, `company`,
+// `location`, `salary_min`, `salary_max`, `apply_url`, `posted_date`.
+// No description is returned — we synthesise one from tags, department,
+// industry, and experience_level for the fit scorer.
+export async function fetchRareRolesJobs({ keywords, location, signal }: FetchOpts): Promise<CreateJobInput[]> {
+  const params = new URLSearchParams({ search: normalizeKeywords(keywords), limit: '100' })
+  const url = `https://api.rareroles.com/api/jobs?${params.toString()}`
+  const response = await fetch(url, { headers: { Accept: 'application/json' }, signal })
+  if (!response.ok) return []
+  const payload = (await response.json()) as { jobs?: Array<Record<string, unknown>> }
+  if (!payload.jobs) return []
+  const out: CreateJobInput[] = []
+  for (const j of payload.jobs) {
+    const title = String(j.title || '').trim()
+    const company = String(j.company || '').trim()
+    if (!title || !company) continue
+    // Synthesise a description from available metadata so the fit
+    // scorer has something to work with.
+    const descParts: string[] = []
+    const dept = String(j.department || '').trim()
+    const industry = String(j.industry || '').trim()
+    const exp = String(j.experience_level || '').trim()
+    const tags = Array.isArray(j.tags) ? (j.tags as string[]).map(String) : []
+    if (dept) descParts.push(`Department: ${dept}`)
+    if (industry) descParts.push(`Industry: ${industry}`)
+    if (exp) descParts.push(`Experience: ${exp}`)
+    if (tags.length > 0) descParts.push(`Skills: ${tags.join(', ')}`)
+    const description = descParts.join('\n')
+    if (!description) continue
+
+    // Normalise work_type to our enum
+    const wt = String(j.work_type || '').trim().toLowerCase()
+    let workMode: string | null = null
+    if (wt === 'remote') workMode = 'REMOTE'
+    else if (wt === 'hybrid') workMode = 'HYBRID'
+    else if (wt === 'on-site') workMode = 'ON_SITE'
+
+    // Normalise job_type to our employment type
+    const jt = String(j.job_type || '').trim().toLowerCase()
+    let empType: string | null = null
+    if (jt.includes('full')) empType = 'FULL_TIME'
+    else if (jt.includes('part')) empType = 'PART_TIME'
+    else if (jt.includes('contract')) empType = 'CONTRACT'
+
+    // Parse location: "Remote (City, State, Country)" or "City, State"
+    const rawLocation = String(j.location || '').trim()
+    const locationClean = rawLocation.replace(/^(Remote|On-site|Hybrid)\s*\(([^)]+)\)$/, '$2').trim() || rawLocation
+
+    // Salary range: build from min/max numbers
+    const sMin = typeof j.salary_min === 'number' ? j.salary_min : 0
+    const sMax = typeof j.salary_max === 'number' ? j.salary_max : 0
+    const salaryRange = sMin > 0 && sMax > 0
+      ? `$${sMin.toLocaleString()}–$${sMax.toLocaleString()}`
+      : null
+
+    out.push({
+      title,
+      company,
+      location: locationClean || null,
+      url: typeof j.apply_url === 'string' ? j.apply_url : null,
+      description,
+      salary_range: salaryRange,
+      source: 'RareRoles',
+      requirements: null,
+      application_requirements: null,
+      hiring_manager: null,
+      employment_type: empType,
+      work_mode: workMode,
+      notes: null
+    })
+  }
+  return out
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { normalizeLocations } from './jobSearch'
+import { normalizeLocations, BOARDS } from './jobSearch'
 import type { LocationPick } from './types'
 
 describe('normalizeLocations', () => {
@@ -57,5 +57,35 @@ describe('normalizeLocations', () => {
       { id: undefined, display: 'Vancouver, British Columbia, Canada' },
     ]
     expect(normalizeLocations(picks, undefined)).toEqual(picks)
+  })
+})
+
+describe('BOARDS config', () => {
+  it('has RareRoles with apiFetcher', () => {
+    const board = BOARDS.find((b) => b.name === 'RareRoles')
+    expect(board).toBeDefined()
+    expect(board!.useBrowser).toBe(false)
+    expect(board!.apiFetcher).toBeDefined()
+  })
+
+  it('has Flexa with useBrowser', () => {
+    const board = BOARDS.find((b) => b.name === 'Flexa')
+    expect(board).toBeDefined()
+    expect(board!.useBrowser).toBe(true)
+    expect(board!.apiFetcher).toBeUndefined()
+  })
+
+  it('RareRoles searchUrl encodes keywords', () => {
+    const board = BOARDS.find((b) => b.name === 'RareRoles')
+    const url = board!.searchUrl('data engineer', '')
+    expect(url).toContain('q=data%20engineer')
+    expect(url).toMatch(/^https:\/\/www\.rareroles\.com\//)
+  })
+
+  it('Flexa searchUrl encodes keywords', () => {
+    const board = BOARDS.find((b) => b.name === 'Flexa')
+    const url = board!.searchUrl('react developer', '')
+    expect(url).toContain('q=react%20developer')
+    expect(url).toMatch(/^https:\/\/flexa\.careers\//)
   })
 })
