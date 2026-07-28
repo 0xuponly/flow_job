@@ -1,7 +1,4 @@
 import { BrowserWindow, session } from 'electron'
-import { existsSync } from 'fs'
-import { homedir } from 'os'
-import { join } from 'path'
 
 const LOAD_TIMEOUT_MS = 90000
 const CHALLENGE_WAIT_MS = 8000
@@ -249,117 +246,60 @@ const STEALTH_SCRIPT = `
 })();
 `
 
-// ─── Chrome path detection ────────────────────────────────────
-// Tries common Chrome/Chromium installation paths. Returns null
-// when no real browser is found — caller falls back to BrowserWindow.
-// Users can force a path via CHROME_PATH or PUPPETEER_CHROMIUM_REVISION.
-function findChromePath(): string | null {
-  if (process.env.CHROME_PATH && existsSync(process.env.CHROME_PATH)) {
-    return process.env.CHROME_PATH
-  }
-
-  // macOS: homebrew cask and standard installations
-  if (process.platform === 'darwin') {
-    const paths = [
-      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-      '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
-      '/Applications/Chromium.app/Contents/MacOS/Chromium',
-      join(homedir(), 'Applications', 'Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome')
-    ]
-    for (const p of paths) {
-      if (existsSync(p)) return p
-    }
-    return null
-  }
-
-  // Windows
-  if (process.platform === 'win32') {
-    const paths = [
-      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-      join(process.env.LOCALAPPDATA || 'C:\\Users\\Default', 'Google\\Chrome\\Application\\chrome.exe')
-    ]
-    for (const p of paths) {
-      if (existsSync(p)) return p
-    }
-    return null
-  }
-
-  // Linux: try PATH
-  try {
-    const { execSync } = require('child_process')
-    const candidates = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser']
-    for (const bin of candidates) {
-      try {
-        const which = execSync(`which ${bin} 2>/dev/null`, { encoding: 'utf8' }).trim()
-        if (which) return which
-      } catch {}
-    }
-  } catch {}
-  return null
-}
-
-// ─── Puppeteer-powered fetch ──────────────────────────────────
-// Uses rebrowser-puppeteer-core (patched puppeteer that fixes the
-// Runtime.Enable CDP leak detected by Cloudflare and DataDome).
-// Requires a real Chrome/Chromium installation; falls back to null
-// when that dependency isn't available.
-const _chromePath = findChromePath()
-async function fetchHtmlViaPuppeteer(url: string, opts?: { proxy?: string }): Promise<string | null> {
-  if (!_chromePath) return null
+// ─── Camoufox-powered fetch (Firefox anti-fingerprinting) ─────
+// Uses camoufox-js which wraps a patched Firefox binary with
+// sophisticated anti-fingerprinting. No Chrome/Google dependency.
+// Falls back to BrowserWindow when camoufox isn't available.
+async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string }): Promise<string | null> {
   try {
     // Dynamic require so the import only fails at runtime (not compile time)
-    // when rebrowser-puppeteer-core isn't installed.
+    // when camoufox isn't installed.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const puppeteer = require('rebrowser-puppeteer-core')
+    const { Camoufox } = require('camoufox')
 
-    const launchArgs: string[] = [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--disable-background-networking',
-      '--disable-sync',
-      '--no-first-run',
-      '--disable-extensions',
-      '--disable-default-apps',
-      // Suppress "Chrome is controlled by automated software" infobar
-      '--disable-automation',
-      '--hide-scrollbars',
-      // Match the Accept header we set in BrowserWindow
-      '--enable-features=NetworkService,NetworkServiceInProcess'
-    ]
+    // Build proxy config if provided. Camoufox expects { server, username, password }
+    // format matching Playwright's proxy config.
+    let proxyConfig: { server: string; username?: string; password?: string } | undefined
     if (opts?.proxy) {
-      launchArgs.push(`--proxy-server=${opts.proxy}`)
+      const url = new URL(opts.proxy.replace(/^(https?|socks5):\/\//, 'http://'))
+      proxyConfig = {
+        server: opts.proxy,
+        username: url.username || undefined,
+        password: url.password || undefined
+      }
     }
 
-    const browser = await puppeteer.launch({
-      executablePath: _chromePath,
-      headless: 'new',
-      args: launchArgs,
-      // Disable automated-flag in Chrome so navigator.webdriver isn't
-      // set by Chrome itself — our STEALTH_SCRIPT overrides it anyway.
-      ignoreDefaultArgs: ['--enable-automation']
+    const vp = randomViewport()
+
+    const browser = await Camoufox({
+      headless: false,
+      // GeoIP-based configuration: auto-detects locale from IP,
+      // sets timezone, locale, and language to match — makes the
+      // browser fingerprint consistent with a real user's location.
+      geoip: true,
+      // Humanize cursor movement to avoid detection
+      humanize: 1.5,
+      // Set realistic screen dimensions
+      screen: { min_width: vp.width, max_width: vp.width, min_height: vp.height, max_height: vp.height },
+      // Block WebRTC to prevent IP leaks
+      block_webrtc: true,
+      // Proxy configuration when provided
+      ...(proxyConfig ? { proxy: proxyConfig } : {})
     })
 
     try {
       const page = await browser.newPage()
 
-      // Set a random UA on the page
-      const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
-      await page.setUserAgent(ua)
+      // Inject our custom stealth script before every navigation.
+      // addInitScript is the Playwright equivalent of puppeteer's
+      // evaluateOnNewDocument — runs in the page's main world before
+      // any site scripts execute.
+      await page.addInitScript(STEALTH_SCRIPT)
 
-      // Set realistic viewport to match UA hints
-      const vp = randomViewport()
-      await page.setViewport(vp)
-
-      // Inject our stealth script before every navigation.
-      // evaluateOnNewDocument registers the script to run in the
-      // page's main world before any site scripts execute — same
-      // timing as the BrowserWindow path's will-frame-navigate hook.
-      await page.evaluateOnNewDocument(STEALTH_SCRIPT)
-
-      // Navigate with network-idle wait so the page is fully loaded
+      // Navigate with network-idle wait so the page is fully loaded.
+      // Camoufox's patched Firefox has native anti-fingerprinting
+      // built into the browser binary, plus our JS-level stealth
+      // script on top — belt AND suspenders.
       await page.goto(url, {
         waitUntil: 'networkidle',
         timeout: LOAD_TIMEOUT_MS
@@ -390,19 +330,19 @@ async function fetchHtmlViaPuppeteer(url: string, opts?: { proxy?: string }): Pr
       await browser.close().catch(() => {})
     }
   } catch (err) {
-    // Puppeteer unavailable, Chrome not found, or navigation failed.
+    // Camoufox unavailable or navigation failed.
     // Caller falls back to BrowserWindow.
     return null
   }
 }
 
 export async function fetchHtmlViaBrowser(url: string, opts?: { proxy?: string }): Promise<string> {
-  // Puppeteer path: uses rebrowser-puppeteer-core (patched puppeteer that
-  // fixes the Runtime.Enable CDP leak detected by Cloudflare/DataDome).
-  // Only available when a real Chrome/Chromium is installed on the system.
-  // Falls back to BrowserWindow when Chrome isn't available.
-  const puppeteerHtml = await fetchHtmlViaPuppeteer(url, opts)
-  if (puppeteerHtml !== null) return puppeteerHtml
+  // Camoufox path: uses patched Firefox with anti-fingerprinting
+  // (Camoufox) + our custom JS stealth script on top.
+  // No Chrome/Google dependency. Falls back to BrowserWindow
+  // when camoufox isn't available.
+  const camoufoxHtml = await fetchHtmlViaCamoufox(url, opts)
+  if (camoufoxHtml !== null) return camoufoxHtml
 
   // Fall through to the standard BrowserWindow path.
   return new Promise((resolve, reject) => {
