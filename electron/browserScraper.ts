@@ -277,20 +277,26 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string }): Pro
     }
 
     const vp = randomViewport()
+    // Use the real machine's locale and timezone. Cloudflare checks for
+    // locale-vs-IP-geo consistency; the real browser already sends these
+    // so matching them here doesn't leak anything detectable.
+    const systemLocale = Intl.NumberFormat().resolvedOptions().locale || 'en-US'
+    const systemTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York'
 
     const browser = await Camoufox({
       headless: false,
-      // geoip disabled: Camoufox tries to detect public IP via proxy
-      // to set locale/timezone, but without a proxy it throws
-      // InvalidProxy errors that flood stderr. We don't need locale
-      // auto-detection — board sites serve English by default.
       geoip: false,
-      // Humanize cursor movement to avoid detection
-      humanize: 1.5,
       // Set realistic screen dimensions
       screen: { min_width: vp.width, max_width: vp.width, min_height: vp.height, max_height: vp.height },
-      // Block WebRTC to prevent IP leaks
-      block_webrtc: true,
+      // Runtime locale/timezone — Cloudflare checks locale-vs-IP-geo
+      // consistency; the real browser already sends these, so matching
+      // them here doesn't leak anything detectable.
+      locale: systemLocale,
+      timezone: systemTimezone,
+      // Block WebRTC only when a proxy is configured — without one,
+      // Camoufox already normalizes WebRTC so blocking is a detectable
+      // anti-fingerprinting signal that real browsers don't emit.
+      ...(proxyConfig ? { block_webrtc: true } : {}),
       // Proxy configuration when provided
       ...(proxyConfig ? { proxy: proxyConfig } : {})
     })
@@ -316,21 +322,30 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string }): Pro
       // Wait an extra moment for any delayed JavaScript rendering
       await new Promise((r) => setTimeout(r, 1500))
 
-      let html = await page.content()
+      // Scroll to simulate human reading behavior. Cloudflare's behavior
+      // analytics detect dead-still pages. Use evaluate() rather than
+      // Playwright's mouse API to avoid automation fingerprints.
+      const scrollPx = Math.floor(Math.random() * (vp.height * 0.4)) + Math.floor(vp.height * 0.3)
+      await page.evaluate((y: number) => window.scrollTo({ top: y, behavior: 'smooth' }), scrollPx).catch(() => {})
+      await new Promise((r) => setTimeout(r, 200 + Math.random() * 300))
+      await page.evaluate(() => window.scrollBy({ top: Math.floor(Math.random() * 100), behavior: 'smooth' })).catch(() => {})
+      await new Promise((r) => setTimeout(r, 100 + Math.random() * 200))
 
-      // Challenge detection with retry (same logic as BrowserWindow path)
+      // Challenge detection and retry via page reload (not content polling).
+      // Cloudflare challenges execute during page load — re-reading HTML
+      // doesn't re-trigger them. Reloading gives a fresh HTTP attempt, and
+      // the challenge cookie from a previous attempt may still be valid.
+      const challengeDeadline = Date.now() + LOAD_TIMEOUT_MS
+      let html = await page.content()
+      while (isChallengePage(html) && Date.now() < challengeDeadline) {
+        await page.reload({ waitUntil: 'networkidle', timeout: Math.max(30000, challengeDeadline - Date.now()) }).catch(() => {})
+        await new Promise((r) => setTimeout(r, CHALLENGE_WAIT_MS))
+        html = await page.content()
+      }
       if (isChallengePage(html)) {
-        let retries = 0
-        while (retries < 5 && isChallengePage(html)) {
-          await new Promise((r) => setTimeout(r, CHALLENGE_WAIT_MS))
-          html = await page.content()
-          retries++
-        }
-        if (isChallengePage(html)) {
-          throw new Error(
-            'This site blocked automated access (Cloudflare). Open the job in your browser and try again later.'
-          )
-        }
+        throw new Error(
+          'This site blocked automated access (Cloudflare). Open the job in your browser and try again later.'
+        )
       }
 
       return html
