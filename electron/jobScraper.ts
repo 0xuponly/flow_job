@@ -16,10 +16,9 @@ const USER_AGENT =
 // challenge never clears for an automated UA. Skip the fallback and
 // surface the "blocked" error in the same <5s window the plain fetch
 // already used, instead of burning another ~70s before failing.
-const CF_BLOCKED_HOSTS: ReadonlySet<string> = new Set([
-  'indeed.com',
-  'www.indeed.com'
-])
+// Removed 2026-07-28: with Camoufox headed mode and longer challenge
+// waits, Indeed challenges can now resolve — let the browser path try.
+const CF_BLOCKED_HOSTS: ReadonlySet<string> = new Set([])
 
 interface ScrapedJob {
   title?: string
