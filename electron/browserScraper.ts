@@ -600,6 +600,7 @@ export async function navigateToHashViaBrowser(
 
 export function isChallengePage(html: string): boolean {
   return (
+    // Cloudflare-specific challenge signals
     html.includes('Just a moment...') ||
     html.includes('cf-challenge') ||
     html.includes('challenge-platform') ||
@@ -614,7 +615,19 @@ export function isChallengePage(html: string): boolean {
     html.includes('cf-browser-verification') ||
     html.includes('data-cf-challenge') ||
     html.includes('cf_challenge_response') ||
-    html.includes('Cloudflare') && (html.includes('challenge') || html.includes('security check'))
+    html.includes('Cloudflare') && (html.includes('challenge') || html.includes('security check')) ||
+    html.includes('Attention Required') && html.includes('Cloudflare') ||
+    // Non-Cloudflare WAF / anti-bot signals
+    html.includes('Please enable cookies') && html.includes('continue') ||
+    html.includes('Your request has been blocked') ||
+    html.includes('Access to this page has been denied') ||
+    html.includes('blocked') && html.includes('automated access') ||
+    html.includes('Something about the behavior of your browser') ||
+    html.includes('Pardon Our Interruption') ||
+    html.includes('Browser Check') && html.includes('captcha') ||
+    html.includes('Detected unusual traffic') ||
+    // Generic "access denied" from Akamai / F5 / Imperva
+    html.includes('Access Denied') && (html.includes('bot') || html.includes('automated') || html.includes('security') || html.includes('blocked'))
   )
 }
 
