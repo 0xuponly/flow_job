@@ -1,7 +1,7 @@
 import { BrowserWindow, session } from 'electron'
 
-const LOAD_TIMEOUT_MS = 90000
-const CHALLENGE_WAIT_MS = 8000
+const LOAD_TIMEOUT_MS = 180000
+const CHALLENGE_WAIT_MS = 10000
 const USER_AGENTS = [
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
@@ -313,7 +313,7 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string }): Pro
       // Challenge detection with retry (same logic as BrowserWindow path)
       if (isChallengePage(html)) {
         let retries = 0
-        while (retries < 3 && isChallengePage(html)) {
+        while (retries < 5 && isChallengePage(html)) {
           await new Promise((r) => setTimeout(r, CHALLENGE_WAIT_MS))
           html = await page.content()
           retries++
@@ -418,10 +418,9 @@ export async function fetchHtmlViaBrowser(url: string, opts?: { proxy?: string }
         if (isChallengePage(html)) {
           // Cloudflare challenges usually clear in 3-5s once the JS
           // challenge runs, but harder Turnstile challenges can take
-          // 15-20s. Cap retries at 3 to keep the overall request under
-          // the 60s timer.
-          if (attempt < 3) {
-            await new Promise((r) => setTimeout(r, 8000))
+          // 15-20s. 5 retries × 10s gives the challenge 50s to resolve.
+          if (attempt < 5) {
+            await new Promise((r) => setTimeout(r, CHALLENGE_WAIT_MS))
             return extract(attempt + 1)
           }
           finish(() =>
