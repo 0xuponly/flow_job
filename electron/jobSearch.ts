@@ -353,7 +353,7 @@ function extractJobUrls(html: string, baseUrl: string, boardName: string): { url
     if (seen.has(lowerUrl)) continue
     seen.add(lowerUrl)
 
-    const knownBoardDomains = /linkedin\.com|indeed\.com|ca\.indeed\.com|monster\.com|ziprecruiter\.com|simplyhired\.com|adzuna\.com|talent\.com|jora\.com|remoteok\.com|weworkremotely\.com|remotive\.com|remote\.co|workingnomads\.com|justremote\.co|jobbank\.gc\.ca|eluta\.ca|workopolis\.com|jobboom\.com|workbc\.ca|careerbeacon\.com|charityvillage\.com|crypto-careers\.com|cryptorecruit\.com|remote3\.co|cryptocurrencyjobs\.co|cryptojobslist\.com|cryptojobs\.com|crypto\.jobs|web3\.career|startup\.jobs|selbyjennings\.com|idealist\.org|builtin\.com|jobs\.vancouver\.ca|google\.com\/about\/careers|careerhound\.io|usebraintrust\.com|hiring\.cafe|sproutjobs\.com|arc\.dev|contra\.com|skipthedrive\.com|jobspresso\.co|dynamitejobs\.com|dailyremote\.com|nodesk\.co|remote100k\.com|rareroles\.com|flexa\.careers/
+    const knownBoardDomains = /linkedin\.com|indeed\.com|ca\.indeed\.com|monster\.com|ziprecruiter\.com|simplyhired\.com|adzuna\.com|talent\.com|jora\.com|remoteok\.com|weworkremotely\.com|remotive\.com|remote\.co|workingnomads\.com|justremote\.co|jobbank\.gc\.ca|eluta\.ca|workopolis\.com|jobboom\.com|workbc\.ca|careerbeacon\.com|charityvillage\.com|crypto-careers\.com|cryptorecruit\.com|remote3\.co|cryptocurrencyjobs\.co|cryptojobslist\.com|cryptojobs\.com|crypto\.jobs|web3\.career|startup\.jobs|selbyjennings\.com|idealist\.org|builtin\.com|jobs\.vancouver\.ca|google\.com\/about\/careers|careerhound\.io|usebraintrust\.com|hiring\.cafe|sproutjobs\.com|arc\.dev|contra\.com|skipthedrive\.com|jobspresso\.co|dynamitejobs\.com|dailyremote\.com|nodesk\.co|remote100k\.com|rareroles\.com|flexa\.careers|flexjobs\.com|virtualvocations\.com|pangian\.com|powertofly\.com|dice\.com|theladders\.com|workatastartup\.com|careervault\.io|remoterocketship\.com|dribbble\.com|behance\.net|crossover\.com|aijobs\.ai|toptal\.com|upwork\.com|fiverr\.com|gun\.io|freelancer\.com|peopleperhour\.com|hubstaff\.com/
     if (!knownBoardDomains.test(lowerUrl)) continue
 
     const pathname = new URL(fullUrl).pathname
@@ -393,6 +393,21 @@ function extractJobUrls(html: string, baseUrl: string, boardName: string): { url
       const isView = pathname.startsWith('/jobs/view/')
       const isCk = pathname.startsWith('/c/k/') && pathname.split('/').filter(Boolean).length >= 3
       if (!isView && !isCk) continue
+    } else if (boardLower.includes('dice')) {
+      // Dice per-listing URLs: /job-detail/{uuid}
+      if (!pathname.startsWith('/job-detail/')) continue
+    } else if (boardLower.includes('behance')) {
+      // Behance per-listing URLs: /joblist/{id}/{slug}
+      if (!pathname.startsWith('/joblist/')) continue
+    } else if (boardLower.includes('workatastartup')) {
+      // Work At A Startup per-company URLs: /companies/{slug}
+      if (!pathname.startsWith('/companies/')) continue
+    } else if (boardLower.includes('freelancer')) {
+      // Freelancer per-project URLs: /projects/{slug}
+      if (!pathname.startsWith('/projects/')) continue
+    } else if (boardLower.includes('peopleperhour')) {
+      // PeoplePerHour per-listing URLs: /hire/{slug}
+      if (!pathname.startsWith('/hire/')) continue
     } else {
       // Generic branch: require the URL path itself to look like a job
       // (the previous version also accepted links whose visible text

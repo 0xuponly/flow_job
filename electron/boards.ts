@@ -545,5 +545,189 @@ export const BOARDS: BoardConfig[] = [
       // nav pages like /about, /contact); filter to the job path.
       return extractSitemapUrls(xml).filter((u) => u.includes('/remote-job/'))
     }
+  },
+  {
+    name: 'FlexJobs',
+    // FlexJobs (flexjobs.com) is a hand-screened remote/hybrid
+    // job board known for quality listings and no ads. The search
+    // page uses /search with a ?search= keyword param. FlexJobs
+    // has aggressive bot protection (Cloudflare) and the
+    // per-listing pages require a subscription; useBrowser=true
+    // to give the browser fallback a chance, but results are
+    // expected to be limited.
+    searchUrl: (k) => `https://www.flexjobs.com/search?search=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Virtual Vocations',
+    // Virtual Vocations (virtualvocations.com) is a remote-only
+    // job board. The search page is server-rendered at /jobs with
+    // ?search= keyword parameter. Per-job URLs follow
+    // /job/{slug}/ pattern (covered by generic /job/ check).
+    searchUrl: (k) => `https://www.virtualvocations.com/jobs?search=${encodeURIComponent(k)}`,
+    useBrowser: false
+  },
+  {
+    name: 'Pangian',
+    // Pangian (pangian.com) is a remote job board. Search at
+    // /jobs?q={keywords}. Per-job URLs are /job/{slug}/ (covered
+    // by generic /job/ check).
+    searchUrl: (k) => `https://pangian.com/jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'PowerToFly',
+    // PowerToFly (powertofly.com) focuses on connecting diverse
+    // talent with remote/hybrid roles at inclusive companies.
+    // The search page at /jobs/?keywords= has server-rendered
+    // shell but JS-rendered listings (a search API at
+    // search.prd.powertofly.com powers the grid). Per-job URLs
+    // are /jobs/{slug}.
+    searchUrl: (k) => `https://powertofly.com/jobs/?keywords=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Dice',
+    // Dice (dice.com) is a major tech-focused job board.
+    // Next.js-rendered single-page app. Search at /jobs with
+    // ?q=keywords&location= params. Per-job URLs are
+    // /job-detail/{uuid} — does NOT match the generic /jobs/
+    // path pattern, handled by a board-specific rule.
+    searchUrl: (k, l) => `https://www.dice.com/jobs?q=${encodeURIComponent(k)}${l ? `&location=${encodeURIComponent(l)}` : ''}`,
+    useBrowser: true
+  },
+  {
+    name: 'Ladders',
+    // Ladders (theladders.com) curates high-paying ($100k+)
+    // professional jobs. Search at /jobs/search?q=. Likely
+    // behind bot protection.
+    searchUrl: (k) => `https://www.theladders.com/jobs/search?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Work At A Startup',
+    // Work At A Startup (workatastartup.com) is Y Combinator's
+    // job board for YC-backed companies. Search at /jobs?query=.
+    // Per-job URLs are /companies/{slug} — does NOT match the
+    // generic path regex, handled by a board-specific rule.
+    searchUrl: (k) => `https://workatastartup.com/jobs?query=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Career Vault',
+    // Career Vault (careervault.io) is a remote job board.
+    // Search at /jobs?q=. Per-job URLs follow typical slug
+    // patterns (generic /job/ or /jobs/ path).
+    searchUrl: (k) => `https://careervault.io/jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Remote Rocketship',
+    // Remote Rocketship (remoterocketship.com) is a remote-only
+    // job board. Search at /remote-jobs?q=. Per-job URLs follow
+    // /job/{slug} or /remote-job/{slug} patterns (generic).
+    searchUrl: (k) => `https://remoterocketship.com/remote-jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Dribbble Jobs',
+    // Dribbble Jobs (dribbble.com/jobs) lists design-related
+    // roles on the Dribbble design portfolio platform. Search at
+    // /jobs?query=. The site is a JS-heavy SPA.
+    // Per-job URLs match /jobs/{id}-{slug} (covered by generic
+    // path regex).
+    searchUrl: (k) => `https://dribbble.com/jobs?query=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Behance Jobs',
+    // Behance Jobs (behance.net/joblist) is Adobe's creative
+    // portfolio platform with a job board. Search at
+    // /joblist?search=. Per-job URLs are /joblist/{id}/{slug}
+    // — does NOT match generic path regex, handled by a
+    // board-specific rule.
+    searchUrl: (k) => `https://www.behance.net/joblist?search=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Crossover',
+    // Crossover (crossover.com) places senior remote tech
+    // talent in long-term roles. Search at /jobs?q=.
+    // Per-job URLs follow /jobs/{slug} pattern (generic).
+    searchUrl: (k) => `https://www.crossover.com/jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'AI Jobs',
+    // AI Jobs (aijobs.ai) is a job board focused on AI/ML
+    // roles. Search at /jobs?search=. Per-job URLs follow
+    // generic /jobs/ path.
+    searchUrl: (k) => `https://aijobs.ai/jobs?search=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Toptal',
+    // Toptal (toptal.com) is a high-end freelancer marketplace
+    // matching engineers/designers/finance pros with clients.
+    // Does not have public per-job listings in the traditional
+    // sense — this entry is informational and will likely
+    // produce 0 results from the generic scraper, since Toptal
+    // works through private matching.
+    searchUrl: (k) => `https://www.toptal.com/jobs?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Upwork',
+    // Upwork (upwork.com) is the largest freelance marketplace.
+    // Public project listings at /freelance-jobs/{keyword}/
+    // but details require login. JS-heavy SPA.
+    searchUrl: (k) => `https://www.upwork.com/freelance-jobs/${encodeURIComponent(k)}/`,
+    useBrowser: true
+  },
+  {
+    name: 'Fiverr',
+    // Fiverr (fiverr.com) is a freelance services marketplace
+    // (gig-based, not job listings). Search at /search/gigs?query=.
+    // Will likely produce 0 results — included for completeness.
+    searchUrl: (k) => `https://www.fiverr.com/search/gigs?query=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Gun.io',
+    // Gun.io (gun.io) is a freelance developer marketplace
+    // with public opportunities at /opportunities?q=.
+    // Per-job URLs at /opportunities/{slug} — the /opportunities/
+    // path matches the generic opportunities? regex already in
+    // the path matcher. Title/company/description extraction is
+    // expected to work for some listings.
+    searchUrl: (k) => `https://gun.io/opportunities?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'Freelancer',
+    // Freelancer (freelancer.com) is a project marketplace.
+    // /jobs/?q= shows project listings. Per-job URLs are
+    // /projects/{slug} — handled by board-specific rule
+    // since /projects/ is not in the generic path matcher.
+    searchUrl: (k) => `https://www.freelancer.com/jobs/?q=${encodeURIComponent(k)}`,
+    useBrowser: true
+  },
+  {
+    name: 'PeoplePerHour',
+    // PeoplePerHour (peopleperhour.com) is a freelance
+    // project marketplace. Search at /hire/{keyword}/.
+    // Per-job URLs follow /hire/{slug} pattern — handled
+    // by board-specific rule.
+    searchUrl: (k) => `https://www.peopleperhour.com/hire/${encodeURIComponent(k)}/`,
+    useBrowser: true
+  },
+  {
+    name: 'Hubstaff Talent',
+    // Hubstaff Talent (hubstaff.com/talent) is a free remote
+    // talent directory. Search at /talent/search?q=.
+    // Per-job/detail URLs follow directory profile patterns
+    // (not standard job paths). Likely produces 0 results.
+    searchUrl: (k) => `https://hubstaff.com/talent/search?q=${encodeURIComponent(k)}`,
+    useBrowser: true
   }
 ]

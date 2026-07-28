@@ -88,4 +88,132 @@ describe('BOARDS config', () => {
     expect(url).toContain('q=react%20developer')
     expect(url).toMatch(/^https:\/\/flexa\.careers\//)
   })
+
+  // New boards from the 2026-07-28 batch
+  it('has FlexJobs with useBrowser', () => {
+    const board = BOARDS.find((b) => b.name === 'FlexJobs')
+    expect(board).toBeDefined()
+    expect(board!.useBrowser).toBe(true)
+  })
+
+  it('has Dice with useBrowser and location param', () => {
+    const board = BOARDS.find((b) => b.name === 'Dice')
+    expect(board).toBeDefined()
+    expect(board!.useBrowser).toBe(true)
+    const url = board!.searchUrl('python', 'New York')
+    expect(url).toContain('q=python')
+    expect(url).toContain('location=New%20York')
+  })
+
+  it('has Work At A Startup with useBrowser', () => {
+    const board = BOARDS.find((b) => b.name === 'Work At A Startup')
+    expect(board).toBeDefined()
+    expect(board!.useBrowser).toBe(true)
+    const url = board!.searchUrl('engineer', '')
+    expect(url).toContain('query=engineer')
+  })
+
+  it('has Virtual Vocations without useBrowser', () => {
+    const board = BOARDS.find((b) => b.name === 'Virtual Vocations')
+    expect(board).toBeDefined()
+    expect(board!.useBrowser).toBe(false)
+    const url = board!.searchUrl('developer', '')
+    expect(url).toContain('search=developer')
+  })
+
+  it('has PowerToFly with useBrowser', () => {
+    const board = BOARDS.find((b) => b.name === 'PowerToFly')
+    expect(board).toBeDefined()
+    expect(board!.useBrowser).toBe(true)
+    const url = board!.searchUrl('sales', '')
+    expect(url).toContain('keywords=sales')
+  })
+
+  it('has Behance Jobs with useBrowser', () => {
+    const board = BOARDS.find((b) => b.name === 'Behance Jobs')
+    expect(board).toBeDefined()
+    expect(board!.useBrowser).toBe(true)
+    const url = board!.searchUrl('designer', '')
+    expect(url).toContain('search=designer')
+  })
+
+  it('has Pangian with useBrowser', () => {
+    const board = BOARDS.find((b) => b.name === 'Pangian')
+    expect(board).toBeDefined()
+    expect(board!.useBrowser).toBe(true)
+    const url = board!.searchUrl('developer', '')
+    expect(url).toContain('q=developer')
+  })
+
+  it('has AI Jobs with useBrowser', () => {
+    const board = BOARDS.find((b) => b.name === 'AI Jobs')
+    expect(board).toBeDefined()
+    expect(board!.useBrowser).toBe(true)
+    const url = board!.searchUrl('machine learning', '')
+    expect(url).toContain('search=machine%20learning')
+  })
+
+  it('has Ladders with useBrowser', () => {
+    const board = BOARDS.find((b) => b.name === 'Ladders')
+    expect(board).toBeDefined()
+    expect(board!.useBrowser).toBe(true)
+    const url = board!.searchUrl('engineer', '')
+    expect(url).toContain('q=engineer')
+  })
+
+  it('has Crossover with useBrowser', () => {
+    const board = BOARDS.find((b) => b.name === 'Crossover')
+    expect(board).toBeDefined()
+    expect(board!.useBrowser).toBe(true)
+    const url = board!.searchUrl('developer', '')
+    expect(url).toContain('q=developer')
+  })
+
+  it('has Remote Rocketship with useBrowser', () => {
+    const board = BOARDS.find((b) => b.name === 'Remote Rocketship')
+    expect(board).toBeDefined()
+    expect(board!.useBrowser).toBe(true)
+  })
+
+  it('has Career Vault with useBrowser', () => {
+    const board = BOARDS.find((b) => b.name === 'Career Vault')
+    expect(board).toBeDefined()
+    expect(board!.useBrowser).toBe(true)
+    const url = board!.searchUrl('devops', '')
+    expect(url).toContain('q=devops')
+  })
+
+  it('has Dribbble Jobs with useBrowser', () => {
+    const board = BOARDS.find((b) => b.name === 'Dribbble Jobs')
+    expect(board).toBeDefined()
+    expect(board!.useBrowser).toBe(true)
+    const url = board!.searchUrl('ui designer', '')
+    expect(url).toContain('query=ui%20designer')
+  })
+
+  it('has Gun.io with useBrowser', () => {
+    const board = BOARDS.find((b) => b.name === 'Gun.io')
+    expect(board).toBeDefined()
+    expect(board!.useBrowser).toBe(true)
+    const url = board!.searchUrl('python', '')
+    expect(url).toContain('q=python')
+  })
+
+  it('has Upwork with useBrowser', () => {
+    const board = BOARDS.find((b) => b.name === 'Upwork')
+    expect(board).toBeDefined()
+    expect(board!.useBrowser).toBe(true)
+  })
+
+  it('has Toptal with useBrowser', () => {
+    const board = BOARDS.find((b) => b.name === 'Toptal')
+    expect(board).toBeDefined()
+    expect(board!.useBrowser).toBe(true)
+  })
+
+  it('has Freelancer with useBrowser', () => {
+    const board = BOARDS.find((b) => b.name === 'Freelancer')
+    expect(board).toBeDefined()
+    expect(board!.useBrowser).toBe(true)
+  })
 })

@@ -150,4 +150,105 @@ describe('detectSource', () => {
     expect(detectSource('jobspresso.co')).toBe('Jobspresso')
     expect(detectSource('www.jobspresso.co')).toBe('Jobspresso')
   })
+
+  // New boards from the 2026-07-28 batch
+  it('returns FlexJobs for flexjobs.com', () => {
+    expect(detectSource('flexjobs.com')).toBe('FlexJobs')
+    expect(detectSource('www.flexjobs.com')).toBe('FlexJobs')
+  })
+
+  it('returns Virtual Vocations for virtualvocations.com', () => {
+    expect(detectSource('virtualvocations.com')).toBe('Virtual Vocations')
+    expect(detectSource('www.virtualvocations.com')).toBe('Virtual Vocations')
+  })
+
+  it('returns Pangian for pangian.com', () => {
+    expect(detectSource('pangian.com')).toBe('Pangian')
+    expect(detectSource('www.pangian.com')).toBe('Pangian')
+  })
+
+  it('returns PowerToFly for powertofly.com', () => {
+    expect(detectSource('powertofly.com')).toBe('PowerToFly')
+    expect(detectSource('www.powertofly.com')).toBe('PowerToFly')
+  })
+
+  it('returns Dice for dice.com', () => {
+    expect(detectSource('dice.com')).toBe('Dice')
+    expect(detectSource('www.dice.com')).toBe('Dice')
+  })
+
+  it('returns Ladders for theladders.com', () => {
+    expect(detectSource('theladders.com')).toBe('Ladders')
+    expect(detectSource('www.theladders.com')).toBe('Ladders')
+  })
+
+  it('returns Work At A Startup for workatastartup.com', () => {
+    expect(detectSource('workatastartup.com')).toBe('Work At A Startup')
+    expect(detectSource('www.workatastartup.com')).toBe('Work At A Startup')
+  })
+
+  it('returns Career Vault for careervault.io', () => {
+    expect(detectSource('careervault.io')).toBe('Career Vault')
+    expect(detectSource('www.careervault.io')).toBe('Career Vault')
+  })
+
+  it('returns Remote Rocketship for remoterocketship.com', () => {
+    expect(detectSource('remoterocketship.com')).toBe('Remote Rocketship')
+    expect(detectSource('www.remoterocketship.com')).toBe('Remote Rocketship')
+  })
+
+  it('returns Dribbble Jobs for dribbble.com', () => {
+    expect(detectSource('dribbble.com')).toBe('Dribbble Jobs')
+    expect(detectSource('www.dribbble.com')).toBe('Dribbble Jobs')
+  })
+
+  it('returns Behance Jobs for behance.net', () => {
+    expect(detectSource('behance.net')).toBe('Behance Jobs')
+    expect(detectSource('www.behance.net')).toBe('Behance Jobs')
+  })
+
+  it('returns Crossover for crossover.com', () => {
+    expect(detectSource('crossover.com')).toBe('Crossover')
+    expect(detectSource('www.crossover.com')).toBe('Crossover')
+  })
+
+  it('returns AI Jobs for aijobs.ai', () => {
+    expect(detectSource('aijobs.ai')).toBe('AI Jobs')
+    expect(detectSource('www.aijobs.ai')).toBe('AI Jobs')
+  })
+
+  it('returns Toptal for toptal.com', () => {
+    expect(detectSource('toptal.com')).toBe('Toptal')
+    expect(detectSource('www.toptal.com')).toBe('Toptal')
+  })
+
+  it('returns Upwork for upwork.com', () => {
+    expect(detectSource('upwork.com')).toBe('Upwork')
+    expect(detectSource('www.upwork.com')).toBe('Upwork')
+  })
+
+  it('returns Fiverr for fiverr.com', () => {
+    expect(detectSource('fiverr.com')).toBe('Fiverr')
+    expect(detectSource('www.fiverr.com')).toBe('Fiverr')
+  })
+
+  it('returns Gun.io for gun.io', () => {
+    expect(detectSource('gun.io')).toBe('Gun.io')
+    expect(detectSource('www.gun.io')).toBe('Gun.io')
+  })
+
+  it('returns Freelancer for freelancer.com', () => {
+    expect(detectSource('freelancer.com')).toBe('Freelancer')
+    expect(detectSource('www.freelancer.com')).toBe('Freelancer')
+  })
+
+  it('returns PeoplePerHour for peopleperhour.com', () => {
+    expect(detectSource('peopleperhour.com')).toBe('PeoplePerHour')
+    expect(detectSource('www.peopleperhour.com')).toBe('PeoplePerHour')
+  })
+
+  it('returns Hubstaff Talent for hubstaff.com', () => {
+    expect(detectSource('hubstaff.com')).toBe('Hubstaff Talent')
+    expect(detectSource('www.hubstaff.com')).toBe('Hubstaff Talent')
+  })
 })

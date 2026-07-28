@@ -236,6 +236,26 @@ export function detectSource(hostname: string): string | undefined {
   if (hostname.includes('rareroles.com')) return 'RareRoles'
   if (hostname.includes('flexa.careers')) return 'Flexa'
   if (hostname.includes('jobspresso.co')) return 'Jobspresso'
+  if (hostname.includes('flexjobs.com')) return 'FlexJobs'
+  if (hostname.includes('virtualvocations.com')) return 'Virtual Vocations'
+  if (hostname.includes('pangian.com')) return 'Pangian'
+  if (hostname.includes('powertofly.com')) return 'PowerToFly'
+  if (hostname.includes('dice.com')) return 'Dice'
+  if (hostname.includes('theladders.com')) return 'Ladders'
+  if (hostname.includes('workatastartup.com')) return 'Work At A Startup'
+  if (hostname.includes('careervault.io')) return 'Career Vault'
+  if (hostname.includes('remoterocketship.com')) return 'Remote Rocketship'
+  if (hostname.includes('dribbble.com')) return 'Dribbble Jobs'
+  if (hostname.includes('behance.net')) return 'Behance Jobs'
+  if (hostname.includes('crossover.com')) return 'Crossover'
+  if (hostname.includes('aijobs.ai')) return 'AI Jobs'
+  if (hostname.includes('toptal.com')) return 'Toptal'
+  if (hostname.includes('upwork.com')) return 'Upwork'
+  if (hostname.includes('fiverr.com')) return 'Fiverr'
+  if (hostname.includes('gun.io')) return 'Gun.io'
+  if (hostname.includes('freelancer.com')) return 'Freelancer'
+  if (hostname.includes('peopleperhour.com')) return 'PeoplePerHour'
+  if (hostname.includes('hubstaff.com')) return 'Hubstaff Talent'
   return undefined
 }
 
@@ -2122,7 +2142,7 @@ function escapeRegex(s: string): string {
  *   - Unquoted keys: Title: "..." → "Title": "..."
  *   - Single-quoted strings: 'value' → "value"
  *   - Trailing commas: {a: 1, b: 2,} → {a: 1, b: 2}
- *   - Comments: /* ... *​/ and // ... stripped
+ *   - Comments: /* ... (block) and // ... (line) stripped
  *   - true/false/null: already JSON-compatible
  * Returns null on any parse failure.
  */
