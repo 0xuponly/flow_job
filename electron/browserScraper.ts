@@ -36,7 +36,35 @@ function randomViewport(): { width: number; height: number } {
 //   navigator.languages, navigator.permissions, navigator.plugins,
 //   navigator.platform, navigator.vendor, navigator.connection,
 //   webgl.vendor, window.outerdimensions, hairline, iframe.contentWindow.
-const STEALTH_SCRIPT = `
+// ─── Fingerprint randomization pools ──────────────────────────
+// Realistic-but-varied values per session so every request doesn't
+// share identical navigator / WebGL signals.
+
+const HARDWARE_CONCURRENCY_VALUES = [4, 8, 12, 16]
+const DEVICE_MEMORY_VALUES = [4, 8]
+const WEBGL_VENDORS = ['Intel Inc.', 'Google Inc. (Intel)', 'Apple Inc.', 'NVIDIA Corporation']
+const WEBGL_RENDERERS = [
+  'Intel Iris OpenGL Engine',
+  'Intel(R) UHD Graphics 630',
+  'Apple M1',
+  'Apple M2',
+  'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0)',
+  'ANGLE (Apple, Apple M1 Pro Direct3D11 vs_5_0 ps_5_0)'
+]
+const CONNECTION_RTT_VALUES = [50, 75, 100, 150, 200]
+
+function pick<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)]
+}
+
+function buildStealthScript(): string {
+  const hardwareConcurrency = pick(HARDWARE_CONCURRENCY_VALUES)
+  const deviceMemory = pick(DEVICE_MEMORY_VALUES)
+  const webglVendor = pick(WEBGL_VENDORS)
+  const webglRenderer = pick(WEBGL_RENDERERS)
+  const rtt = pick(CONNECTION_RTT_VALUES)
+
+  return `
 (() => {
   try {
     const ua = navigator.userAgent
@@ -73,16 +101,13 @@ const STEALTH_SCRIPT = `
     Object.defineProperty(navigator, 'platform', { get: () => platform, configurable: true })
 
     // ─── navigator.hardwareConcurrency / deviceMemory ──────────
-    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8, configurable: true })
-    Object.defineProperty(navigator, 'deviceMemory', { get: () => 8, configurable: true })
+    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => ${hardwareConcurrency}, configurable: true })
+    Object.defineProperty(navigator, 'deviceMemory', { get: () => ${deviceMemory}, configurable: true })
 
     // ─── navigator.connection (NetworkInformation API) ─────────
-    // Some headless browsers expose navigator.connection as undefined
-    // or with null properties. Real Chrome has an object with
-    // downlink, effectiveType, rtt, saveData.
     if (navigator.connection) {
       try {
-        Object.defineProperty(navigator.connection, 'rtt', { get: () => 100, configurable: true })
+        Object.defineProperty(navigator.connection, 'rtt', { get: () => ${rtt}, configurable: true })
       } catch {}
     }
 
@@ -100,16 +125,13 @@ const STEALTH_SCRIPT = `
     try {
       const origGetParam = WebGLRenderingContext.prototype.getParameter
       WebGLRenderingContext.prototype.getParameter = function (p) {
-        if (p === 37445) return 'Intel Inc.'
-        if (p === 37446) return 'Intel Iris OpenGL Engine'
+        if (p === 37445) return '${webglVendor}'
+        if (p === 37446) return '${webglRenderer}'
         return origGetParam.call(this, p)
       }
     } catch {}
 
     // ─── MediaDevices.enumerateDevices (avoid empty list) ──────
-    // Headless Chrome returns an empty MediaDeviceInfo list. Real
-    // Chrome returns at least a default audio output device. Some
-    // bot detectors call enumerateDevices() and check the length.
     if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
       const origEnum = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices)
       navigator.mediaDevices.enumerateDevices = async () => {
@@ -124,8 +146,6 @@ const STEALTH_SCRIPT = `
     }
 
     // ─── window.outerDimensions ────────────────────────────────
-    // Headless Chrome doesn't set outerWidth/outerHeight properly.
-    // These should match the viewport or be slightly larger.
     if (window.outerWidth === 0) {
       try {
         Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth, configurable: true })
@@ -137,7 +157,6 @@ const STEALTH_SCRIPT = `
     if (!window.chrome) {
       window.chrome = {}
     }
-    // chrome.app — many sites check for chrome.app.isInstalled
     if (!window.chrome.app) {
       window.chrome.app = {
         isInstalled: false,
@@ -145,7 +164,6 @@ const STEALTH_SCRIPT = `
         RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
       }
     }
-    // chrome.csi — Chrome's Client Side Information
     if (!window.chrome.csi || typeof window.chrome.csi !== 'function') {
       window.chrome.csi = () => ({
         onloadT: Date.now(),
@@ -155,7 +173,6 @@ const STEALTH_SCRIPT = `
         tran: Math.floor(Math.random() * 20)
       })
     }
-    // chrome.loadTimes — Page load timing
     if (!window.chrome.loadTimes || typeof window.chrome.loadTimes !== 'function') {
       window.chrome.loadTimes = () => {
         const now = Date.now() / 1000
@@ -176,7 +193,6 @@ const STEALTH_SCRIPT = `
         }
       }
     }
-    // chrome.runtime — messaging stub (already present but make it more complete)
     if (!window.chrome.runtime) {
       window.chrome.runtime = {
         onInstalled: { addListener: () => {}, removeListener: () => {} },
@@ -193,9 +209,6 @@ const STEALTH_SCRIPT = `
     }
 
     // ─── hairline detection (border-image: none check) ─────────
-    // Some fingerprinters check if the browser renders a hairline
-    // border by checking computed style. Headless Chrome doesn't
-    // render borders the same way. Patch at CSS level.
     try {
       const origGetProperty = CSSStyleDeclaration.prototype.getPropertyValue
       CSSStyleDeclaration.prototype.getPropertyValue = function (prop) {
@@ -213,11 +226,6 @@ const STEALTH_SCRIPT = `
     }
 
     // ─── iframe.contentWindow spoofing ─────────────────────────
-    // When an iframe is created via document.createElement('iframe'),
-    // bot detectors check if the contentWindow is accessible and
-    // behaves like a real window. Some headless environments fail
-    // this check. Patch HTMLIFrameElement.prototype to make the
-    // contentWindow look real.
     try {
       const origContentWindow = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow')
       if (origContentWindow && origContentWindow.get) {
@@ -226,7 +234,6 @@ const STEALTH_SCRIPT = `
             const win = origContentWindow.get.call(this)
             if (win) {
               try {
-                // Ensure document.write doesn't throw
                 if (!win.document.write.__patched) {
                   const origWrite = win.document.write.bind(win.document)
                   win.document.write = (...args) => {
@@ -244,7 +251,7 @@ const STEALTH_SCRIPT = `
     } catch {}
   } catch {}
 })();
-`
+`}
 
 // ─── Camoufox-powered fetch (Firefox anti-fingerprinting) ─────
 // Uses camoufox-js which wraps a patched Firefox binary with
@@ -294,7 +301,7 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string }): Pro
       // addInitScript is the Playwright equivalent of puppeteer's
       // evaluateOnNewDocument — runs in the page's main world before
       // any site scripts execute.
-      await page.addInitScript(STEALTH_SCRIPT)
+      await page.addInitScript(buildStealthScript())
 
       // Navigate with network-idle wait so the page is fully loaded.
       // Camoufox's patched Firefox has native anti-fingerprinting
@@ -346,7 +353,7 @@ export async function fetchHtmlViaBrowser(url: string, opts?: { proxy?: string }
 
   // Fall through to the standard BrowserWindow path.
   return new Promise((resolve, reject) => {
-    const ses = session.fromPartition(`scraper-${  Date.now()}`, { cache: false })
+    const ses = session.fromPartition('scraper-persistent')
     const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
 
     // Configure proxy if provided. The proxy URL format follows
@@ -373,7 +380,7 @@ export async function fetchHtmlViaBrowser(url: string, opts?: { proxy?: string }
     // 'will-frame-navigate' fires before any frame's JS executes.
     const injectStealth = (e: Electron.Event, details: Electron.Event) => {
       if (!win.isDestroyed()) {
-        win.webContents.executeJavaScript(STEALTH_SCRIPT, true).catch(() => {})
+        win.webContents.executeJavaScript(buildStealthScript(), true).catch(() => {})
       }
     }
     win.webContents.on('will-frame-navigate', injectStealth)
@@ -486,7 +493,7 @@ export async function navigateToHashViaBrowser(
   timeoutMs = 15000,
   opts?: { proxy?: string }
 ): Promise<string> {
-  const ses = session.fromPartition(`scraper-hashnav-${  Date.now()}`, { cache: false })
+  const ses = session.fromPartition('scraper-hashnav-persistent')
   const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
 
   if (opts?.proxy) {
@@ -508,7 +515,7 @@ export async function navigateToHashViaBrowser(
 
   const injectStealth = (_e: Electron.Event, _details: Electron.Event) => {
     if (!win.isDestroyed()) {
-      win.webContents.executeJavaScript(STEALTH_SCRIPT, true).catch(() => {})
+      win.webContents.executeJavaScript(buildStealthScript(), true).catch(() => {})
     }
   }
   win.webContents.on('will-frame-navigate', injectStealth)
@@ -643,7 +650,7 @@ export async function paginateHtmlViaBrowser(
   const firstPageHtml = await fetchHtmlViaBrowser(baseUrl, opts)
   if (pageHashes.length === 0) return firstPageHtml
 
-  const ses = session.fromPartition(`scraper-paginate-${  Date.now()}`, { cache: false })
+  const ses = session.fromPartition('scraper-paginate-persistent')
   const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
 
   if (opts?.proxy) {
@@ -665,7 +672,7 @@ export async function paginateHtmlViaBrowser(
 
   const injectStealth = (_e: Electron.Event, _details: Electron.Event) => {
     if (!win.isDestroyed()) {
-      win.webContents.executeJavaScript(STEALTH_SCRIPT, true).catch(() => {})
+      win.webContents.executeJavaScript(buildStealthScript(), true).catch(() => {})
     }
   }
   win.webContents.on('will-frame-navigate', injectStealth)
