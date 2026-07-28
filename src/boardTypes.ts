@@ -35,7 +35,13 @@ export const BOARD_TYPES: { label: string; boards: string[] }[] = [
       'Dynamite Jobs',
       'DailyRemote',
       'NoDesk',
-      'Remote100k'
+      'Remote100k',
+      'FlexJobs',
+      'Virtual Vocations',
+      'Pangian',
+      'PowerToFly',
+      'Career Vault',
+      'Remote Rocketship'
     ]
   },
   {
@@ -49,7 +55,8 @@ export const BOARD_TYPES: { label: string; boards: string[] }[] = [
       'Y Combinator',
       'Top Startups',
       'Rocketships',
-      'Arc'
+      'Arc',
+      'Work At A Startup'
     ]
   },
   {
