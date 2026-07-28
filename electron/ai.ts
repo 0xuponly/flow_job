@@ -5,11 +5,11 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
 import mammoth from 'mammoth'
+import { log } from './logger'
 import { scoreCompatibility, extractEducationLevel, extractYearsExperience } from './fitHeuristic'
 import { runDocumentRuleChecks } from '../src/documentRules'
 import { extractJobKeywordsStructured, extractJobKeywords, mergeKeywordResults } from '../src/keywordExtractor'
 import { loadKeywordAllowlists } from '../src/keywordAllowlists'
-import { log } from './logger'
 import { fingerprintKey, hostOf, redactBody } from './aiDebug'
 
 export class KeywordExtractionError extends Error {
@@ -39,7 +39,7 @@ async function loadHarvardTemplate(): Promise<string> {
     const result = await mammoth.extractRawText({ buffer: new Uint8Array(buf) })
     cachedTemplate = result.value.trim()
   } catch (err) {
-    console.error('[ai] Failed to load Harvard template:', err)
+    log.ai.error('[ai] Failed to load Harvard template:', err)
     cachedTemplate = ''
   }
   return cachedTemplate

@@ -608,7 +608,7 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
       baseCv
     }, signal), signal)) as Awaited<ReturnType<typeof scoreJobFit>>
     if (process.env.FLOW_JOB_SCAN_TIMING) {
-      console.error(`[scan] stage=llm-score source=${fit.source} score=${fit.score?.toFixed(3)} ms=${Date.now() - tLlm0}`)
+      log.info(`stage=llm-score source=${fit.source} score=${fit.score?.toFixed(3)} ms=${Date.now() - tLlm0}`)
     }
   } catch {
     fit = {
@@ -859,7 +859,7 @@ export async function scanAllBoards(
         const tApi0 = Date.now()
         const apiJobs = await board.apiFetcher(keywords, location, signal)
         if (process.env.FLOW_JOB_SCAN_TIMING) {
-          console.error(`[scan] stage=api board=${board.name} jobs=${apiJobs.length} ms=${Date.now() - tApi0}`)
+          log.info(`stage=api board=${board.name} jobs=${apiJobs.length} ms=${Date.now() - tApi0}`)
         }
         br.found = apiJobs.length
         // Bump totalFound the moment we know the board's listing count —
@@ -919,7 +919,7 @@ export async function scanAllBoards(
       const tFetch0 = Date.now()
       const html = await fetchBoardListingsHtml(searchUrl, board, signal)
       if (process.env.FLOW_JOB_SCAN_TIMING) {
-        console.error(`[scan] stage=board-fetch board=${board.name} bytes=${html.length} ms=${Date.now() - tFetch0}`)
+        log.info(`stage=board-fetch board=${board.name} bytes=${html.length} ms=${Date.now() - tFetch0}`)
       }
 
       progress(`Parsing listings from ${board.name}${locTag}...`)
@@ -938,12 +938,12 @@ export async function scanAllBoards(
         const urls = await board.sitemapListingUrls(keywords, location, signal)
         listings = urls.map((url) => ({ url }))
         if (process.env.FLOW_JOB_SCAN_TIMING) {
-          console.error(`[scan] stage=parse board=${board.name} listings=${listings.length} (sitemap) ms=${Date.now() - tParse0}`)
+          log.info(`stage=parse board=${board.name} listings=${listings.length} (sitemap) ms=${Date.now() - tParse0}`)
         }
       } else {
         listings = extractJobUrls(html, searchUrl, board.name)
         if (process.env.FLOW_JOB_SCAN_TIMING) {
-          console.error(`[scan] stage=parse board=${board.name} listings=${listings.length} ms=${Date.now() - tParse0}`)
+          log.info(`stage=parse board=${board.name} listings=${listings.length} ms=${Date.now() - tParse0}`)
         }
       }
       br.found = listings.length
@@ -1130,7 +1130,7 @@ export async function scanAllBoards(
         const results = await Promise.allSettled(chunk.map(board => processBoard(board, location, signal)))
         if (process.env.FLOW_JOB_SCAN_TIMING) {
           const elapsed = Date.now() - t0
-          console.error(`[scan] track=${trackName} chunk=[${chunk.map(b => b.name).join(',')}] ms=${elapsed}`)
+          log.info(`track=${trackName} chunk=[${chunk.map(b => b.name).join(',')}] ms=${elapsed}`)
         }
         for (let j = 0; j < results.length; j++) {
           const r = results[j]

@@ -280,10 +280,11 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string }): Pro
 
     const browser = await Camoufox({
       headless: false,
-      // GeoIP-based configuration: auto-detects locale from IP,
-      // sets timezone, locale, and language to match — makes the
-      // browser fingerprint consistent with a real user's location.
-      geoip: true,
+      // geoip disabled: Camoufox tries to detect public IP via proxy
+      // to set locale/timezone, but without a proxy it throws
+      // InvalidProxy errors that flood stderr. We don't need locale
+      // auto-detection — board sites serve English by default.
+      geoip: false,
       // Humanize cursor movement to avoid detection
       humanize: 1.5,
       // Set realistic screen dimensions
