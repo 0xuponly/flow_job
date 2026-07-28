@@ -502,7 +502,7 @@ function registerIpc(): void {
       throw new Error('CV render produced no PDF')
     }
     if (lastPages > 1) {
-      console.warn(`[cv] PDF still ${lastPages} pages after shrink-to-fit (scale ${lastScale}); saving the best attempt (${bestPages} pages, scale ${bestScale})`)
+      log.scanner.warn(`[cv] PDF still ${lastPages} pages after shrink-to-fit (scale ${lastScale}); saving the best attempt (${bestPages} pages, scale ${bestScale})`)
     }
     pdf = bestPdf
     const settings = db.getSettings()
