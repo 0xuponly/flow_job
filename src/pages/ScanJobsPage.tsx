@@ -876,9 +876,7 @@ export default function ScanJobsPage() {
             merged.set(b.board, { ...b })
           }
         }
-        const rows = Array.from(merged.values()).filter(
-          (b) => b.added > 0 || b.errors > 0 || (b.found - b.skipped - b.errors) > 0 || b.incompatible > 0 || !!b.error
-        )
+        const rows = Array.from(merged.values()).filter((b) => b.added > 0)
         if (rows.length === 0) return null
         const ranAt = result.startedAt
           ? `${new Date(result.startedAt).toLocaleString('en-US', { timeZone: 'America/New_York', dateStyle: 'medium', timeStyle: 'medium' })  } EST`
@@ -939,7 +937,6 @@ export default function ScanJobsPage() {
               <thead>
                 <tr>
                   <th>Board</th>
-                  <th>Scraped</th>
                   <th>Added</th>
                   {_showAllScanColumns && <th>Found</th>}
                   {_showAllScanColumns && <th>Skipped</th>}
@@ -953,7 +950,6 @@ export default function ScanJobsPage() {
                 {rows.map((b) => (
                   <tr key={b.board}>
                     <td><strong>{b.board}</strong></td>
-                    <td>{b.found - b.skipped - b.errors - b.incompatible}</td>
                     <td style={{ color: 'var(--success)', fontWeight: 600 }}>{b.added}</td>
                     {_showAllScanColumns && <td>{b.found}</td>}
                     {_showAllScanColumns && <td>{b.skipped}</td>}
