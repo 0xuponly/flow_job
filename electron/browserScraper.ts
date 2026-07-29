@@ -253,6 +253,21 @@ function buildStealthScript(): string {
 })();
 `}
 
+// Returns a promise that resolves true as soon as the signal aborts.
+// Used to race long setTimeout waits so the cancel button feels
+// immediate rather than waiting for the full CHALLENGE_WAIT_MS / 1.5s.
+function abortPromise(signal?: AbortSignal): Promise<true> {
+  if (!signal) return new Promise(() => {}) // never resolves
+  if (signal.aborted) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort)
+      resolve(true)
+    }
+    signal.addEventListener('abort', onAbort)
+  })
+}
+
 // ─── Camoufox-powered fetch (Firefox anti-fingerprinting) ─────
 // Uses camoufox-js which wraps a patched Firefox binary with
 // sophisticated anti-fingerprinting. No Chrome/Google dependency.
@@ -303,6 +318,14 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
     })
 
     try {
+      // On cancel: close the browser to interrupt in-flight page.goto().
+      // page.goto() doesn't accept an AbortSignal, but closing the
+      // browser makes it throw (disconnected), which the outer catch
+      // converts to a null return — the caller sees "aborted" and the
+      // scan moves on to the next board.
+      const abortHandler = () => { browser.close().catch(() => {}) }
+      opts?.signal?.addEventListener('abort', abortHandler, { once: true })
+
       const page = await browser.newPage()
 
       // Inject our custom stealth script before every navigation.
@@ -321,8 +344,12 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
       })
       if (opts?.signal?.aborted) return null
 
-      // Wait an extra moment for any delayed JavaScript rendering
-      await new Promise((r) => setTimeout(r, 1500))
+      // Race each wait against the abort signal so cancel feels
+      // immediate rather than waiting for the full setTimeout.
+      await Promise.race([
+        new Promise((r) => setTimeout(r, 1500)),
+        abortPromise(opts?.signal)
+      ])
       if (opts?.signal?.aborted) return null
 
       // Scroll to simulate human reading behavior. Cloudflare's behavior
@@ -330,10 +357,16 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
       // Playwright's mouse API to avoid automation fingerprints.
       const scrollPx = Math.floor(Math.random() * (vp.height * 0.4)) + Math.floor(vp.height * 0.3)
       await page.evaluate((y: number) => window.scrollTo({ top: y, behavior: 'smooth' }), scrollPx).catch(() => {})
-      await new Promise((r) => setTimeout(r, 200 + Math.random() * 300))
+      await Promise.race([
+        new Promise((r) => setTimeout(r, 200 + Math.random() * 300)),
+        abortPromise(opts?.signal)
+      ])
       if (opts?.signal?.aborted) return null
       await page.evaluate(() => window.scrollBy({ top: Math.floor(Math.random() * 100), behavior: 'smooth' })).catch(() => {})
-      await new Promise((r) => setTimeout(r, 100 + Math.random() * 200))
+      await Promise.race([
+        new Promise((r) => setTimeout(r, 100 + Math.random() * 200)),
+        abortPromise(opts?.signal)
+      ])
       if (opts?.signal?.aborted) return null
 
       // Challenge detection and retry via page reload (not content polling).
@@ -345,7 +378,10 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
       while (isChallengePage(html) && Date.now() < challengeDeadline && !opts?.signal?.aborted) {
         await page.reload({ waitUntil: 'networkidle', timeout: Math.max(30000, challengeDeadline - Date.now()) }).catch(() => {})
         if (opts?.signal?.aborted) return null
-        await new Promise((r) => setTimeout(r, CHALLENGE_WAIT_MS))
+        await Promise.race([
+          new Promise((r) => setTimeout(r, CHALLENGE_WAIT_MS)),
+          abortPromise(opts?.signal)
+        ])
         if (opts?.signal?.aborted) return null
         html = await page.content()
       }
@@ -357,6 +393,7 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
 
       return html
     } finally {
+      if (opts?.signal) opts.signal.removeEventListener('abort', abortHandler)
       await browser.close().catch(() => {})
     }
   } catch (err) {
@@ -458,7 +495,10 @@ export async function fetchHtmlViaBrowser(url: string, opts?: { proxy?: string; 
         // Cloudflare). On retry, fall back to the full
         // CHALLENGE_WAIT_MS — challenges need real time to resolve.
         const initialWait = attempt === 0 ? 1500 : CHALLENGE_WAIT_MS
-        await new Promise((r) => setTimeout(r, initialWait))
+        await Promise.race([
+          new Promise((r) => setTimeout(r, initialWait)),
+          abortPromise(opts?.signal)
+        ])
         if (opts?.signal?.aborted) {
           finish(() => reject(new DOMException('Aborted', 'AbortError')))
           return
@@ -476,7 +516,10 @@ export async function fetchHtmlViaBrowser(url: string, opts?: { proxy?: string; 
               finish(() => reject(new DOMException('Aborted', 'AbortError')))
               return
             }
-            await new Promise((r) => setTimeout(r, CHALLENGE_WAIT_MS))
+            await Promise.race([
+              new Promise((r) => setTimeout(r, CHALLENGE_WAIT_MS)),
+              abortPromise(opts?.signal)
+            ])
             return extract(attempt + 1)
           }
           finish(() =>
@@ -587,11 +630,21 @@ export async function navigateToHashViaBrowser(
   try {
     // 1. Initial document load.
     await new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        win.webContents.off('did-finish-load', onFinish)
+        win.webContents.off('did-fail-load', onFail)
+        if (!win.isDestroyed()) win.destroy()
+        reject(new DOMException('Aborted', 'AbortError'))
+      }
+      opts?.signal?.addEventListener('abort', onAbort, { once: true })
+
       const onFinish = () => {
+        opts?.signal?.removeEventListener('abort', onAbort)
         win.webContents.off('did-fail-load', onFail)
         resolve()
       }
       const onFail = (_e: unknown, code: number, desc: string) => {
+        opts?.signal?.removeEventListener('abort', onAbort)
         win.webContents.off('did-finish-load', onFinish)
         reject(new Error(`Failed to load page (${code}: ${desc}).`))
       }
@@ -602,7 +655,10 @@ export async function navigateToHashViaBrowser(
 
     // 2. Give the SPA time to bootstrap (its router has to attach hash
     // listeners after the document is ready).
-    await new Promise((r) => setTimeout(r, CHALLENGE_WAIT_MS))
+    await Promise.race([
+      new Promise((r) => setTimeout(r, CHALLENGE_WAIT_MS)),
+      abortPromise(opts?.signal)
+    ])
 
     // 3. Set the hash and wait for the panel to render.
     const start = Date.now()
@@ -625,7 +681,10 @@ export async function navigateToHashViaBrowser(
       ).catch(() => {})
 
       // Give the SPA a moment to fetch + render.
-      await new Promise((r) => setTimeout(r, 800))
+      await Promise.race([
+        new Promise((r) => setTimeout(r, 800)),
+        abortPromise(opts?.signal)
+      ])
 
       html = await win.webContents.executeJavaScript(
         'document.documentElement.outerHTML',
@@ -769,11 +828,21 @@ export async function paginateHtmlViaBrowser(
       u.searchParams.set('_p', String(i + 2)) // page numbers are 1-based; page 1 was the initial load
 
       await new Promise<void>((resolve, reject) => {
+        const onAbort = () => {
+          win.webContents.off('did-finish-load', onFinish)
+          win.webContents.off('did-fail-load', onFail)
+          if (!win.isDestroyed()) win.destroy()
+          reject(new DOMException('Aborted', 'AbortError'))
+        }
+        opts?.signal?.addEventListener('abort', onAbort, { once: true })
+
         const onFinish = () => {
+          opts?.signal?.removeEventListener('abort', onAbort)
           win.webContents.off('did-fail-load', onFail)
           resolve()
         }
         const onFail = (_e: unknown, code: number, desc: string) => {
+          opts?.signal?.removeEventListener('abort', onAbort)
           win.webContents.off('did-finish-load', onFinish)
           reject(new Error(`Failed to load page (${code}: ${desc}).`))
         }
@@ -783,7 +852,10 @@ export async function paginateHtmlViaBrowser(
       })
 
       // Give the SPA time to fetch its data and re-render the list.
-      await new Promise((r) => setTimeout(r, perPageWaitMs))
+      await Promise.race([
+        new Promise((r) => setTimeout(r, perPageWaitMs)),
+        abortPromise(opts?.signal)
+      ])
 
       const html = await win.webContents.executeJavaScript(
         'document.documentElement.outerHTML',
