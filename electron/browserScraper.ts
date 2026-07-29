@@ -320,13 +320,18 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
       ...(proxyConfig ? { proxy: proxyConfig } : {})
     })
 
+    // Hoisted before the inner try block so the finally always has
+    // access to it. If defined inside the inner try and Camoufox
+    // throws before the declaration is reached, the finally's
+    // removeEventListener would ReferenceError on the TDZ.
+    let abortHandler: (() => void) | undefined
     try {
       // On cancel: close the browser to interrupt in-flight page.goto().
       // page.goto() doesn't accept an AbortSignal, but closing the
       // browser makes it throw (disconnected), which the outer catch
       // converts to a null return — the caller sees "aborted" and the
       // scan moves on to the next board.
-      const abortHandler = () => { browser.close().catch(() => {}) }
+      abortHandler = () => { browser.close().catch(() => {}) }
       opts?.signal?.addEventListener('abort', abortHandler, { once: true })
 
       const page = await browser.newPage()
