@@ -177,8 +177,23 @@ export const BOARDS: BoardConfig[] = [
   },
   {
     name: 'CharityVillage',
-    searchUrl: (k, l) => `https://www.charityvillage.com/jobs/?keywords=${encodeURIComponent(k)}${l ? `&location=${encodeURIComponent(l)}` : ''}`,
-    useBrowser: false
+    // CharityVillage is Drupal-based and serves static HTML for
+    // per-job pages at /job/{slug}-{id}. The sitemap (7 pages)
+    // lists all job URLs under /job/. Walk all pages and collect
+    // job URLs for per-listing scraping.
+    searchUrl: () => 'https://www.charityvillage.com/jobs/',
+    useBrowser: false,
+    sitemapListingUrls: async (_k, _l, signal) => {
+      const all: string[] = []
+      for (let page = 1; page <= 7; page++) {
+        if (signal?.aborted) break
+        const xml = await fetchSitemapText(`https://www.charityvillage.com/sitemap.xml?page=${page}`, false)
+        for (const loc of extractSitemapUrls(xml)) {
+          if (loc.includes('/job/')) all.push(loc)
+        }
+      }
+      return all
+    }
   },
   {
     name: 'Crypto Careers',
