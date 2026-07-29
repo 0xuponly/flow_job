@@ -1,7 +1,7 @@
 // Board configuration and scan result types.
 // Extracted from jobSearch.ts to keep the scan pipeline readable.
 
-import { fetchArbeitnowJobs, fetchHimalayasJobs, fetchJobicyJobs, fetchRareRolesJobs, fetchRemotiveJobs } from './aggregatorApis'
+import { fetchArbeitnowJobs, fetchHimalayasJobs, fetchIndeedCanadaRss, fetchIndeedRss, fetchJobicyJobs, fetchRareRolesJobs, fetchRemotiveJobs } from './aggregatorApis'
 import { fetchAtsJobs } from './atsAdapter'
 import { fetchJobBankJobs, fetchWorkBcJobs } from './govApis'
 import { fetchRssFeed } from './rssFetcher'
@@ -51,6 +51,18 @@ export const BOARDS: BoardConfig[] = [
     name: 'Indeed Canada',
     searchUrl: (k, l) => `https://ca.indeed.com/jobs?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
     useBrowser: true
+  },
+  {
+    name: 'Indeed (RSS)',
+    searchUrl: (k, l) => `https://www.indeed.com/rss?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
+    useBrowser: false,
+    apiFetcher: (k, l, signal) => fetchIndeedRss(k, l, signal)
+  },
+  {
+    name: 'Indeed Canada (RSS)',
+    searchUrl: (k, l) => `https://ca.indeed.com/rss?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
+    useBrowser: false,
+    apiFetcher: (k, l, signal) => fetchIndeedCanadaRss(k, l, signal)
   },
   {
     name: 'Monster',
