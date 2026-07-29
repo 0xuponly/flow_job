@@ -271,3 +271,12 @@ export async function fetchIndeedCanadaRss(keywords: string, location: string, s
   const url = `https://ca.indeed.com/rss?q=${encodeURIComponent(keywords)}${location ? `&l=${encodeURIComponent(location)}` : ''}`
   return fetchRssFeed(url, 'Indeed Canada', { signal })
 }
+
+/**
+ * Fetch ZipRecruiter job listings via RSS format. ZipRecruiter
+ * supports ?format=rss on search URLs.
+ */
+export async function fetchZipRecruiterRss(keywords: string, location: string, signal?: AbortSignal): Promise<CreateJobInput[]> {
+  const url = `https://www.ziprecruiter.com/jobs?q=${encodeURIComponent(keywords)}${location ? `&l=${encodeURIComponent(location)}` : ''}&format=rss`
+  return fetchRssFeed(url, 'ZipRecruiter', { signal })
+}
