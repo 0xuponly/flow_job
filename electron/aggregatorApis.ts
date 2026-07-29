@@ -7,6 +7,7 @@
 // dedup across sources. We don't try to dedup here.
 
 import { getSettings } from './database'
+import { fetchRssFeed } from './rssFetcher'
 import type { CreateJobInput } from './types'
 
 interface FetchOpts {
@@ -251,4 +252,22 @@ export async function fetchRareRolesJobs({ keywords, location, signal }: FetchOp
     })
   }
   return out
+}
+
+/**
+ * Fetch Indeed job listings via RSS feed. Indeed publishes RSS at
+ * indeed.com/rss?q={keywords}&l={location}. The feed carries title,
+ * company, description, and per-job URL — no additional scraping needed.
+ */
+export async function fetchIndeedRss(keywords: string, location: string, signal?: AbortSignal): Promise<CreateJobInput[]> {
+  const url = `https://www.indeed.com/rss?q=${encodeURIComponent(keywords)}${location ? `&l=${encodeURIComponent(location)}` : ''}`
+  return fetchRssFeed(url, 'Indeed', { signal })
+}
+
+/**
+ * Fetch Indeed Canada job listings via RSS feed.
+ */
+export async function fetchIndeedCanadaRss(keywords: string, location: string, signal?: AbortSignal): Promise<CreateJobInput[]> {
+  const url = `https://ca.indeed.com/rss?q=${encodeURIComponent(keywords)}${location ? `&l=${encodeURIComponent(location)}` : ''}`
+  return fetchRssFeed(url, 'Indeed Canada', { signal })
 }
