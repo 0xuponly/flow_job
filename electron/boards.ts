@@ -1,7 +1,7 @@
 // Board configuration and scan result types.
 // Extracted from jobSearch.ts to keep the scan pipeline readable.
 
-import { fetchArbeitnowJobs, fetchHimalayasJobs, fetchIndeedCanadaRss, fetchIndeedRss, fetchJobicyJobs, fetchRareRolesJobs, fetchRemotiveJobs } from './aggregatorApis'
+import { fetchArbeitnowJobs, fetchHimalayasJobs, fetchIndeedCanadaRss, fetchIndeedRss, fetchJobicyJobs, fetchRareRolesJobs, fetchRemotiveJobs, fetchZipRecruiterRss } from './aggregatorApis'
 import { fetchAtsJobs } from './atsAdapter'
 import { fetchJobBankJobs, fetchWorkBcJobs } from './govApis'
 import { fetchRssFeed } from './rssFetcher'
@@ -73,6 +73,12 @@ export const BOARDS: BoardConfig[] = [
     name: 'ZipRecruiter',
     searchUrl: (k, l) => `https://www.ziprecruiter.com/jobs?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
     useBrowser: true
+  },
+  {
+    name: 'ZipRecruiter (RSS)',
+    searchUrl: (k, l) => `https://www.ziprecruiter.com/jobs?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}&format=rss`,
+    useBrowser: false,
+    apiFetcher: (k, l, signal) => fetchZipRecruiterRss(k, l, signal)
   },
   {
     name: 'SimplyHired',
