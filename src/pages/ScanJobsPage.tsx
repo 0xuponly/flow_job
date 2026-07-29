@@ -877,7 +877,6 @@ export default function ScanJobsPage() {
           }
         }
         const rows = Array.from(merged.values()).filter((b) => b.added > 0)
-        if (rows.length === 0) return null
         const ranAt = result.startedAt
           ? `${new Date(result.startedAt).toLocaleString('en-US', { timeZone: 'America/New_York', dateStyle: 'medium', timeStyle: 'medium' })  } EST`
           : 'unknown time'
@@ -933,35 +932,37 @@ export default function ScanJobsPage() {
             <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
               Ran at {ranAt} · Took {duration}
             </p>
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Board</th>
-                  <th>Added</th>
-                  {_showAllScanColumns && <th>Found</th>}
-                  {_showAllScanColumns && <th>Skipped</th>}
-                  {_showAllScanColumns && <th>Incompatible</th>}
-                  {_showAllScanColumns && <th>Errors</th>}
-                  <th></th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((b) => (
-                  <tr key={b.board}>
-                    <td><strong>{b.board}</strong></td>
-                    <td style={{ color: 'var(--success)', fontWeight: 600 }}>{b.added}</td>
-                    {_showAllScanColumns && <td>{b.found}</td>}
-                    {_showAllScanColumns && <td>{b.skipped}</td>}
-                    {_showAllScanColumns && <td>{b.incompatible}</td>}
-                    {_showAllScanColumns && <td style={{ color: b.errors > 0 ? 'var(--danger)' : undefined }}>{b.errors}</td>}
-                    <td>
-                      {b.error && <span style={{ color: 'var(--danger)', fontSize: 12 }}>{b.error}</span>}
-                    </td>
+            {rows.length > 0 && (
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Board</th>
+                    <th>Added</th>
+                    {_showAllScanColumns && <th>Found</th>}
+                    {_showAllScanColumns && <th>Skipped</th>}
+                    {_showAllScanColumns && <th>Incompatible</th>}
+                    {_showAllScanColumns && <th>Errors</th>}
+                    <th></th>
+                    <th></th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {rows.map((b) => (
+                    <tr key={b.board}>
+                      <td><strong>{b.board}</strong></td>
+                      <td style={{ color: 'var(--success)', fontWeight: 600 }}>{b.added}</td>
+                      {_showAllScanColumns && <td>{b.found}</td>}
+                      {_showAllScanColumns && <td>{b.skipped}</td>}
+                      {_showAllScanColumns && <td>{b.incompatible}</td>}
+                      {_showAllScanColumns && <td style={{ color: b.errors > 0 ? 'var(--danger)' : undefined }}>{b.errors}</td>}
+                      <td>
+                        {b.error && <span style={{ color: 'var(--danger)', fontSize: 12 }}>{b.error}</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
             {result.errors.length > 0 && (
               <div style={{ marginTop: 8, fontSize: 12, color: 'var(--danger)' }}>
                 {Array.from(new Set(result.errors)).map((e, i) => <div key={i}>{e}</div>)}
