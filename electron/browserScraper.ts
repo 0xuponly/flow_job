@@ -1,4 +1,7 @@
 import { BrowserWindow, session } from 'electron'
+import { createLogger } from './logger'
+
+const log = createLogger('browser')
 
 const LOAD_TIMEOUT_MS = 180000
 const CHALLENGE_WAIT_MS = 10000
@@ -398,6 +401,12 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
     }
   } catch (err) {
     // Camoufox unavailable or navigation failed.
+    // Log the actual error so we can distinguish "not installed" from
+    // "blocked by Cloudflare" from "timeout" — previously all three
+    // silently returned null and the caller (BrowserWindow fallback)
+    // produced the same generic error regardless.
+    const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+    log.info(`stage=camoufox-fallback url=${url} error="${message}"`)
     // Caller falls back to BrowserWindow.
     return null
   }

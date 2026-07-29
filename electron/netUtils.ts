@@ -11,48 +11,83 @@ export async function fetchPageHtml(url: string, useBrowser: boolean, signal?: A
       return await fetchHtmlViaBrowser(url, { signal })
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') throw err
-      throw new Error('Blocked by anti-bot protection (Cloudflare/Cloudfront).')
+      // Preserve the original error from fetchHtmlViaBrowser instead of
+      // wrapping in a generic message — the BrowserWindow path emits
+      // specific diagnostics like "This site blocked automated access
+      // (Cloudflare)..." that help the user understand what happened.
+      throw err instanceof Error ? err : new Error('Blocked by anti-bot protection (Cloudflare/Cloudfront).')
     }
   }
+
   // Combine the scan-cancel signal with the 30s per-request timeout.
-  // Without this, a Cancel click during a long fetch leaves the request
-  // running until the timeout fires (up to 30s), which the user reads as
-  // "Cancel is broken." Combining the two signals means either source of
-  // abort tears the in-flight request down immediately.
   const timeoutSignal = AbortSignal.timeout(30000)
   const combinedSignal = signal
     ? AbortSignal.any([signal, timeoutSignal])
     : timeoutSignal
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': USER_AGENT,
-      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Accept-Encoding': 'gzip, deflate, br'
-    },
-    signal: combinedSignal,
-    redirect: 'follow'
-  })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  const html = await response.text()
-  if (isChallengePage(html)) {
+
+  // Retry on transient HTTP errors (429, 5xx) up to 2 times with
+  // 1s/3s exponential backoff. The 30s AbortSignal.timeout is the
+  // hard upper bound. 501 (Not Implemented) is excluded because
+  // no host is going to start implementing it during our retry window.
+  const MAX_RETRIES = 2
+  const RETRY_DELAYS = [1000, 3000]
+  let response: Response
+  for (let attempt = 0; ; attempt++) {
+    response = await fetch(url, {
+      headers: {
+        'User-Agent': USER_AGENT,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br'
+      },
+      signal: combinedSignal,
+      redirect: 'follow'
+    })
+    if (response.ok || signal?.aborted) break
+    const status = response.status
+    const transient = status === 429 || (status >= 500 && status !== 501)
+    if (!transient || attempt >= MAX_RETRIES) break
+    response.body?.cancel().catch(() => {})
+    await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt]))
+    if (timeoutSignal.aborted) break
+  }
+
+  if (response.ok) {
+    const html = await response.text()
+    if (isChallengePage(html)) {
+      try {
+        return await fetchHtmlViaBrowser(url, { signal })
+      } catch {
+        throw new Error(`HTTP ${response.status} (blocked)`)
+      }
+    }
+    return html
+  }
+
+  // Non-ok response. Cloudflare (and other WAFs) sometimes return 403
+  // with a challenge-page body instead of letting isChallengePage see
+  // the HTML. Read the body and, if it looks like a challenge, retry
+  // through the browser. If it's a genuine 403 (no challenge body),
+  // surface the original error.
+  const body = await response.text().catch(() => '')
+  if (isChallengePage(body)) {
     try {
       return await fetchHtmlViaBrowser(url, { signal })
     } catch {
-      throw new Error(`HTTP ${  response.status  } (blocked)`)
+      throw new Error(`HTTP ${response.status} (blocked)`)
     }
   }
-  return html
+  throw new Error(`HTTP ${response.status}`)
 }
 
 // Fetch a sitemap XML document. Uses the same HTTP-with-challenge-
 // fallback as fetchPageHtml. Sitemaps are <urlset> or <sitemapindex>
 // XML; the caller runs extractSitemapUrls on the result.
-export async function fetchSitemapText(url: string, useBrowser: boolean): Promise<string> {
+export async function fetchSitemapText(url: string, useBrowser: boolean, signal?: AbortSignal): Promise<string> {
   // Sitemaps are well-known XML; tell the server that's what we
   // want so a Cloudflare-fronted origin doesn't try to serve us
   // an HTML challenge page by default.
-  return fetchPageHtml(url, useBrowser)
+  return fetchPageHtml(url, useBrowser, signal)
 }
 
 // Pull <loc>...</loc> URLs out of a sitemap XML document. Handles
