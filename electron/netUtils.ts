@@ -8,8 +8,9 @@ const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/
 export async function fetchPageHtml(url: string, useBrowser: boolean, signal?: AbortSignal): Promise<string> {
   if (useBrowser) {
     try {
-      return await fetchHtmlViaBrowser(url)
-    } catch {
+      return await fetchHtmlViaBrowser(url, { signal })
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') throw err
       throw new Error('Blocked by anti-bot protection (Cloudflare/Cloudfront).')
     }
   }
@@ -36,7 +37,7 @@ export async function fetchPageHtml(url: string, useBrowser: boolean, signal?: A
   const html = await response.text()
   if (isChallengePage(html)) {
     try {
-      return await fetchHtmlViaBrowser(url)
+      return await fetchHtmlViaBrowser(url, { signal })
     } catch {
       throw new Error(`HTTP ${  response.status  } (blocked)`)
     }

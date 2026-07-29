@@ -257,7 +257,8 @@ function buildStealthScript(): string {
 // Uses camoufox-js which wraps a patched Firefox binary with
 // sophisticated anti-fingerprinting. No Chrome/Google dependency.
 // Falls back to BrowserWindow when camoufox isn't available.
-async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string }): Promise<string | null> {
+async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal?: AbortSignal }): Promise<string | null> {
+  if (opts?.signal?.aborted) return null
   try {
     // Dynamic require so the import only fails at runtime (not compile time)
     // when camoufox isn't installed.
@@ -318,9 +319,11 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string }): Pro
         waitUntil: 'networkidle',
         timeout: LOAD_TIMEOUT_MS
       })
+      if (opts?.signal?.aborted) return null
 
       // Wait an extra moment for any delayed JavaScript rendering
       await new Promise((r) => setTimeout(r, 1500))
+      if (opts?.signal?.aborted) return null
 
       // Scroll to simulate human reading behavior. Cloudflare's behavior
       // analytics detect dead-still pages. Use evaluate() rather than
@@ -328,8 +331,10 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string }): Pro
       const scrollPx = Math.floor(Math.random() * (vp.height * 0.4)) + Math.floor(vp.height * 0.3)
       await page.evaluate((y: number) => window.scrollTo({ top: y, behavior: 'smooth' }), scrollPx).catch(() => {})
       await new Promise((r) => setTimeout(r, 200 + Math.random() * 300))
+      if (opts?.signal?.aborted) return null
       await page.evaluate(() => window.scrollBy({ top: Math.floor(Math.random() * 100), behavior: 'smooth' })).catch(() => {})
       await new Promise((r) => setTimeout(r, 100 + Math.random() * 200))
+      if (opts?.signal?.aborted) return null
 
       // Challenge detection and retry via page reload (not content polling).
       // Cloudflare challenges execute during page load — re-reading HTML
@@ -337,12 +342,14 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string }): Pro
       // the challenge cookie from a previous attempt may still be valid.
       const challengeDeadline = Date.now() + LOAD_TIMEOUT_MS
       let html = await page.content()
-      while (isChallengePage(html) && Date.now() < challengeDeadline) {
+      while (isChallengePage(html) && Date.now() < challengeDeadline && !opts?.signal?.aborted) {
         await page.reload({ waitUntil: 'networkidle', timeout: Math.max(30000, challengeDeadline - Date.now()) }).catch(() => {})
+        if (opts?.signal?.aborted) return null
         await new Promise((r) => setTimeout(r, CHALLENGE_WAIT_MS))
+        if (opts?.signal?.aborted) return null
         html = await page.content()
       }
-      if (isChallengePage(html)) {
+      if (isChallengePage(html) && !opts?.signal?.aborted) {
         throw new Error(
           'This site blocked automated access (Cloudflare). Open the job in your browser and try again later.'
         )
@@ -359,13 +366,18 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string }): Pro
   }
 }
 
-export async function fetchHtmlViaBrowser(url: string, opts?: { proxy?: string }): Promise<string> {
+export async function fetchHtmlViaBrowser(url: string, opts?: { proxy?: string; signal?: AbortSignal }): Promise<string> {
+  if (opts?.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+
   // Camoufox path: uses patched Firefox with anti-fingerprinting
   // (Camoufox) + our custom JS stealth script on top.
   // No Chrome/Google dependency. Falls back to BrowserWindow
   // when camoufox isn't available.
   const camoufoxHtml = await fetchHtmlViaCamoufox(url, opts)
   if (camoufoxHtml !== null) return camoufoxHtml
+
+  // Aborted during camoufox setup — don't fall through to BrowserWindow.
+  if (opts?.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
 
   // Fall through to the standard BrowserWindow path.
   return new Promise((resolve, reject) => {
@@ -426,14 +438,31 @@ export async function fetchHtmlViaBrowser(url: string, opts?: { proxy?: string }
       finish(() => reject(new Error('Timed out loading the job page.')))
     }, LOAD_TIMEOUT_MS)
 
+    // React to scan cancel: tear down the BrowserWindow and reject
+    // immediately so the caller sees the abort rather than waiting
+    // for the timeout.
+    if (opts?.signal) {
+      opts.signal.addEventListener('abort', () => {
+        finish(() => reject(new DOMException('Aborted', 'AbortError')))
+      }, { once: true })
+    }
+
     const extract = async (attempt = 0) => {
       try {
+        if (opts?.signal?.aborted) {
+          finish(() => reject(new DOMException('Aborted', 'AbortError')))
+          return
+        }
         // First attempt: short wait so non-challenge pages return fast
         // (the vast majority of browser-mode boards aren't behind
         // Cloudflare). On retry, fall back to the full
         // CHALLENGE_WAIT_MS — challenges need real time to resolve.
         const initialWait = attempt === 0 ? 1500 : CHALLENGE_WAIT_MS
         await new Promise((r) => setTimeout(r, initialWait))
+        if (opts?.signal?.aborted) {
+          finish(() => reject(new DOMException('Aborted', 'AbortError')))
+          return
+        }
         const html = await win.webContents.executeJavaScript(
           'document.documentElement.outerHTML',
           true
@@ -443,6 +472,10 @@ export async function fetchHtmlViaBrowser(url: string, opts?: { proxy?: string }
           // challenge runs, but harder Turnstile challenges can take
           // 15-20s. 5 retries × 10s gives the challenge 50s to resolve.
           if (attempt < 5) {
+            if (opts?.signal?.aborted) {
+              finish(() => reject(new DOMException('Aborted', 'AbortError')))
+              return
+            }
             await new Promise((r) => setTimeout(r, CHALLENGE_WAIT_MS))
             return extract(attempt + 1)
           }
@@ -475,7 +508,7 @@ export async function fetchHtmlViaBrowser(url: string, opts?: { proxy?: string }
       // JS redirect cancels the current navigation. Don't treat it as
       // a hard failure; the next `did-finish-load` (if it comes) will
       // resolve the promise through the normal `extract()` path. Only
-      // real errors (network failure, DNS, cert) are hard rejections.
+      // real errors (network failure, DNS, cert) are hard rejection.
       if (code === -3) return
       finish(() => reject(new Error(`Failed to load page (${code}: ${description}).`)))
     })
@@ -507,7 +540,7 @@ export async function navigateToHashViaBrowser(
   targetHash: string,
   markerSubstrings: string[],
   timeoutMs = 15000,
-  opts?: { proxy?: string }
+  opts?: { proxy?: string; signal?: AbortSignal }
 ): Promise<string> {
   const ses = session.fromPartition('scraper-hashnav-persistent')
   const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
@@ -574,7 +607,7 @@ export async function navigateToHashViaBrowser(
     // 3. Set the hash and wait for the panel to render.
     const start = Date.now()
     let html = ''
-    while (Date.now() - start < timeoutMs) {
+    while (Date.now() - start < timeoutMs && !opts?.signal?.aborted) {
       // Trigger router by setting hash. Most SPAs re-render on the
       // `hashchange` event; setting `location.hash` if it's already
       // the same value is a no-op, so we always re-set.
@@ -667,7 +700,7 @@ export async function paginateHtmlViaBrowser(
   baseUrl: string,
   pageHashes: string[],
   perPageWaitMs = 2500,
-  opts?: { proxy?: string }
+  opts?: { proxy?: string; signal?: AbortSignal }
 ): Promise<string> {
   // Reuse fetchHtmlViaBrowser for the initial load — it already handles
   // stealth injection, challenge detection, and timeout. Then continue
@@ -726,7 +759,7 @@ export async function paginateHtmlViaBrowser(
 
   try {
     for (let i = 0; i < pageHashes.length; i++) {
-      if (aborted) break
+      if (aborted || opts?.signal?.aborted) break
       const hash = pageHashes[i]
       // Build a same-origin URL whose hash matches what the user sees
       // for this page. Add a cache-buster query so the browser treats

@@ -333,13 +333,13 @@ async function fetchPageHtml(
     if (timeoutSignal.aborted) {
       // The request body was slow even though the headers arrived.
       // Treat the same as a timeout — fall through to the browser path.
-      return fetchHtmlViaBrowser(url, opts.proxy ? { proxy: opts.proxy } : undefined)
+      return fetchHtmlViaBrowser(url, opts.proxy ? { proxy: opts.proxy, signal } : { signal })
     }
     if (!opts.skipChallengeCheck && isChallengePage(html)) {
       if (CF_BLOCKED_HOSTS.has(hostname)) {
         throw new Error('This site blocked automated access (Cloudflare). Open the job in your browser and try again later.')
       }
-      return fetchHtmlViaBrowser(url, opts.proxy ? { proxy: opts.proxy } : undefined)
+      return fetchHtmlViaBrowser(url, opts.proxy ? { proxy: opts.proxy, signal } : { signal })
     }
     return html
   }
@@ -354,7 +354,7 @@ async function fetchPageHtml(
       if (CF_BLOCKED_HOSTS.has(hostname)) {
         throw new Error('This site blocked automated access (Cloudflare). Open the job in your browser and try again later.')
       }
-      return fetchHtmlViaBrowser(url, opts.proxy ? { proxy: opts.proxy } : undefined)
+      return fetchHtmlViaBrowser(url, opts.proxy ? { proxy: opts.proxy, signal } : { signal })
     }
   }
 

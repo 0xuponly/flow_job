@@ -781,7 +781,7 @@ export async function scanAllBoards(
       for (let p = 2; p <= MAX_PAGES; p++) {
         pageHashes.push(`#${baseNoPage};page=${p}`)
       }
-      return paginateHtmlViaBrowser(baseUrl, pageHashes, 3000)
+      return paginateHtmlViaBrowser(baseUrl, pageHashes, 3000, { signal })
     }
 
     if (board.paginate) {
