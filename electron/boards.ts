@@ -187,7 +187,7 @@ export const BOARDS: BoardConfig[] = [
       const all: string[] = []
       for (let page = 1; page <= 7; page++) {
         if (signal?.aborted) break
-        const xml = await fetchSitemapText(`https://www.charityvillage.com/sitemap.xml?page=${page}`, false)
+        const xml = await fetchSitemapText(`https://www.charityvillage.com/sitemap.xml?page=${page}`, false, signal)
         for (const loc of extractSitemapUrls(xml)) {
           if (loc.includes('/job/')) all.push(loc)
         }
@@ -538,7 +538,7 @@ export const BOARDS: BoardConfig[] = [
       const all: string[] = []
       for (const u of sub) {
         if (signal?.aborted) break
-        const xml = await fetchSitemapText(u, false)
+        const xml = await fetchSitemapText(u, false, signal)
         for (const loc of extractSitemapUrls(xml)) {
           if (loc.includes('/remote-job/')) all.push(loc)
         }
@@ -556,7 +556,7 @@ export const BOARDS: BoardConfig[] = [
     searchUrl: () => 'https://nodesk.co/remote-jobs',
     useBrowser: false,
     sitemapListingUrls: async (_k, _l, signal) => {
-      const xml = await fetchSitemapText('https://nodesk.co/sitemap-jobs.xml', false)
+      const xml = await fetchSitemapText('https://nodesk.co/sitemap-jobs.xml', false, signal)
       if (signal?.aborted) return []
       return extractSitemapUrls(xml)
     }
@@ -571,7 +571,7 @@ export const BOARDS: BoardConfig[] = [
     searchUrl: () => 'https://remote100k.com/',
     useBrowser: false,
     sitemapListingUrls: async (_k, _l, signal) => {
-      const xml = await fetchSitemapText('https://remote100k.com/sitemap.xml', false)
+      const xml = await fetchSitemapText('https://remote100k.com/sitemap.xml', false, signal)
       if (signal?.aborted) return []
       // The /sitemap.xml is a single <urlset> with ~706 /remote-job/
       // entries. extractSitemapUrls returns ALL <loc>s (including
