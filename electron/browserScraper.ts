@@ -6,6 +6,12 @@ import fs from 'fs'
 const log = createLogger('browser')
 
 const LOAD_TIMEOUT_MS = 180000
+// Per-listing scrape timeout. Board-level listing fetches keep
+// LOAD_TIMEOUT_MS (180s) — a board's search page is one fetch. The
+// per-listing path hits hundreds of URLs, and a blocked one would
+// otherwise burn 180s in Camoufox plus another 180s in the
+// BrowserWindow fallback (~6 min per batch of 6).
+export const SCAN_LOAD_TIMEOUT_MS = 30_000
 const CHALLENGE_WAIT_MS = 10000
 const USER_AGENTS = [
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
@@ -460,8 +466,9 @@ function patchCamoufoxIsMobile(browser: any): void {
   }
 }
 
-async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal?: AbortSignal }): Promise<string | null> {
+async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal?: AbortSignal; timeoutMs?: number }): Promise<string | null> {
   if (opts?.signal?.aborted) return null
+  const timeoutMs = opts?.timeoutMs ?? LOAD_TIMEOUT_MS
   try {
     // Build proxy config if provided.
     let proxyConfig: { server: string; username?: string; password?: string } | undefined
@@ -506,7 +513,7 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
       // everything networkidle was meant to guarantee.
       await page.goto(url, {
         waitUntil: 'domcontentloaded',
-        timeout: LOAD_TIMEOUT_MS
+        timeout: timeoutMs
       })
       if (opts?.signal?.aborted) return null
 
@@ -539,7 +546,7 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
       // Cloudflare challenges execute during page load — re-reading HTML
       // doesn't re-trigger them. Reloading gives a fresh HTTP attempt, and
       // the challenge cookie from a previous attempt may still be valid.
-      const challengeDeadline = Date.now() + LOAD_TIMEOUT_MS
+      const challengeDeadline = Date.now() + timeoutMs
       let html = await page.content()
       while (isChallengePage(html) && Date.now() < challengeDeadline && !opts?.signal?.aborted) {
         await page.reload({ waitUntil: 'domcontentloaded', timeout: Math.max(30000, challengeDeadline - Date.now()) }).catch(() => {})
@@ -577,7 +584,7 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
   }
 }
 
-export async function fetchHtmlViaBrowser(url: string, opts?: { proxy?: string; signal?: AbortSignal }): Promise<string> {
+export async function fetchHtmlViaBrowser(url: string, opts?: { proxy?: string; signal?: AbortSignal; timeoutMs?: number }): Promise<string> {
   if (opts?.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
 
   // Camoufox path: uses patched Firefox with anti-fingerprinting
@@ -647,7 +654,7 @@ export async function fetchHtmlViaBrowser(url: string, opts?: { proxy?: string; 
 
     const timer = setTimeout(() => {
       finish(() => reject(new Error('Timed out loading the job page.')))
-    }, LOAD_TIMEOUT_MS)
+    }, opts?.timeoutMs ?? LOAD_TIMEOUT_MS)
 
     // React to scan cancel: tear down the BrowserWindow and reject
     // immediately so the caller sees the abort rather than waiting
