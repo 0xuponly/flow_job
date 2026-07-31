@@ -1,5 +1,7 @@
-import { BrowserWindow, session } from 'electron'
+import { BrowserWindow, session, app } from 'electron'
 import { createLogger } from './logger'
+import path from 'path'
+import fs from 'fs'
 
 const log = createLogger('browser')
 
@@ -275,66 +277,126 @@ function abortPromise(signal?: AbortSignal): Promise<true> {
 // Uses camoufox-js which wraps a patched Firefox binary with
 // sophisticated anti-fingerprinting. No Chrome/Google dependency.
 // Falls back to BrowserWindow when camoufox isn't available.
+//
+// The Camoufox browser is kept as a module-level singleton because
+// it uses a persistent Firefox profile (data_dir) — Firefox locks
+// the profile, so only one process can use it at a time. Scanning
+// runs boards in parallel (Promise.allSettled), so without a
+// singleton every board would try to launch its own Camoufox and
+// crash with "A copy of Camoufox is already open".
+
+let camoufoxBrowser: any = null
+let camoufoxInit: Promise<any> | null = null
+
+async function initCamoufox(proxyConfig?: { server: string; username?: string; password?: string }): Promise<any> {
+  if (camoufoxBrowser) return camoufoxBrowser
+  if (camoufoxInit) return camoufoxInit
+
+  // Dynamic require so the import only fails at runtime (not compile time)
+  // when camoufox isn't installed.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { Camoufox } = require('camoufox')
+
+  const vp = randomViewport()
+  const systemLocale = Intl.NumberFormat().resolvedOptions().locale || 'en-US'
+  const systemTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York'
+  const profileDir = path.join(app.getPath('userData'), 'camoufox-profile')
+
+  // Clean any stale Firefox lock files from a previous app session.
+  // Firebase uses parent.lock (and .parentlock on some platforms) to
+  // prevent multiple processes from using the same profile. If the
+  // app was force-quit or crashed, the lock file survives and blocks
+  // the next launch with "A copy of Camoufox is already open".
+  const lockFiles = ['parent.lock', '.parentlock']
+  for (const f of lockFiles) {
+    try { fs.unlinkSync(path.join(profileDir, f)) } catch { /* file doesn't exist — nothing to clean */ }
+  }
+
+  // Proxy on the singleton: the first call's proxy config is used for
+  // the browser lifetime. Call closeCamoufox() and re-init to change.
+  camoufoxInit = Camoufox({
+    headless: true,
+    geoip: false,
+    data_dir: profileDir,
+    humanize: true,
+    // Disable Playwright's default viewport (1280x720 with isMobile)
+    // because the Camoufox binary rejects the isMobile property in
+    // Browser.setDefaultViewport during launchPersistentContext.
+    viewport: null,
+    // Set realistic screen dimensions
+    screen: { min_width: vp.width, max_width: vp.width, min_height: vp.height, max_height: vp.height },
+    // Runtime locale/timezone — Cloudflare checks locale-vs-IP-geo
+    // consistency; the real browser already sends these, so matching
+    // them here doesn't leak anything detectable.
+    locale: systemLocale,
+    timezone: systemTimezone,
+    // Block WebRTC only when a proxy is configured — without one,
+    // Camoufox already normalizes WebRTC so blocking is a detectable
+    // anti-fingerprinting signal that real browsers don't emit.
+    ...(proxyConfig ? { block_webrtc: true } : {}),
+    // Proxy configuration when provided
+    ...(proxyConfig ? { proxy: proxyConfig } : {})
+  }).then((browser: any) => {
+    camoufoxBrowser = browser
+    camoufoxInit = null // release promise ref
+    return browser
+  }, (err: any) => {
+    // DO NOT set camoufoxInit = null here. When launchPersistentContext
+    // fails partway through, the Camoufox process may still be running
+    // and holding the profile lock. Clearing the promise lets a retry
+    // re-launch, which hits "A copy of Camoufox is already open" because
+    // the original process is still alive. The caller can explicitly
+    // closeCamoufox() then retry if they want a clean restart.
+    throw err
+  })
+
+  return camoufoxInit
+}
+
+/** Close the shared Camoufox browser. Call when scans are done
+ *  or when the app is quitting. The browser is auto-recreated
+ *  on the next fetchHtmlViaCamoufox() call. */
+export async function closeCamoufox(): Promise<void> {
+  if (camoufoxBrowser) {
+    const b = camoufoxBrowser
+    camoufoxBrowser = null
+    camoufoxInit = null
+    await b.close().catch(() => {})
+  }
+}
+
 async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal?: AbortSignal }): Promise<string | null> {
   if (opts?.signal?.aborted) return null
   try {
-    // Dynamic require so the import only fails at runtime (not compile time)
-    // when camoufox isn't installed.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { Camoufox } = require('camoufox')
-
-    // Build proxy config if provided. Camoufox expects { server, username, password }
-    // format matching Playwright's proxy config.
+    // Build proxy config if provided.
     let proxyConfig: { server: string; username?: string; password?: string } | undefined
     if (opts?.proxy) {
-      const url = new URL(opts.proxy.replace(/^(https?|socks5):\/\//, 'http://'))
+      const u = new URL(opts.proxy.replace(/^(https?|socks5):\/\//, 'http://'))
       proxyConfig = {
         server: opts.proxy,
-        username: url.username || undefined,
-        password: url.password || undefined
+        username: u.username || undefined,
+        password: u.password || undefined
       }
     }
 
+    // Get or initialise the singleton browser.
+    const browser = await initCamoufox(proxyConfig)
     const vp = randomViewport()
-    // Use the real machine's locale and timezone. Cloudflare checks for
-    // locale-vs-IP-geo consistency; the real browser already sends these
-    // so matching them here doesn't leak anything detectable.
-    const systemLocale = Intl.NumberFormat().resolvedOptions().locale || 'en-US'
-    const systemTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York'
-
-    const browser = await Camoufox({
-      headless: false,
-      geoip: false,
-      // Set realistic screen dimensions
-      screen: { min_width: vp.width, max_width: vp.width, min_height: vp.height, max_height: vp.height },
-      // Runtime locale/timezone — Cloudflare checks locale-vs-IP-geo
-      // consistency; the real browser already sends these, so matching
-      // them here doesn't leak anything detectable.
-      locale: systemLocale,
-      timezone: systemTimezone,
-      // Block WebRTC only when a proxy is configured — without one,
-      // Camoufox already normalizes WebRTC so blocking is a detectable
-      // anti-fingerprinting signal that real browsers don't emit.
-      ...(proxyConfig ? { block_webrtc: true } : {}),
-      // Proxy configuration when provided
-      ...(proxyConfig ? { proxy: proxyConfig } : {})
-    })
 
     // Hoisted before the inner try block so the finally always has
-    // access to it. If defined inside the inner try and Camoufox
-    // throws before the declaration is reached, the finally's
-    // removeEventListener would ReferenceError on the TDZ.
+    // access to it. If defined inside the inner try and the
+    // browser.newPage() call throws before the declaration is reached,
+    // the finally's removeEventListener would ReferenceError on the TDZ.
     let abortHandler: (() => void) | undefined
+    let page: any
     try {
-      // On cancel: close the browser to interrupt in-flight page.goto().
-      // page.goto() doesn't accept an AbortSignal, but closing the
-      // browser makes it throw (disconnected), which the outer catch
-      // converts to a null return — the caller sees "aborted" and the
-      // scan moves on to the next board.
-      abortHandler = () => { browser.close().catch(() => {}) }
+      // On cancel: close the current page to interrupt in-flight
+      // page.goto(). Closing the page makes it throw (detached),
+      // which the outer catch converts to a null return.
+      abortHandler = () => { page?.close().catch(() => {}) }
       opts?.signal?.addEventListener('abort', abortHandler, { once: true })
 
-      const page = await browser.newPage()
+      page = await browser.newPage()
 
       // Inject our custom stealth script before every navigation.
       // addInitScript is the Playwright equivalent of puppeteer's
@@ -402,7 +464,9 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
       return html
     } finally {
       if (opts?.signal) opts.signal.removeEventListener('abort', abortHandler)
-      await browser.close().catch(() => {})
+      // Close the page, NOT the browser — the browser is a shared
+      // singleton kept alive across board fetches.
+      if (page) await page.close().catch(() => {})
     }
   } catch (err) {
     // Camoufox unavailable or navigation failed.
