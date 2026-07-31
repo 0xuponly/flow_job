@@ -1005,8 +1005,23 @@ export async function scanAllBoards(
         batches.push(listings.slice(i, i + LISTING_CONCURRENCY))
       }
 
+      // Consecutive-blocked guard. When a board's per-listing pages are
+      // systematically blocked (e.g. CharityVillage's Cloudflare WAF now
+      // challenges every /job/ URL), each scrape burns minutes in the
+      // browser fallback chain before failing. Grinding through all of a
+      // board's listings turns a 5-minute scan into hours of wall time.
+      // After MAX_CONSECUTIVE_BLOCKED errors with a blocked signature,
+      // bail out of the board and count the untouched listings as errors
+      // (same accounting as the board-level catch below).
+      const BLOCKED_REASON_RE = /blocked|cloudflare|automated access/i
+      const MAX_CONSECUTIVE_BLOCKED = 5
+      let consecutiveBlocked = 0
+      let blockedBailout = false
+      let processed = 0
+
       for (const batch of batches) {
         if (signal?.aborted) break
+        if (blockedBailout) break
         // Polite-crawl jitter: one short sleep at the start of each
         // batch instead of one per listing. The old per-listing
         // sleep serialized 6 listings × 350ms = 2.1s of dead time
@@ -1035,6 +1050,8 @@ export async function scanAllBoards(
         ])
         if (settled === null) break
         const results = settled
+        processed += results.length
+        let batchBlocked = 0
         for (const r of results) {
           if (r.status === 'fulfilled') {
             if (r.value.action === 'added') {
@@ -1061,12 +1078,36 @@ export async function scanAllBoards(
               // failures. The 4-arg summary line in the UI shows both.
               br.errors++
               bump('totalErrors')
+              if (r.value.reason && BLOCKED_REASON_RE.test(r.value.reason)) {
+                batchBlocked++
+              }
             }
           } else {
             br.errors++
             bump('totalErrors')
           }
         }
+        // Systematic-block detection: if every listing in this batch was a
+        // blocked scrape (and at least one was), the board's pages are
+        // WAF-blocked for this run. Counting only the failures that had a
+        // blocked signature — not transient 500s or malformed pages — keeps
+        // the guard from firing on flaky but recoverable boards.
+        consecutiveBlocked = batchBlocked === results.length && batchBlocked > 0
+          ? consecutiveBlocked + 1
+          : 0
+        if (consecutiveBlocked >= MAX_CONSECUTIVE_BLOCKED) {
+          blockedBailout = true
+          log.warn(`${board.name}: ${consecutiveBlocked} consecutive batches blocked by anti-bot protection; skipping remaining ${listings.length - processed} listings`)
+          break
+        }
+      }
+      // If the blocked-bailout skipped over untouched listings, count them
+      // as errors so the tally (Found / Added / Skipped / Incompatible /
+      // Errors) still sums to Found — same pattern as the board-level catch.
+      const uncategorized = br.found - (br.added + br.skipped + br.incompatible + br.errors)
+      if (blockedBailout && uncategorized > 0) {
+        br.errors += uncategorized
+        bump('totalErrors')
       }
       // No trailing bumpFound — see the comment at br.found above.
     } catch (err) {
