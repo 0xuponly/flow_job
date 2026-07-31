@@ -144,13 +144,17 @@ function stripLegacyEncryptedFields(s: Store): boolean {
 
 export function loadStore(): Store {
   if (store) return store
+  const t0 = Date.now()
+  let t1 = t0, t2 = t0, t3 = t0, t4 = t0
   const path = getStorePath()
   const dir = join(app.getPath('userData'))
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 
   if (existsSync(path)) {
     const raw = readFileSync(path, 'utf-8').trim()
+    t1 = Date.now()
     const dek = getOrCreateDek()
+    t2 = Date.now()
     try {
       store = decryptJson<Store>(raw, dek)
       // Strip any leftover legacy field-level encryption wrappers that may have
@@ -269,6 +273,7 @@ export function loadStore(): Store {
       // `BOARDS[].name` in `electron/jobSearch.ts`.
       store.settings.disabled_boards = []
     }
+    t3 = Date.now()
     let jobsMigrated = false
     for (const j of store.jobs) {
       if (j.url) {
@@ -321,10 +326,14 @@ export function loadStore(): Store {
     if (jobsMigrated) {
       persistStore()
     }
+    t4 = Date.now()
   } else {
     store = defaultStore()
     persistStore()
+    t4 = Date.now()
   }
+  // TEMP: loadStore timing
+  console.log(`[timing-db] loadStore total ${Date.now() - t0}ms (read ${(t1-t0)}ms dek ${(t2-t1)}ms decrypt ${(t3-t2)}ms migration ${(t4-t3)}ms) jobs=${store.jobs.length} seen_urls=${store.seen_urls?.length} path=${path}`)
   return store
 }
 
