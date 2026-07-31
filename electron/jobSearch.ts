@@ -1010,11 +1010,12 @@ export async function scanAllBoards(
       // challenges every /job/ URL), each scrape burns minutes in the
       // browser fallback chain before failing. Grinding through all of a
       // board's listings turns a 5-minute scan into hours of wall time.
-      // After MAX_CONSECUTIVE_BLOCKED errors with a blocked signature,
-      // bail out of the board and count the untouched listings as errors
-      // (same accounting as the board-level catch below).
+      // After MAX_CONSECUTIVE_BLOCKED fully-blocked batches (~18 listings
+      // at LISTING_CONCURRENCY=6), bail out of the board and count the
+      // untouched listings as errors (same accounting as the board-level
+      // catch below).
       const BLOCKED_REASON_RE = /blocked|cloudflare|automated access/i
-      const MAX_CONSECUTIVE_BLOCKED = 5
+      const MAX_CONSECUTIVE_BLOCKED = 3
       let consecutiveBlocked = 0
       let blockedBailout = false
       let processed = 0
