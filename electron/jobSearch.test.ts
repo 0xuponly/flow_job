@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { normalizeLocations, BOARDS } from './jobSearch'
+import { normalizeLocations, BOARDS, nextConsecutiveBlocked } from './jobSearch'
 import type { LocationPick } from './types'
 
 describe('normalizeLocations', () => {
@@ -215,5 +215,53 @@ describe('BOARDS config', () => {
     const board = BOARDS.find((b) => b.name === 'Freelancer')
     expect(board).toBeDefined()
     expect(board!.useBrowser).toBe(true)
+  })
+})
+
+describe('nextConsecutiveBlocked', () => {
+  const err = (reason: string) => ({ status: 'fulfilled' as const, value: { action: 'error' as const, reason } })
+  const ok = (action: 'added' | 'skipped' | 'incompatible') => ({ status: 'fulfilled' as const, value: { action } })
+
+  it('advances the counter when a batch is fully errored with mixed blocked reasons', () => {
+    // A blocked board fails heterogeneously: timeouts, aborts, empty
+    // shells, Cloudflare. All must count.
+    const results = [
+      err('Scrape failed: TimeoutError: page.goto: Timeout 180000ms exceeded'),
+      err('Scrape failed: NS_ERROR_ABORT: Load failed'),
+      err('Scrape failed: Blocked by anti-bot protection (empty shell)'),
+      err('Scrape failed: This site blocked automated access (Cloudflare). Open the job in your browser and try again later.'),
+      err('Scrape failed: Timed out loading the job page.'),
+      err('Scrape failed: HTTP 403 (blocked)')
+    ]
+    expect(nextConsecutiveBlocked(results, 0)).toBe(1)
+    expect(nextConsecutiveBlocked(results, 2)).toBe(3)
+  })
+
+  it('does not count Create failed DB errors toward the blocked counter', () => {
+    // A DB write failure says the board is fine — our database broke.
+    const results = [err('Create failed: UNIQUE constraint failed: jobs.url')]
+    expect(nextConsecutiveBlocked(results, 2)).toBe(0)
+  })
+
+  it('resets the counter when any listing succeeds', () => {
+    const results = [
+      err('Scrape failed: TimeoutError: page.goto: Timeout 180000ms exceeded'),
+      ok('added'),
+      err('Scrape failed: NS_ERROR_ABORT: Load failed')
+    ]
+    expect(nextConsecutiveBlocked(results, 2)).toBe(0)
+  })
+
+  it('returns 0 for an empty batch', () => {
+    expect(nextConsecutiveBlocked([], 1)).toBe(0)
+  })
+
+  it('reaches the bailout threshold after 3 consecutive all-errored batches', () => {
+    const batch = [err('Scrape failed: Timeout'), err('Scrape failed: NS_ERROR_ABORT')]
+    let counter = 0
+    counter = nextConsecutiveBlocked(batch, counter)
+    counter = nextConsecutiveBlocked(batch, counter)
+    counter = nextConsecutiveBlocked(batch, counter)
+    expect(counter).toBe(3)
   })
 })
