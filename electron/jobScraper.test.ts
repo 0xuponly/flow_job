@@ -15,7 +15,16 @@ vi.mock('./database', () => ({
   getJob: vi.fn()
 }))
 
+// Mock ./browserScraper to spy on fetchHtmlViaBrowser while keeping the
+// real isChallengePage. The test for the per-listing browser fallback
+// asserts the 30s scrape timeout is threaded through to the browser.
+vi.mock('./browserScraper', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./browserScraper')>()
+  return { ...actual, fetchHtmlViaBrowser: vi.fn(async () => '<html><body>cleared</body></html>') }
+})
+
 import { isLinkedInStubDescription, scrapeJobFromUrl, detectSource } from './jobScraper'
+import { fetchHtmlViaBrowser } from './browserScraper'
 
 // We don't actually hit the network — we stub fetch and feed the
 // extractor a realistic LinkedIn HTML page. The shape below mirrors
@@ -250,5 +259,27 @@ describe('detectSource', () => {
   it('returns Hubstaff Talent for hubstaff.com', () => {
     expect(detectSource('hubstaff.com')).toBe('Hubstaff Talent')
     expect(detectSource('www.hubstaff.com')).toBe('Hubstaff Talent')
+  })
+})
+
+describe('per-listing browser fallback timeout', () => {
+  it('passes SCAN_LOAD_TIMEOUT_MS to the browser fallback when a listing page is a challenge page', async () => {
+    const fetchHtmlViaBrowserMock = vi.mocked(fetchHtmlViaBrowser)
+    const originalFetch = global.fetch
+    // ~500 bytes of Cloudflare challenge HTML — big enough to clear the
+    // Fix 3 empty-shell check (< 200 bytes) and still hit the challenge path.
+    global.fetch = vi.fn(async () =>
+      new Response('<html><title>Just a moment...</title></html>'.repeat(10), { status: 200 })
+    ) as unknown as typeof fetch
+
+    try {
+      fetchHtmlViaBrowserMock.mockClear()
+      await expect(scrapeJobFromUrl('https://www.charityvillage.com/job/test-1')).rejects.toThrow()
+      expect(fetchHtmlViaBrowserMock).toHaveBeenCalled()
+      const [, opts] = fetchHtmlViaBrowserMock.mock.calls[0]
+      expect(opts).toMatchObject({ timeoutMs: 30_000 })
+    } finally {
+      global.fetch = originalFetch
+    }
   })
 })
