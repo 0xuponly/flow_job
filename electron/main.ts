@@ -17,6 +17,7 @@ import { buildPdfHtml } from './pdfTemplate'
 import { extractJobKeywordsStructured } from '../src/keywordExtractor'
 import { scrapeJobFromUrl } from './jobScraper'
 import { scanAllBoards, BOARDS } from './jobSearch'
+import { closeCamoufox } from './browserScraper'
 import { createLogger } from './logger'
 
 // Filter known-harmless Chromium internal noise out of stderr.
@@ -1066,6 +1067,10 @@ function registerIpc(): void {
   // are the security failure mode we're trying to avoid.
   let lastAutoBackupAttempt = 0
   app.on('before-quit', () => {
+    // Close the shared Camoufox browser if it's running (no-op if
+    // never started). Fire-and-forget — the process is shutting down,
+    // and we don't want to block the quit.
+    closeCamoufox()
     const s = db.getSettings()
     if (!s.passphrase) return
     const now = Date.now()
