@@ -499,12 +499,13 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
       // any site scripts execute.
       await page.addInitScript(buildStealthScript())
 
-      // Navigate with network-idle wait so the page is fully loaded.
-      // Camoufox's patched Firefox has native anti-fingerprinting
-      // built into the browser binary, plus our JS-level stealth
-      // script on top — belt AND suspenders.
+      // Navigate with domcontentloaded so that sites with long-lived
+      // connections (SSE, analytics beacons, long-polling) don't
+      // hang the goto indefinitely. The post-load waits below (1.5s
+      // JS execution, scrolling, challenge detection loop) handle
+      // everything networkidle was meant to guarantee.
       await page.goto(url, {
-        waitUntil: 'networkidle',
+        waitUntil: 'domcontentloaded',
         timeout: LOAD_TIMEOUT_MS
       })
       if (opts?.signal?.aborted) return null
@@ -541,7 +542,7 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
       const challengeDeadline = Date.now() + LOAD_TIMEOUT_MS
       let html = await page.content()
       while (isChallengePage(html) && Date.now() < challengeDeadline && !opts?.signal?.aborted) {
-        await page.reload({ waitUntil: 'networkidle', timeout: Math.max(30000, challengeDeadline - Date.now()) }).catch(() => {})
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: Math.max(30000, challengeDeadline - Date.now()) }).catch(() => {})
         if (opts?.signal?.aborted) return null
         await Promise.race([
           new Promise((r) => setTimeout(r, CHALLENGE_WAIT_MS)),
