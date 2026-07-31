@@ -312,6 +312,20 @@ async function initCamoufox(proxyConfig?: { server: string; username?: string; p
     try { fs.unlinkSync(path.join(profileDir, f)) } catch { /* file doesn't exist — nothing to clean */ }
   }
 
+  // Workaround: the Camoufox binary looks for properties.json in the
+  // MacOS/ directory of the app bundle, but the file may only exist in
+  // Resources/. Copy it if missing. See team memory for root cause.
+  try {
+    const camoufoxAppDir = path.dirname(require.resolve('camoufox/package.json'))
+    const macosDir = path.join(camoufoxAppDir, 'Camoufox.app', 'Contents', 'MacOS')
+    const resourcesDir = path.join(camoufoxAppDir, 'Camoufox.app', 'Contents', 'Resources')
+    const macosProps = path.join(macosDir, 'properties.json')
+    const resourcesProps = path.join(resourcesDir, 'properties.json')
+    if (!fs.existsSync(macosProps) && fs.existsSync(resourcesProps)) {
+      fs.copyFileSync(resourcesProps, macosProps)
+    }
+  } catch { /* non-critical — Camoufox will fall back gracefully */ }
+
   // Proxy on the singleton: the first call's proxy config is used for
   // the browser lifetime. Call closeCamoufox() and re-init to change.
   camoufoxInit = Camoufox({
