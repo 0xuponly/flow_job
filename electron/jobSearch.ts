@@ -674,6 +674,31 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
   }
 }
 
+// Consecutive-blocked bailout state machine. A batch counts as fully
+// blocked only when EVERY listing in it errored; any healthy listing
+// (added / skipped / incompatible) resets the streak. Error actions
+// count regardless of their reason — a blocked board fails
+// heterogeneously (timeout, abort, empty shell, Cloudflare) — with one
+// exception: a `Create failed` reason is a DB write failure, meaning
+// the board is fine and our database broke, and would trip the guard
+// falsely. Returns the new consecutive-blocked counter for the batch.
+export function nextConsecutiveBlocked(
+  results: PromiseSettledResult<{ action: 'added' | 'skipped' | 'incompatible' | 'error'; reason?: string }>[],
+  consecutiveBlocked: number
+): number {
+  let batchBlocked = 0
+  for (const r of results) {
+    if (r.status === 'rejected') continue
+    const { action, reason } = r.value
+    if (action === 'error' && reason && !/^create failed/i.test(reason)) {
+      batchBlocked++
+    }
+  }
+  return batchBlocked === results.length && batchBlocked > 0
+    ? consecutiveBlocked + 1
+    : 0
+}
+
 export async function scanAllBoards(
   filters?: ScanFilters,
   onProgress?: (msg: string) => void,
@@ -1007,14 +1032,18 @@ export async function scanAllBoards(
 
       // Consecutive-blocked guard. When a board's per-listing pages are
       // systematically blocked (e.g. CharityVillage's Cloudflare WAF now
-      // challenges every /job/ URL), each scrape burns minutes in the
+      // challenges every /job/ URL), each scrape burns time in the
       // browser fallback chain before failing. Grinding through all of a
       // board's listings turns a 5-minute scan into hours of wall time.
-      // After MAX_CONSECUTIVE_BLOCKED fully-blocked batches (~18 listings
+      // After MAX_CONSECUTIVE_BLOCKED fully-errored batches (~18 listings
       // at LISTING_CONCURRENCY=6), bail out of the board and count the
       // untouched listings as errors (same accounting as the board-level
-      // catch below).
-      const BLOCKED_REASON_RE = /blocked|cloudflare|automated access/i
+      // catch below). Counting ANY errored batch — not just ones whose
+      // reasons match a blocked signature — matters because a blocked
+      // board fails heterogeneously (timeouts, NS_ERROR_ABORT, empty
+      // shells, Cloudflare); the old narrow regex starved the guard for
+      // hours. `Create failed` DB errors are excluded so a healthy board
+      // with a broken database doesn't look blocked.
       const MAX_CONSECUTIVE_BLOCKED = 3
       let consecutiveBlocked = 0
       let blockedBailout = false
@@ -1052,7 +1081,6 @@ export async function scanAllBoards(
         if (settled === null) break
         const results = settled
         processed += results.length
-        let batchBlocked = 0
         for (const r of results) {
           if (r.status === 'fulfilled') {
             if (r.value.action === 'added') {
@@ -1079,23 +1107,13 @@ export async function scanAllBoards(
               // failures. The 4-arg summary line in the UI shows both.
               br.errors++
               bump('totalErrors')
-              if (r.value.reason && BLOCKED_REASON_RE.test(r.value.reason)) {
-                batchBlocked++
-              }
             }
           } else {
             br.errors++
             bump('totalErrors')
           }
         }
-        // Systematic-block detection: if every listing in this batch was a
-        // blocked scrape (and at least one was), the board's pages are
-        // WAF-blocked for this run. Counting only the failures that had a
-        // blocked signature — not transient 500s or malformed pages — keeps
-        // the guard from firing on flaky but recoverable boards.
-        consecutiveBlocked = batchBlocked === results.length && batchBlocked > 0
-          ? consecutiveBlocked + 1
-          : 0
+        consecutiveBlocked = nextConsecutiveBlocked(results, consecutiveBlocked)
         if (consecutiveBlocked >= MAX_CONSECUTIVE_BLOCKED) {
           blockedBailout = true
           log.warn(`${board.name}: ${consecutiveBlocked} consecutive batches blocked by anti-bot protection; skipping remaining ${listings.length - processed} listings`)
