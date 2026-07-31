@@ -338,6 +338,7 @@ async function initCamoufox(proxyConfig?: { server: string; username?: string; p
     ...(proxyConfig ? { proxy: proxyConfig } : {})
   }).then((browser: any) => {
     camoufoxBrowser = browser
+    patchCamoufoxIsMobile(browser)
     camoufoxInit = null // release promise ref
     return browser
   }, (err: any) => {
@@ -362,6 +363,86 @@ export async function closeCamoufox(): Promise<void> {
     camoufoxBrowser = null
     camoufoxInit = null
     await b.close().catch(() => {})
+  }
+}
+
+// The camoufox-patched Firefox binary doesn't support isMobile in
+// its CDP viewport schema. Playwright's Firefox adapter always
+// includes isMobile in Browser.setDefaultViewport (sent during
+// context initialization) and Page.setViewportSize (sent during
+// page initialization). Strip it so browser.newPage() doesn't
+// throw:
+//   Protocol error (Browser.setDefaultViewport): Found property
+//   "<root>.viewport.isMobile" which is not described in this scheme
+// The browser returned by Camoufox() is a client-side Playwright
+// API object — a Browser2 object when no data_dir is set, or a
+// BrowserContext2 object when data_dir IS set (launchPersistentContext).
+// The root CDP session lives on different internals depending on
+// which shape was returned:
+//   - Browser2: has _connection; toImpl returns FFBrowser with .session
+//   - BrowserContext2: has _browser (the parent Browser2) which holds
+//     the session. toImpl returns FF{Browser}Context which may not
+//     have session directly, so we fall back to fb._browser.session.
+// Regardless of shape, the FFConnection is always reachable via
+// fb._connection (both ChannelOwner subtypes inherit it).
+function patchCamoufoxIsMobile(browser: any): void {
+  const fb = browser as any
+
+  // BrowserContext (data_dir mode) wraps a Browser via _browser.
+  // Browser (no data_dir) IS the browser directly. Handle both shapes.
+  const isContext = !!(fb._browser && typeof fb._browser === 'object' && fb._browser._connection)
+  const rootBrowser = isContext ? fb._browser : fb
+
+  // Access the root CDP session. For Browser it's on toImpl(browser).session;
+  // for BrowserContext the internal path is fb._browser.session.
+  const rootSession = (() => {
+    const connection = rootBrowser._connection
+    if (!connection) return undefined
+    // Try toImpl for Browser shape
+    const impl = connection.toImpl?.(rootBrowser)
+    if (impl?.session) return impl.session
+    // Fallback: direct session property on the root browser object
+    return rootBrowser.session
+  })()
+
+  if (!rootSession) {
+    log.warn('camoufox: cannot access internal CDP session, skipping isMobile patch')
+    return
+  }
+
+  const origRootSend = rootSession.send.bind(rootSession)
+  rootSession.send = (method: string, params?: any) => {
+    if (method === 'Browser.setDefaultViewport' && params?.viewport?.isMobile !== undefined) {
+      params = { ...params, viewport: { ...params.viewport } }
+      delete params.viewport.isMobile
+    }
+    return origRootSend(method, params)
+  }
+
+  // Page sessions are created lazily via _connection.createSession
+  // on the FFConnection. Patch it so every new page session also
+  // strips isMobile from Page.setViewportSize.
+  // For Browser:        rootBrowser._connection (FFConnection directly)
+  // For BrowserContext: rootBrowser._connection (FFConnection, same one)
+  const ffConnection = rootBrowser._connection
+  if (ffConnection?.createSession) {
+    const origCreateSession = ffConnection.createSession.bind(ffConnection)
+    ffConnection.createSession = (sessionId: string) => {
+      const session = origCreateSession(sessionId)
+      const origPageSend = session.send.bind(session)
+      session.send = (method: string, params?: any) => {
+        if (method === 'Page.setViewportSize') {
+          params = { ...params }
+          // Camoufox binary doesn't support isMobile or
+          // screenSize in Page.setViewportSize — Playwright's
+          // Firefox adapter always sends these for desktop.
+          if ('isMobile' in params) delete params.isMobile
+          if ('screenSize' in params) delete params.screenSize
+        }
+        return origPageSend(method, params)
+      }
+      return session
+    }
   }
 }
 
