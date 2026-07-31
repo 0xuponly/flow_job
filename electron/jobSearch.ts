@@ -915,9 +915,15 @@ export async function scanAllBoards(
         return br
       }
 
-      const searchUrl = board.searchUrl(keywords, location)
+      // Sitemap-listing boards (e.g. CharityVillage) skip the search-
+      // results page entirely — its HTML is discarded and the per-job
+      // URLs come straight from the sitemap. Fetching it anyway wastes
+      // a request and can trip the board's WAF (Cloudflare blocks the
+      // /jobs/ search page, surfacing a bogus board error in the scan).
+      const sitemapSource = !!board.sitemapListingUrls
+      const searchUrl = sitemapSource ? '' : board.searchUrl(keywords, location)
       const tFetch0 = Date.now()
-      const html = await fetchBoardListingsHtml(searchUrl, board, signal)
+      const html = sitemapSource ? '' : await fetchBoardListingsHtml(searchUrl, board, signal)
       if (process.env.FLOW_JOB_SCAN_TIMING) {
         log.info(`stage=board-fetch board=${board.name} bytes=${html.length} ms=${Date.now() - tFetch0}`)
       }
