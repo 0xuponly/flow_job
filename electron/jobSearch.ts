@@ -1154,7 +1154,7 @@ export async function scanAllBoards(
       const uncategorized = br.found - (br.added + br.skipped + br.incompatible + br.errors)
       if (uncategorized > 0) {
         br.errors += uncategorized
-        bump('totalErrors')
+        bump('totalErrors', uncategorized)
       }
     }
     result.boards.push(br)
