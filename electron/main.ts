@@ -119,10 +119,6 @@ export const log = {
   notifications: createLogger('notifications')
 }
 
-// TEMP: startup timing instrumentation
-const _moduleStartMs = Date.now()
-log.startup.info(`[timing] module scope reached at ${_moduleStartMs}ms`)
-
 // Top-level wrapper for IPC-handler catch blocks to call without
 // pulling the full `log.notifications` reference into each handler.
 // The IPC brief for the notification center prescribes a single
@@ -182,11 +178,8 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
-    log.startup.info(`[timing] ready-to-show at ${Date.now() - _moduleStartMs}ms (window created at ${Date.now() - _winCreatedAt}ms)` )
     mainWindow.show()
   })
-
-  const _winCreatedAt = Date.now()
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
@@ -1190,8 +1183,6 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(() => {
-  const _t0 = Date.now()
-  log.startup.info(`[timing] whenReady fired at ${_t0 - _moduleStartMs}ms`)
   // Set a strict Content-Security-Policy on the main renderer session
   // so scraped HTML rendered in-app cannot execute injected scripts.
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
@@ -1206,18 +1197,13 @@ app.whenReady().then(() => {
   })
 
   registerIpc()
-  log.startup.info(`[timing] registerIpc done at ${Date.now() - _t0}ms`)
   createWindow()
-  log.startup.info(`[timing] createWindow done at ${Date.now() - _t0}ms`)
   startQueueProcessor()
-  log.startup.info(`[timing] startQueueProcessor done at ${Date.now() - _t0}ms`)
   scheduleNextAutoScan()
-  log.startup.info(`[timing] scheduleNextAutoScan done at ${Date.now() - _t0}ms`)
   // Fire-and-forget: the returned `stop` is intentionally dropped
   // (the interval lives for the app's lifetime; the helper
   // double-registers are guarded inside the module).
   startNotificationsPurgeInterval()
-  log.startup.info(`[timing] startup helpers done at ${Date.now() - _t0}ms`)
 
   // One-shot: re-canonicalize legacy locations to honor the country-last
   // contract (every stored value ends in a 2-letter country code or is
