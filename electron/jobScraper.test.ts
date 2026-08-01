@@ -283,3 +283,41 @@ describe('per-listing browser fallback timeout', () => {
     }
   })
 })
+
+describe('empty-shell detection', () => {
+  it('treats a sub-200-byte empty shell as blocked, not a parseable page', async () => {
+    const originalFetch = global.fetch
+    // The exact 39-byte shell CharityVillage returns:
+    // <html><head></head><body></body></html>
+    global.fetch = vi.fn(async () =>
+      new Response('<html><head></head><body></body></html>', { status: 200 })
+    ) as unknown as typeof fetch
+
+    try {
+      await expect(scrapeJobFromUrl('https://www.charityvillage.com/job/test-1'))
+        .rejects.toThrow('Blocked by anti-bot protection (empty shell)')
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+
+  it('does not flag a page larger than 200 bytes as an empty shell', async () => {
+    const originalFetch = global.fetch
+    global.fetch = vi.fn(async () =>
+      new Response('<html><body>' + '<p>content</p>'.repeat(50) + '</body></html>', { status: 200 })
+    ) as unknown as typeof fetch
+
+    try {
+      try {
+        await scrapeJobFromUrl('https://www.charityvillage.com/job/test-1')
+        throw new Error('expected rejection')
+      } catch (err) {
+        // Extraction legitimately fails on this fixture, but the error
+        // must NOT be the empty-shell signature.
+        expect((err as Error).message).not.toContain('Blocked by anti-bot protection (empty shell)')
+      }
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+})

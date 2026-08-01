@@ -350,6 +350,16 @@ async function fetchPageHtml(
       }
       return viaBrowser()
     }
+    // Some WAFs (CharityVillage) answer 200 with a near-empty shell
+    // (~39 bytes: <html><head></head><body></body></html>) that is not
+    // a detectable challenge page. Returning it makes extraction fail
+    // with "Missing required fields" — a reason that neither counts
+    // toward the blocked guard nor reads as blocked in logs. Treat any
+    // sub-200-byte response as a block; the challenge retry above has
+    // already had its chance.
+    if (html.length < 200) {
+      throw new Error('Blocked by anti-bot protection (empty shell)')
+    }
     return html
   }
 
