@@ -723,6 +723,12 @@ export async function scanAllBoards(
   const seenUrls = new Set(getSeenUrls().map(dedupKey))
   const scanSeenUrls = new Set<string>()
 
+  // Boards that hit the consecutive-blocked bailout for this run.
+  // processBoard early-returns for them so a multi-location scan
+  // doesn't re-grind a WAF-blocked board once per location (observed:
+  // two identical ~2h CharityVillage grinds at 15:25 and 16:09).
+  const blockedBoards = new Set<string>()
+
   const startedAt = Date.now()
   const result: ScanResult = { totalFound: 0, totalAdded: 0, totalSkipped: 0, totalErrors: 0, totalIncompatible: 0, boards: [], errors: [], startedAt, durationMs: 0, cancelled: false, addedJobs: [] }
   const _seenProgress = new Set<string>()
@@ -743,8 +749,8 @@ export async function scanAllBoards(
   // counter site uses it so the live emit can never be skipped. Falls
   // back to a direct mutation when no onCounters callback is wired
   // (e.g. the existing direct callers / unit tests).
-  const bump = (field: 'totalAdded' | 'totalSkipped' | 'totalIncompatible' | 'totalErrors') => {
-    result[field]++
+  const bump = (field: 'totalAdded' | 'totalSkipped' | 'totalIncompatible' | 'totalErrors', amount = 1) => {
+    result[field] += amount
     if (onCounters) {
       onCounters({
         totalFound: result.totalFound,
@@ -868,6 +874,10 @@ export async function scanAllBoards(
   }
 
   async function processBoard(board: BoardConfig, location: string, signal?: AbortSignal): Promise<ScanBoardResult> {
+    if (blockedBoards.has(board.name)) {
+      log.warn(`${board.name}: skipping (blocked in an earlier location this run)`)
+      return { board: board.name, found: 0, added: 0, skipped: 0, errors: 0, incompatible: 0 }
+    }
     const br: ScanBoardResult = { board: board.name, found: 0, added: 0, skipped: 0, errors: 0, incompatible: 0 }
     try {
       const locTag = location ? ` (${location})` : ''
@@ -1116,6 +1126,7 @@ export async function scanAllBoards(
         consecutiveBlocked = nextConsecutiveBlocked(results, consecutiveBlocked)
         if (consecutiveBlocked >= MAX_CONSECUTIVE_BLOCKED) {
           blockedBailout = true
+          blockedBoards.add(board.name)
           log.warn(`${board.name}: ${consecutiveBlocked} consecutive batches blocked by anti-bot protection; skipping remaining ${listings.length - processed} listings`)
           break
         }
@@ -1126,7 +1137,7 @@ export async function scanAllBoards(
       const uncategorized = br.found - (br.added + br.skipped + br.incompatible + br.errors)
       if (blockedBailout && uncategorized > 0) {
         br.errors += uncategorized
-        bump('totalErrors')
+        bump('totalErrors', uncategorized)
       }
       // No trailing bumpFound — see the comment at br.found above.
     } catch (err) {
