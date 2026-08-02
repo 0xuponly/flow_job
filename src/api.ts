@@ -79,6 +79,7 @@ export interface Api {
   queueMarkResponse: (jobId: number, responseAt?: number) => Promise<void>
   tailorQuickApply: (jobId: number) => Promise<{ queued: true }>
   getScanStatus: () => Promise<ScanStatus>
+  getScanEstimate: (boardNames: string[]) => Promise<number | null>
   clearScanResult: () => Promise<void>
   onScanProgress: (cb: (msg: string) => void) => () => void
   onScanCounters: (cb: (counters: { totalFound: number; totalAdded: number; totalSkipped: number; totalIncompatible: number; totalErrors: number }) => void) => () => void

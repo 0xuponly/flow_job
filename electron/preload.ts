@@ -77,6 +77,7 @@ export interface Api {
   queueMarkResponse: (jobId: number, responseAt?: number) => Promise<void>
   tailorQuickApply: (jobId: number) => Promise<{ queued: true }>
   getScanStatus: () => Promise<ScanStatus>
+  getScanEstimate: (boardNames: string[]) => Promise<number | null>
   clearScanResult: () => Promise<void>
   cancelScan: () => Promise<void>
   cancelImport: () => Promise<void>
@@ -142,6 +143,7 @@ const api: Api = {
   recomputeFit: (id) => ipcRenderer.invoke('jobs:recomputeFit', id),
   backfillJobDates: () => ipcRenderer.invoke('jobs:backfillDates'),
   getScanStatus: () => ipcRenderer.invoke('scan:status'),
+  getScanEstimate: (boardNames) => ipcRenderer.invoke('boards:scanEstimate', boardNames),
   clearScanResult: () => ipcRenderer.invoke('scan:clearResult'),
   cancelScan: () => ipcRenderer.invoke('scan:cancel'),
   cancelImport: () => ipcRenderer.invoke('import:cancel'),

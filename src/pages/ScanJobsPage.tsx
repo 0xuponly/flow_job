@@ -30,6 +30,18 @@ function formatDuration(s: number): string {
   return parts.join(' ')
 }
 
+// Scan-time estimate suffix for the start button. `ms` is the
+// main-process estimate (summed avg per board, concurrency-adjusted).
+// Copy follows the user-facing format: "(est. X mins)" under an hour,
+// "est. Y hours X mins" at an hour or more.
+function formatEstimate(ms: number): string {
+  const totalMins = Math.max(1, Math.round(ms / 60000))
+  if (totalMins < 60) return `(est. ${totalMins} mins)`
+  const hours = Math.floor(totalMins / 60)
+  const mins = totalMins % 60
+  return `est. ${hours} hour${hours === 1 ? '' : 's'}${mins > 0 ? ` ${mins} mins` : ''}`
+}
+
 // A board is a "Frequent Error" if its last 5+ health entries are all
 // `<= 0` (i.e. it consistently returns no jobs or errors). Used both
 // to (a) deselect these boards by default in the picker, and
@@ -89,6 +101,10 @@ export default function ScanJobsPage() {
   const [showFrequentErrors, setShowFrequentErrors] = usePersistedState<boolean>('scan:showFrequentErrors', false)
   const [boardHealth, setBoardHealth] = useState<Record<string, number[]>>({})
   const [scanning, setScanning] = useState(false)
+  // Main-process scan-time estimate (ms) for the current selection,
+  // null when any selected board has no recorded scan history yet.
+  // Re-fetched when the board selection or board registry changes.
+  const [estimate, setEstimate] = useState<number | null>(null)
   // Optimistic flag for the Cancel button. The user clicks Cancel and
   // we flip this immediately, even before `scan:complete` lands, so
   // the button reads "Cancelling..." instead of staying "Cancel" while
@@ -132,6 +148,10 @@ export default function ScanJobsPage() {
   const unsubRef = useRef<(() => void) | null>(null)
   const mountedRef = useRef(true)
   const scanActiveRef = useRef(false)
+  // Latest board names the estimate was computed for. The scan-complete
+  // handler subscribes once ([] deps) and reads this ref to re-fetch
+  // the estimate after a scan writes fresh timing history.
+  const estimateNamesRef = useRef<string[]>([])
 
   // Listen for scan completion (works whether or not the user is on this tab)
   useEffect(() => {
@@ -158,6 +178,15 @@ export default function ScanJobsPage() {
       })
       // Refresh health data after a completed scan
       api.getBoardHealth().then((h) => { if (mountedRef.current) setBoardHealth(h) })
+      // Refresh the estimate too — the scan just wrote fresh timing
+      // history (or wrote the first entry ever), so the button suffix
+      // may have changed. This effect's deps are [], so the captured
+      // selection would be stale; read the live names from the ref.
+      if (estimateNamesRef.current.length > 0) {
+        api.getScanEstimate(estimateNamesRef.current).then((ms) => {
+          if (mountedRef.current) setEstimate(ms)
+        })
+      }
     })
     return () => {
       cancelled = true
@@ -419,6 +448,23 @@ export default function ScanJobsPage() {
   // legacy behaviour) is the right default — better to show all
   // boards than to filter everything out.
   const enabledBoards = allBoards.filter((b) => b.enabled !== false)
+
+  // Fetch the estimated scan duration whenever the board selection
+  // changes. Mirrors handleScan's board-passing rule: a full selection
+  // (>= all enabled) scans all boards, so estimate against the enabled
+  // registry then too. Stale responses are dropped via the cancel flag.
+  useEffect(() => {
+    if (allBoards.length === 0) return
+    const names = selectedBoards.size < enabledBoards.length
+      ? Array.from(selectedBoards)
+      : enabledBoards.map((b) => b.name)
+    estimateNamesRef.current = names
+    let cancelled = false
+    api.getScanEstimate(names).then((ms) => {
+      if (!cancelled && mountedRef.current) setEstimate(ms)
+    })
+    return () => { cancelled = true }
+  }, [selectedBoardsRaw, allBoards])
 
   async function handleScan() {
     scanActiveRef.current = true
@@ -772,6 +818,7 @@ export default function ScanJobsPage() {
             {scanning ? 'Scanning boards...' : selectedBoards.size < enabledBoards.length
               ? `Scan ${selectedBoards.size} selected board${selectedBoards.size === 1 ? '' : 's'}`
               : 'Scan all boards'}
+            {estimate != null && !scanning ? ` ${formatEstimate(estimate)}` : ''}
           </button>
         </div>
       </div>
