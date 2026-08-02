@@ -187,6 +187,16 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
+  // Defer the store-touching startup work until the renderer has finished
+  // loading: the first loadStore() is a ~0.63s synchronous read that, if it
+  // runs between loadFile and dom-ready, delays first paint ~1:1. Fires after
+  // the page body is available but before the renderer's first data IPC.
+  // Idempotent + flag-gated, so re-running on a reopened (macOS activate)
+  // window is safe.
+  mainWindow.webContents.once('did-finish-load', () => {
+    runDeferredStoreWork()
+  })
+
   if (process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
@@ -1184,22 +1194,15 @@ function registerIpc(): void {
   })
 }
 
-app.whenReady().then(() => {
-  // Set a strict Content-Security-Policy on the main renderer session
-  // so scraped HTML rendered in-app cannot execute injected scripts.
-  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    callback({
-      responseHeaders: {
-        ...details.responseHeaders,
-        'Content-Security-Policy': [
-          "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws:; font-src 'self'; object-src 'none'; base-uri 'self';"
-        ]
-      }
-    })
-  })
-
-  registerIpc()
-  createWindow()
+// Deferred startup work — runs only after the renderer has finished
+// loading (did-finish-load), so the first synchronous loadStore() (~0.63s)
+// and the one-shot retrofits no longer sit in the loadFile → dom-ready
+// critical path (a sync main-thread block there delays the renderer ~1:1).
+// The three services are idempotent and the retrofits are flag-gated, so
+// re-running on a reopened window is safe. loadStore is a synchronous
+// singleton, so ordering against the renderer’s first data IPC is
+// harmless either way.
+function runDeferredStoreWork(): void {
   startQueueProcessor()
   scheduleNextAutoScan()
   // Fire-and-forget: the returned `stop` is intentionally dropped
@@ -1389,6 +1392,24 @@ app.whenReady().then(() => {
       log.startup.error('CV version bump failed:', err)
     }
   }
+}
+
+app.whenReady().then(() => {
+  // Set a strict Content-Security-Policy on the main renderer session
+  // so scraped HTML rendered in-app cannot execute injected scripts.
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [
+          "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws:; font-src 'self'; object-src 'none'; base-uri 'self';"
+        ]
+      }
+    })
+  })
+
+  registerIpc()
+  createWindow()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
