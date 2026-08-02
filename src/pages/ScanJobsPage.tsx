@@ -42,7 +42,7 @@ function formatEstimate(ms: number): string {
   return `est. ${hours} hour${hours === 1 ? '' : 's'}${mins > 0 ? ` ${mins} mins` : ''}`
 }
 
-// A board is a "Frequent Error" if its last 5+ health entries are all
+// A board is a "Frequent Error" if its last 3+ health entries are all
 // `<= 0` (i.e. it consistently returns no jobs or errors). Used both
 // to (a) deselect these boards by default in the picker, and
 // (b) render the "+/- Frequent Errors" toggle button.
@@ -53,7 +53,7 @@ function findFrequentErrorBoards(
   return boards
     .filter((b) => {
       const history = boardHealth[b.name] || []
-      return history.length >= 5 && history.every((h) => h <= 0)
+      return history.length >= 3 && history.every((h) => h <= 0)
     })
     .map((b) => b.name)
 }
@@ -94,7 +94,7 @@ export default function ScanJobsPage() {
   }
   const [boardsExpanded, setBoardsExpanded] = useState(false)
   // Visibility toggle for boards flagged as "Frequent Errors". Default
-  // false: these boards (5+ recent runs with no jobs) are hidden from the
+  // false: these boards (3+ recent runs with no jobs) are hidden from the
   // grid and can't be selected until the user explicitly reveals them.
   // Persisted across reloads so the choice sticks; a one-time manual
   // toggle then reflects user intent, not a default we'd auto-flip.
@@ -303,7 +303,7 @@ export default function ScanJobsPage() {
         setAllBoards(boards)
         setBoardHealth(health)
         // Default: all selected EXCEPT boards flagged as "Frequent
-        // Errors" (5+ recent runs with no jobs found). Auto-scanning
+        // Errors" (3+ recent runs with no jobs found). Auto-scanning
         // boards that consistently return 0 listings burns time and
         // adds noise to the result; let the user opt back in via the
         // "Select Frequent Errors" button if they want to retry.
@@ -662,7 +662,7 @@ export default function ScanJobsPage() {
             {(() => {
               const frequentErrors = findFrequentErrorBoards(enabledBoards, boardHealth)
               // Hide the button entirely when no boards are flagged.
-              // The flag is "5+ recent runs with no jobs found" — a
+              // The flag is "3+ recent runs with no jobs found" — a
               // healthy user with no failing boards has nothing to
               // toggle, so don't clutter the picker.
               if (frequentErrors.length === 0) return null
@@ -777,8 +777,8 @@ export default function ScanJobsPage() {
                 {visibleBoards.map((b) => {
                   const checked = selectedBoards.has(b.name)
                   const history = boardHealth[b.name] || []
-                  // Red if the last 5 results were all zero/errored
-                  const allBad = history.length >= 5 && history.every((h) => h <= 0)
+                  // Red if the last 3 results were all zero/errored
+                  const allBad = history.length >= 3 && history.every((h) => h <= 0)
                   return (
                     <label
                       key={b.name}
