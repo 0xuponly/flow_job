@@ -17,6 +17,7 @@ import { buildPdfHtml } from './pdfTemplate'
 import { extractJobKeywordsStructured } from '../src/keywordExtractor'
 import { scrapeJobFromUrl } from './jobScraper'
 import { scanAllBoards, BOARDS } from './jobSearch'
+import { computeScanEstimate } from './scanEstimate'
 import { closeCamoufox } from './browserScraper'
 import { createLogger } from './logger'
 
@@ -1102,6 +1103,7 @@ function registerIpc(): void {
     return BOARDS.map((b) => ({ name: b.name, useBrowser: b.useBrowser, enabled: !disabled.has(b.name) }))
   })
   ipcMain.handle('boards:health', () => db.getBoardHealth())
+  ipcMain.handle('boards:scanEstimate', (_e, boardNames: string[]) => computeScanEstimate(boardNames))
   ipcMain.handle('aiQueue:retry', (_e, id: number) => {
     db.updateAIQueueItem(id, { status: 'pending', nextRetryAt: Date.now(), lastError: undefined })
     return db.getAIQueue()
