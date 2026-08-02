@@ -4,7 +4,6 @@ import { createDocument, getJob } from './database'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
-import mammoth from 'mammoth'
 import { log } from './logger'
 import { scoreCompatibility, extractEducationLevel, extractYearsExperience } from './fitHeuristic'
 import { runDocumentRuleChecks } from '../src/documentRules'
@@ -36,6 +35,11 @@ async function loadHarvardTemplate(): Promise<string> {
   try {
     const path = join(app.getAppPath(), 'docs', 'templates', '2025-template_bullet.docx')
     const buf = readFileSync(path)
+    // Lazy-require: mammoth's require costs ~1.5s in Electron's main process,
+    // and it's only needed when the Harvard template is loaded (user-triggered
+    // document tailoring, never at boot). Loading it on demand removes that
+    // from every app startup.
+    const mammoth = (await import('mammoth')).default
     const result = await mammoth.extractRawText({ buffer: new Uint8Array(buf) })
     cachedTemplate = result.value.trim()
   } catch (err) {
