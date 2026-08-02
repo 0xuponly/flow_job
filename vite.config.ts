@@ -1,13 +1,16 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'url';
-import { rollupPluginHTML as html } from '@web/rollup-plugin-html';
+import { visualizer } from 'rollup-plugin-visualizer';
 
 // Resolve paths for manual chunks
 const resolvePath = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 
 export default defineConfig({
-  plugins: [react(), html({ inputHtml: resolvePath('public/index.html') })],
+  plugins: [
+    react(),
+    visualizer({ open: true, gzipSize: true, emitFile: false }),
+  ],
   build: {
     rollupOptions: {
       output: {
@@ -17,7 +20,10 @@ export default defineConfig({
           scan: [resolvePath('src/pages/ScanJobsPage.tsx'), resolvePath('src/jobSearch.ts')],
           ai: [resolvePath('src/ai.ts'), resolvePath('src/aiQueue.ts')],
           utils: [resolvePath('src/utils.ts')],
-          // Split large dependencies
+          // Split large modules
+          keywordExtractor: [resolvePath('src/keywordExtractor.ts')],
+          documentRules: [resolvePath('src/documentRules.ts')],
+          // Tree-shake mammoth
           mammoth: ['mammoth'],
         },
       },
