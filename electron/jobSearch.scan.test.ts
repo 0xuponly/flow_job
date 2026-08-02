@@ -15,6 +15,7 @@ vi.mock('./database', () => ({
   findDuplicateJob: vi.fn(() => false),
   createJob: vi.fn((input: unknown) => ({ id: 1, ...(input as object) })),
   recordBoardResults: vi.fn(),
+  recordBoardScanTime: vi.fn(),
   JobBlacklistedError: class extends Error {},
   JobDuplicateError: class extends Error {}
 }))

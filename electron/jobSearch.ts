@@ -1,4 +1,4 @@
-import { createJob, findDuplicateJob, getSeenUrls, getSettings, listJobs, recordBoardResults, JobBlacklistedError, JobDuplicateError } from './database'
+import { createJob, findDuplicateJob, getSeenUrls, getSettings, listJobs, recordBoardResults, recordBoardScanTime, JobBlacklistedError, JobDuplicateError } from './database'
 import { decodeEntities, dedupKey } from './utils'
 import { scrapeJobFromUrl } from './jobScraper'
 import { createLogger, log as categoryLog } from './logger'
@@ -15,6 +15,7 @@ import type { CreateJobInput, Job, LocationPick, ScanFilters, WorkType } from '.
 import { BOARDS, type BoardConfig, type ScanBoardResult, type ScanResult } from './boards'
 export { BOARDS } from './boards'
 export type { BoardConfig, ScanBoardResult, ScanResult } from './boards'
+import { BOARD_CONCURRENCY_HTTP, BOARD_CONCURRENCY_BROWSER } from './scanEstimate'
 
 // Heuristic pre-filter floor for the scan pipeline. Listings with a keyword-
 // overlap score below this threshold are persisted with score=null and a
@@ -1167,9 +1168,8 @@ export async function scanAllBoards(
   // separately means a slow browser board doesn't block HTTP boards
   // for the same location, and vice versa. The browser cap is held
   // low because each concurrent browser session is a Chrome process
-  // (~200MB+) and macOS throttles beyond ~5-6.
-  const BOARD_CONCURRENCY_HTTP = 6
-  const BOARD_CONCURRENCY_BROWSER = 3
+  // (~200MB+) and macOS throttles beyond ~5-6. The concurrency values
+  // live in scanEstimate.ts so the estimator shares them.
   const selectedBoards = (() => {
     const explicit = filters?.boards && filters.boards.length > 0
       ? BOARDS.filter((b) => filters.boards!.includes(b.name))
@@ -1186,6 +1186,9 @@ export async function scanAllBoards(
   const browserBoards = selectedBoards.filter((b) => b.useBrowser)
   // Track per-board totals across locations for health recording
   const boardTotals = new Map<string, { found: number; errored: boolean }>()
+  // Per-board accumulated scan time (ms) across all locations, used for
+  // the scan-time estimate. Recorded even for errored/blocked boards.
+  const boardScanMs = new Map<string, number>()
   if (locations.length > 0) {
     const shown = locations.slice(0, 3).map(p => p.display).join(', ')
     const more = locations.length > 3 ? `, +${locations.length - 3} more` : ''
@@ -1204,7 +1207,14 @@ export async function scanAllBoards(
         if (signal?.aborted) break
         const chunk = track.slice(i, i + concurrency)
         const t0 = Date.now()
-        const results = await Promise.allSettled(chunk.map(board => processBoard(board, location, signal)))
+        const results = await Promise.allSettled(chunk.map(async (board) => {
+          const start = Date.now()
+          try {
+            return await processBoard(board, location, signal)
+          } finally {
+            boardScanMs.set(board.name, (boardScanMs.get(board.name) ?? 0) + (Date.now() - start))
+          }
+        }))
         if (process.env.FLOW_JOB_SCAN_TIMING) {
           const elapsed = Date.now() - t0
           log.info(`track=${trackName} chunk=[${chunk.map(b => b.name).join(',')}] ms=${elapsed}`)
@@ -1239,6 +1249,13 @@ export async function scanAllBoards(
   // Record per-board health (-1 means errored with no listings)
   for (const [name, totals] of boardTotals) {
     recordBoardResults(name, totals.errored && totals.found === 0 ? -1 : totals.found)
+  }
+  // Record per-board scan times for the estimate. Skipped on cancel —
+  // a partial run would poison the averages with artificially short times.
+  if (!result.cancelled) {
+    for (const [name, ms] of boardScanMs) {
+      recordBoardScanTime(name, ms)
+    }
   }
 
   // Filter out boards with no activity from the returned result (we already

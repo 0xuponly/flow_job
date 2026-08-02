@@ -44,6 +44,7 @@ interface Store {
   seen_urls: string[]
   ai_queue: AIQueueItem[]
   board_health: Record<string, number[]>
+  board_scan_times: Record<string, number[]>
   deleted_jobs: DeletedJobRecord[]
   blacklisted_companies?: string[]
   notifications: NotificationRow[]
@@ -105,6 +106,7 @@ function defaultStore(): Store {
     seen_urls: [],
     ai_queue: [],
     board_health: {},
+    board_scan_times: {},
     deleted_jobs: [],
     blacklisted_companies: [],
     notifications: []
@@ -232,6 +234,9 @@ export function loadStore(): Store {
     }
     if (!store.board_health) {
       store.board_health = {}
+    }
+    if (!store.board_scan_times) {
+      store.board_scan_times = {}
     }
     if (!store.deleted_jobs) {
       store.deleted_jobs = []
@@ -2052,6 +2057,21 @@ export function recordBoardResults(name: string, totalFound: number): void {
   // Keep only the last 5 results
   if (history.length > 5) history.splice(0, history.length - 5)
   s.board_health[name] = history
+  persistStore()
+}
+
+export function getBoardScanTimes(): Record<string, number[]> {
+  return loadStore().board_scan_times
+}
+
+export function recordBoardScanTime(name: string, durationMs: number): void {
+  const s = loadStore()
+  if (!s.board_scan_times) s.board_scan_times = {}
+  const history = s.board_scan_times[name] || []
+  history.push(durationMs)
+  // Keep only the last 20 scan times
+  if (history.length > 20) history.splice(0, history.length - 20)
+  s.board_scan_times[name] = history
   persistStore()
 }
 
