@@ -1,16 +1,18 @@
-import { StrictMode } from 'react'
+import { StrictMode, Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ThemeProvider } from './theme/ThemeProvider'
 import { NotificationsProvider } from './notifications/NotificationsProvider'
-import App from './App'
-import './styles/global.css'
+
+const App = lazy(() => import('./App'))
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <NotificationsProvider>
-      <ThemeProvider>
-        <App />
-      </ThemeProvider>
-    </NotificationsProvider>
+    <ThemeProvider>
+      <NotificationsProvider>
+        <Suspense fallback="Loading...">
+          <App />
+        </Suspense>
+      </NotificationsProvider>
+    </ThemeProvider>
   </StrictMode>
 )
