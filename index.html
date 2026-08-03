@@ -15,9 +15,38 @@
         }
       })();
     </script>
+    <script>
+      window.addEventListener('error', function () {
+        var splash = document.getElementById('app-splash');
+        if (splash) splash.innerHTML = '<p style="color:#fff;font-family:system-ui">Failed to load — see console</p>';
+      });
+    </script>
+    <style>
+      #app-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #0f1117;
+      }
+      #app-splash-spinner {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        border: 3px solid rgba(255, 255, 255, 0.15);
+        border-top-color: #ffffff;
+        animation: app-splash-spin 0.8s linear infinite;
+      }
+      @keyframes app-splash-spin {
+        to { transform: rotate(360deg); }
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+    <div id="app-splash"><div id="app-splash-spinner"></div></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
