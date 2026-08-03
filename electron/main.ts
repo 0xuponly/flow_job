@@ -166,7 +166,7 @@ function createWindow(): void {
     height: displayHeight,
     minWidth: 960,
     minHeight: 640,
-    show: false,
+    show: true,
     title: 'FlowJob',
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#0f1117',
@@ -178,9 +178,9 @@ function createWindow(): void {
     }
   })
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
-  })
+  // Window is shown immediately (show: true); backgroundColor '#0f1117'
+  // matches the splash in index.html, so there is no flash. The splash is
+  // removed by the renderer after first paint (see src/main.tsx).
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)

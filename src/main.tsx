@@ -14,3 +14,12 @@ createRoot(document.getElementById('root')!).render(
     </NotificationsProvider>
   </StrictMode>
 )
+
+// Remove the static splash only after the app has painted; double-rAF
+// guarantees we wait for the first committed frame, so there is no
+// blank flash between splash removal and app paint.
+requestAnimationFrame(() => {
+  requestAnimationFrame(() => {
+    document.getElementById('app-splash')?.remove()
+  })
+})
