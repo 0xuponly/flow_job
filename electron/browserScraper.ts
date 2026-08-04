@@ -13,6 +13,19 @@ const LOAD_TIMEOUT_MS = 180000
 // BrowserWindow fallback (~6 min per batch of 6).
 export const SCAN_LOAD_TIMEOUT_MS = 30_000
 const CHALLENGE_WAIT_MS = 10000
+// Upper bound for Camoufox page operations that Playwright does NOT
+// accept a timeout option for (newPage, addInitScript, evaluate,
+// content, close). Healthy pages answer these in <100ms; if one
+// doesn't settle in 10s the renderer is wedged (e.g. an anti-bot
+// challenge loop blocking the main thread). Bounding them stops a
+// single hung listing from freezing the whole scan forever.
+const PAGE_OP_TIMEOUT_MS = 10000
+// Per-page loadURL bound for the BrowserWindow SPA navigators
+// (navigateToHashViaBrowser / paginateHtmlViaBrowser). These await
+// did-finish-load with no timeout, so a wedged renderer — which
+// fires neither did-finish-load nor did-fail-load — would hang them
+// forever.
+const NAV_LOAD_TIMEOUT_MS = 30000
 const USER_AGENTS = [
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
@@ -279,6 +292,48 @@ function abortPromise(signal?: AbortSignal): Promise<true> {
   })
 }
 
+// Races a promise against a hard timeout and the optional abort signal.
+// Needed because Playwright page ops (newPage, evaluate, content, close,
+// addInitScript) and Electron loadURL/executeJavaScript calls have NO
+// timeout option of their own — when the renderer wedges (main thread
+// blocked by e.g. an anti-bot challenge loop), the promise never settles,
+// and .catch() is useless because there's no rejection. Bounding each op
+// means one hung listing degrades to a timed-out fallback instead of
+// freezing the entire scan.
+function withTimeout<T>(p: Promise<T>, ms: number, signal?: AbortSignal, label = 'operation'): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      reject(new Error(`${label} timed out after ${ms}ms`))
+    }, ms)
+    const onAbort = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      reject(new DOMException('Aborted', 'AbortError'))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    p.then(
+      (v) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        signal?.removeEventListener('abort', onAbort)
+        resolve(v)
+      },
+      (e) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        signal?.removeEventListener('abort', onAbort)
+        reject(e)
+      }
+    )
+  })
+}
+
 // ─── Camoufox-powered fetch (Firefox anti-fingerprinting) ─────
 // Uses camoufox-js which wraps a patched Firefox binary with
 // sophisticated anti-fingerprinting. No Chrome/Google dependency.
@@ -498,13 +553,13 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
       abortHandler = () => { page?.close().catch(() => {}) }
       opts?.signal?.addEventListener('abort', abortHandler, { once: true })
 
-      page = await browser.newPage()
+      page = await withTimeout(browser.newPage(), PAGE_OP_TIMEOUT_MS, opts?.signal, 'camoufox newPage')
 
       // Inject our custom stealth script before every navigation.
       // addInitScript is the Playwright equivalent of puppeteer's
       // evaluateOnNewDocument — runs in the page's main world before
       // any site scripts execute.
-      await page.addInitScript(buildStealthScript())
+      await withTimeout(page.addInitScript(buildStealthScript()), PAGE_OP_TIMEOUT_MS, opts?.signal, 'camoufox addInitScript')
 
       // Navigate with domcontentloaded so that sites with long-lived
       // connections (SSE, analytics beacons, long-polling) don't
@@ -529,13 +584,13 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
       // analytics detect dead-still pages. Use evaluate() rather than
       // Playwright's mouse API to avoid automation fingerprints.
       const scrollPx = Math.floor(Math.random() * (vp.height * 0.4)) + Math.floor(vp.height * 0.3)
-      await page.evaluate((y: number) => window.scrollTo({ top: y, behavior: 'smooth' }), scrollPx).catch(() => {})
+      await withTimeout(page.evaluate((y: number) => window.scrollTo({ top: y, behavior: 'smooth' }), scrollPx), PAGE_OP_TIMEOUT_MS, opts?.signal, 'camoufox evaluate').catch(() => {})
       await Promise.race([
         new Promise((r) => setTimeout(r, 200 + Math.random() * 300)),
         abortPromise(opts?.signal)
       ])
       if (opts?.signal?.aborted) return null
-      await page.evaluate(() => window.scrollBy({ top: Math.floor(Math.random() * 100), behavior: 'smooth' })).catch(() => {})
+      await withTimeout(page.evaluate(() => window.scrollBy({ top: Math.floor(Math.random() * 100), behavior: 'smooth' })), PAGE_OP_TIMEOUT_MS, opts?.signal, 'camoufox evaluate').catch(() => {})
       await Promise.race([
         new Promise((r) => setTimeout(r, 100 + Math.random() * 200)),
         abortPromise(opts?.signal)
@@ -547,7 +602,7 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
       // doesn't re-trigger them. Reloading gives a fresh HTTP attempt, and
       // the challenge cookie from a previous attempt may still be valid.
       const challengeDeadline = Date.now() + timeoutMs
-      let html = await page.content()
+      let html = await withTimeout(page.content(), PAGE_OP_TIMEOUT_MS, opts?.signal, 'camoufox content')
       while (isChallengePage(html) && Date.now() < challengeDeadline && !opts?.signal?.aborted) {
         await page.reload({ waitUntil: 'domcontentloaded', timeout: Math.max(30000, challengeDeadline - Date.now()) }).catch(() => {})
         if (opts?.signal?.aborted) return null
@@ -556,7 +611,7 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
           abortPromise(opts?.signal)
         ])
         if (opts?.signal?.aborted) return null
-        html = await page.content()
+        html = await withTimeout(page.content(), PAGE_OP_TIMEOUT_MS, opts?.signal, 'camoufox content')
       }
       if (isChallengePage(html) && !opts?.signal?.aborted) {
         throw new Error(
@@ -569,7 +624,7 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
       if (opts?.signal) opts.signal.removeEventListener('abort', abortHandler)
       // Close the page, NOT the browser — the browser is a shared
       // singleton kept alive across board fetches.
-      if (page) await page.close().catch(() => {})
+      if (page) await withTimeout(page.close(), PAGE_OP_TIMEOUT_MS, opts?.signal, 'camoufox close').catch(() => {})
     }
   } catch (err) {
     // Camoufox unavailable or navigation failed.
@@ -809,30 +864,38 @@ export async function navigateToHashViaBrowser(
   }
 
   try {
-    // 1. Initial document load.
-    await new Promise<void>((resolve, reject) => {
-      const onAbort = () => {
-        win.webContents.off('did-finish-load', onFinish)
-        win.webContents.off('did-fail-load', onFail)
-        if (!win.isDestroyed()) win.destroy()
-        reject(new DOMException('Aborted', 'AbortError'))
-      }
-      opts?.signal?.addEventListener('abort', onAbort, { once: true })
+    // 1. Initial document load. Bounded so a wedged renderer (which
+    // fires neither did-finish-load nor did-fail-load) can't hang the
+    // caller forever — a timed-out load falls through to the same
+    // rejection path as a real load failure.
+    await withTimeout(
+      new Promise<void>((resolve, reject) => {
+        const onAbort = () => {
+          win.webContents.off('did-finish-load', onFinish)
+          win.webContents.off('did-fail-load', onFail)
+          if (!win.isDestroyed()) win.destroy()
+          reject(new DOMException('Aborted', 'AbortError'))
+        }
+        opts?.signal?.addEventListener('abort', onAbort, { once: true })
 
-      const onFinish = () => {
-        opts?.signal?.removeEventListener('abort', onAbort)
-        win.webContents.off('did-fail-load', onFail)
-        resolve()
-      }
-      const onFail = (_e: unknown, code: number, desc: string) => {
-        opts?.signal?.removeEventListener('abort', onAbort)
-        win.webContents.off('did-finish-load', onFinish)
-        reject(new Error(`Failed to load page (${code}: ${desc}).`))
-      }
-      win.webContents.once('did-finish-load', onFinish)
-      win.webContents.once('did-fail-load', onFail)
-      win.loadURL(baseUrl).catch(reject)
-    })
+        const onFinish = () => {
+          opts?.signal?.removeEventListener('abort', onAbort)
+          win.webContents.off('did-fail-load', onFail)
+          resolve()
+        }
+        const onFail = (_e: unknown, code: number, desc: string) => {
+          opts?.signal?.removeEventListener('abort', onAbort)
+          win.webContents.off('did-finish-load', onFinish)
+          reject(new Error(`Failed to load page (${code}: ${desc}).`))
+        }
+        win.webContents.once('did-finish-load', onFinish)
+        win.webContents.once('did-fail-load', onFail)
+        win.loadURL(baseUrl).catch(reject)
+      }),
+      timeoutMs,
+      opts?.signal,
+      'hash-nav initial load'
+    )
 
     // 2. Give the SPA time to bootstrap (its router has to attach hash
     // listeners after the document is ready).
@@ -848,17 +911,22 @@ export async function navigateToHashViaBrowser(
       // Trigger router by setting hash. Most SPAs re-render on the
       // `hashchange` event; setting `location.hash` if it's already
       // the same value is a no-op, so we always re-set.
-      await win.webContents.executeJavaScript(
-        `(() => {
-          const want = ${JSON.stringify(targetHash)};
-          if (window.location.hash !== want) {
-            window.location.hash = want;
-          } else {
-            // Force a re-render by dispatching the event manually.
-            window.dispatchEvent(new HashChangeEvent('hashchange'));
-          }
-        })()`,
-        true
+      await withTimeout(
+        win.webContents.executeJavaScript(
+          `(() => {
+            const want = ${JSON.stringify(targetHash)};
+            if (window.location.hash !== want) {
+              window.location.hash = want;
+            } else {
+              // Force a re-render by dispatching the event manually.
+              window.dispatchEvent(new HashChangeEvent('hashchange'));
+            }
+          })()`,
+          true
+        ),
+        PAGE_OP_TIMEOUT_MS,
+        opts?.signal,
+        'hash-nav set hash'
       ).catch(() => {})
 
       // Give the SPA a moment to fetch + render.
@@ -867,9 +935,14 @@ export async function navigateToHashViaBrowser(
         abortPromise(opts?.signal)
       ])
 
-      html = await win.webContents.executeJavaScript(
-        'document.documentElement.outerHTML',
-        true
+      html = await withTimeout(
+        win.webContents.executeJavaScript(
+          'document.documentElement.outerHTML',
+          true
+        ),
+        PAGE_OP_TIMEOUT_MS,
+        opts?.signal,
+        'hash-nav read html'
       )
 
       // Marker check: the panel is up when ANY of the markers appears
@@ -1008,29 +1081,34 @@ export async function paginateHtmlViaBrowser(
       u.hash = hash
       u.searchParams.set('_p', String(i + 2)) // page numbers are 1-based; page 1 was the initial load
 
-      await new Promise<void>((resolve, reject) => {
-        const onAbort = () => {
-          win.webContents.off('did-finish-load', onFinish)
-          win.webContents.off('did-fail-load', onFail)
-          if (!win.isDestroyed()) win.destroy()
-          reject(new DOMException('Aborted', 'AbortError'))
-        }
-        opts?.signal?.addEventListener('abort', onAbort, { once: true })
+      await withTimeout(
+        new Promise<void>((resolve, reject) => {
+          const onAbort = () => {
+            win.webContents.off('did-finish-load', onFinish)
+            win.webContents.off('did-fail-load', onFail)
+            if (!win.isDestroyed()) win.destroy()
+            reject(new DOMException('Aborted', 'AbortError'))
+          }
+          opts?.signal?.addEventListener('abort', onAbort, { once: true })
 
-        const onFinish = () => {
-          opts?.signal?.removeEventListener('abort', onAbort)
-          win.webContents.off('did-fail-load', onFail)
-          resolve()
-        }
-        const onFail = (_e: unknown, code: number, desc: string) => {
-          opts?.signal?.removeEventListener('abort', onAbort)
-          win.webContents.off('did-finish-load', onFinish)
-          reject(new Error(`Failed to load page (${code}: ${desc}).`))
-        }
-        win.webContents.once('did-finish-load', onFinish)
-        win.webContents.once('did-fail-load', onFail)
-        win.loadURL(u.href).catch(reject)
-      })
+          const onFinish = () => {
+            opts?.signal?.removeEventListener('abort', onAbort)
+            win.webContents.off('did-fail-load', onFail)
+            resolve()
+          }
+          const onFail = (_e: unknown, code: number, desc: string) => {
+            opts?.signal?.removeEventListener('abort', onAbort)
+            win.webContents.off('did-finish-load', onFinish)
+            reject(new Error(`Failed to load page (${code}: ${desc}).`))
+          }
+          win.webContents.once('did-finish-load', onFinish)
+          win.webContents.once('did-fail-load', onFail)
+          win.loadURL(u.href).catch(reject)
+        }),
+        NAV_LOAD_TIMEOUT_MS,
+        opts?.signal,
+        'paginate page load'
+      )
 
       // Give the SPA time to fetch its data and re-render the list.
       await Promise.race([
@@ -1038,9 +1116,14 @@ export async function paginateHtmlViaBrowser(
         abortPromise(opts?.signal)
       ])
 
-      const html = await win.webContents.executeJavaScript(
-        'document.documentElement.outerHTML',
-        true
+      const html = await withTimeout(
+        win.webContents.executeJavaScript(
+          'document.documentElement.outerHTML',
+          true
+        ),
+        PAGE_OP_TIMEOUT_MS,
+        opts?.signal,
+        'paginate read html'
       )
       collected.push(html)
     }

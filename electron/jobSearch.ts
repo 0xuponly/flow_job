@@ -48,6 +48,14 @@ function abortPromise(signal?: AbortSignal): Promise<true> {
 // scraping (the I/O-bound part) fully in parallel.
 const LLM_SCAN_CONCURRENCY = 2
 
+// Per-batch watchdog for the listing loop. Every listing op is
+// individually bounded (camoufox page ops, BrowserWindow timers, the
+// 20s LLM call), so a healthy batch of 6 settles well under 5 minutes.
+// If a batch outlives this, something wedged that the per-op bounds
+// missed — the race below turns that into a counted-error bailout
+// instead of a scan that hangs forever.
+const BATCH_TIMEOUT_MS = 5 * 60_000
+
 // pLimit-style async limiter. Resolves tasks FIFO with at most
 // `n` running concurrently. Aborted tasks reject immediately so
 // the scan's cancel signal propagates through the queue.
@@ -1073,13 +1081,24 @@ export async function scanAllBoards(
         if (board.useBrowser) {
           await new Promise(r => setTimeout(r, 200 + Math.random() * 300))
         }
-        // Race the batch against the abort signal. If the user cancels mid-
-        // batch, we don't wait for the in-flight listings to finish; we drop
-        // whatever hasn't settled yet and bail out. The settled values for
-        // already-completed listings in this batch are discarded (since the
-        // per-listing accounting happens after the await). The outer board
-        // loop's `signal.aborted` check picks up the cancellation on the
-        // next iteration.
+        // Race the batch against the abort signal and a watchdog
+        // timeout. If the user cancels mid-batch, we don't wait for
+        // the in-flight listings to finish; we drop whatever hasn't
+        // settled yet and bail out. The settled values for
+        // already-completed listings in this batch are discarded
+        // (since the per-listing accounting happens after the await).
+        // The outer board loop's `signal.aborted` check picks up the
+        // cancellation on the next iteration.
+        //
+        // The watchdog distinguishes itself from a cancel by the
+        // signal not being aborted: a batch that outlives
+        // BATCH_TIMEOUT_MS is treated as a blocked batch — it's
+        // logged, counted as errors via the uncategorized accounting
+        // below, and the board is bailed out (and skipped for later
+        // locations). This is the backstop that guarantees a wedged
+        // listing can't freeze the whole scan even if a per-op
+        // timeout is ever missed.
+        let batchTimer: ReturnType<typeof setTimeout> | undefined
         const settled = await Promise.race([
           Promise.allSettled(
             batch.map(async (l) => {
@@ -1087,9 +1106,20 @@ export async function scanAllBoards(
               return fetchAndScore(l.url, baseCv, seenUrls, scanSeenUrls, workType, location, signal)
             })
           ),
-          abortPromise(signal).then(() => null)
+          abortPromise(signal).then(() => null),
+          new Promise<null>((resolve) => {
+            batchTimer = setTimeout(() => resolve(null), BATCH_TIMEOUT_MS)
+          })
         ])
-        if (settled === null) break
+        if (batchTimer) clearTimeout(batchTimer)
+        if (settled === null) {
+          if (!signal?.aborted) {
+            blockedBailout = true
+            blockedBoards.add(board.name)
+            log.warn(`${board.name}: batch timed out after ${BATCH_TIMEOUT_MS / 60000}min; skipping remaining ${listings.length - processed - batch.length} listings`)
+          }
+          break
+        }
         const results = settled
         processed += results.length
         for (const r of results) {
