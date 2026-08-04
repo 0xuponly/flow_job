@@ -4,7 +4,7 @@ import { LocationPicker } from '../components/LocationPicker'
 import { parseLocationPicks } from '../utils'
 import type { LocationPick } from '../locations'
 import type { ScanResult, WorkType } from '../types'
-import { BOARD_TYPES } from '../boardTypes'
+import { BOARD_TYPES, groupOf, groupSelection } from '../boardTypes'
 import { usePersistedState } from '../persistedState'
 
 // Backfill fields that may be missing on results cached from older
@@ -589,8 +589,10 @@ export default function ScanJobsPage() {
                   ? new Set<string>()
                   : new Set(findFrequentErrorBoards(enabledBoards, boardHealth))
                 const selectableBoards = enabledBoards.filter((b) => !hiddenFrequentErrors.has(b.name))
-                const selectedSelectable = selectableBoards.filter((b) => selectedBoards.has(b.name)).length
-                return `Job boards (${selectedSelectable} of ${selectableBoards.length} selected)`
+                // Denominator is the checkbox count, so variants that
+                // share a group ("Indeed" + "Indeed (RSS)") count once.
+                const sel = groupSelection(selectableBoards, selectedBoards)
+                return `Job boards (${sel.selected} of ${sel.total} selected)`
               })()}
             </label>
             <div style={{ display: 'flex', gap: 6 }}>
@@ -764,6 +766,20 @@ export default function ScanJobsPage() {
             const visibleBoards = [...enabledBoards]
               .filter((b) => showFrequentErrors || !frequentErrors.has(b.name))
               .sort((a, b) => a.name.localeCompare(b.name))
+            // Collapse variants into one checkbox per board. Registry
+            // entries in the same group ("Indeed" + "Indeed (RSS)")
+            // render as a single checkbox labelled with the group name;
+            // ticking it selects every visible member so the scan runs
+            // both. A group reads as checked only when all members are
+            // selected — a partial selection (from before grouping
+            // existed) reads as unchecked, and ticking it completes it.
+            const membersByGroup = new Map<string, typeof visibleBoards>()
+            for (const b of visibleBoards) {
+              const g = groupOf(b.name)
+              const members = membersByGroup.get(g)
+              if (members) members.push(b)
+              else membersByGroup.set(g, [b])
+            }
             return (
               <div style={{
                 display: 'grid',
@@ -774,14 +790,18 @@ export default function ScanJobsPage() {
                 borderRadius: 6,
                 border: '1px solid var(--border)'
               }}>
-                {visibleBoards.map((b) => {
-                  const checked = selectedBoards.has(b.name)
-                  const history = boardHealth[b.name] || []
-                  // Red if the last 3 results were all zero/errored
-                  const allBad = history.length >= 3 && history.every((h) => h <= 0)
+                {Array.from(membersByGroup.entries()).map(([group, members]) => {
+                  const checked = members.every((m) => selectedBoards.has(m.name))
+                  // Red if any member's last 3 results were all
+                  // zero/errored — the group label flags the board
+                  // even when only one variant is failing.
+                  const allBad = members.some((m) => {
+                    const history = boardHealth[m.name] || []
+                    return history.length >= 3 && history.every((h) => h <= 0)
+                  })
                   return (
                     <label
-                      key={b.name}
+                      key={group}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
@@ -799,13 +819,18 @@ export default function ScanJobsPage() {
                         onChange={() => {
                           setSelectedBoards((prev) => {
                             const next = new Set(prev)
-                            if (next.has(b.name)) next.delete(b.name)
-                            else next.add(b.name)
+                            if (checked) {
+                              for (const m of members) next.delete(m.name)
+                            } else {
+                              for (const m of members) next.add(m.name)
+                            }
                             return next
                           })
                         }}
                       />
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.name}</span>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {group.replace(/\s*\((API|RSS)\)$/i, '')}
+                      </span>
                     </label>
                   )
                 })}
@@ -814,12 +839,22 @@ export default function ScanJobsPage() {
           })()}
         </div>
         <div style={{ marginTop: 12 }}>
-          <button className="btn btn-primary" onClick={handleScan} disabled={scanning || selectedBoards.size === 0}>
-            {scanning ? 'Scanning boards...' : selectedBoards.size < enabledBoards.length
-              ? `Scan ${selectedBoards.size} selected board${selectedBoards.size === 1 ? '' : 's'}`
-              : 'Scan all boards'}
-            {estimate != null && !scanning ? ` ${formatEstimate(estimate)}` : ''}
-          </button>
+          {(() => {
+            // Count in checkbox units (one per group), matching the
+            // "N of M selected" label above. A group counts once its
+            // every member is selected; partial groups read as
+            // unselected and need one click on the checkbox to
+            // complete (which selects the remaining variants too).
+            const sel = groupSelection(enabledBoards, selectedBoards)
+            return (
+              <button className="btn btn-primary" onClick={handleScan} disabled={scanning || sel.selected === 0}>
+                {scanning ? 'Scanning boards...' : sel.selected < sel.total
+                  ? `Scan ${sel.selected} selected board${sel.selected === 1 ? '' : 's'}`
+                  : 'Scan all boards'}
+                {estimate != null && !scanning ? ` ${formatEstimate(estimate)}` : ''}
+              </button>
+            )
+          })()}
         </div>
       </div>
 
