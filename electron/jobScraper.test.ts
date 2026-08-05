@@ -284,6 +284,69 @@ describe('per-listing browser fallback timeout', () => {
   })
 })
 
+// Fixture shape for a Vancouver Jobs (Neogov) posting. The description
+// body sits inside the paired itemprop="description" /
+// class="jobdescription" wrapper that applyVancouverJobs anchors on.
+// The pay-grade label + salary are written the way BC public-sector
+// postings actually present them.
+function vancouverJobsHtml(opts: { salary: string; payGrade: string }): string {
+  return `<!doctype html>
+<html>
+<head>
+  <meta property="og:title" content="Director, Financial Services">
+</head>
+<body>
+  <span itemprop="title">Director, Financial Services</span>
+  <span itemprop="hiringOrganization" content="City of Vancouver"></span>
+  <span itemprop="description">
+    <span class="jobdescription">
+      <p>Salary Information:</p>
+      <p>${opts.payGrade}: ${opts.salary}</p>
+      <p>This is a senior position with the City of Vancouver.</p>
+    </span>
+  </span>
+</body>
+</html>`
+}
+
+describe('Vancouver Jobs pay-grade salary rewrite', () => {
+  it('leaves annual-scale "per annum" salaries untouched (management grades quote annual pay)', async () => {
+    // Regression for the $205M bug: EXM- (excluded management) grades on
+    // Vancouver Jobs quote ANNUAL salaries, e.g. "$102,960 to $128,691
+    // per annum". The pay-grade rewrite must NOT fire for annual-scale
+    // amounts — it exists only for unionized RNG- grades that quote
+    // hourly rates suffixed with "per annum".
+    const originalFetch = global.fetch
+    global.fetch = vi.fn(async () =>
+      new Response(vancouverJobsHtml({ salary: '$102,960 to $128,691 per annum', payGrade: 'Pay Grade EXM-3' }), { status: 200 })
+    ) as unknown as typeof fetch
+
+    try {
+      const result = await scrapeJobFromUrl('https://jobs.vancouver.ca/job/12345')
+
+      expect(result.source).toBe('Vancouver Jobs')
+      expect(result.salary_range).toBe('$102,960 to $128,691 per annum')
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+
+  it('still rewrites hourly-scale "per annum" to "per hour" for union pay grades (regression for 1987ac1)', async () => {
+    const originalFetch = global.fetch
+    global.fetch = vi.fn(async () =>
+      new Response(vancouverJobsHtml({ salary: '$60.26 to $75.32 per annum', payGrade: 'Pay Grade RNG-091' }), { status: 200 })
+    ) as unknown as typeof fetch
+
+    try {
+      const result = await scrapeJobFromUrl('https://jobs.vancouver.ca/job/12346')
+
+      expect(result.salary_range).toBe('$60.26 to $75.32 per hour')
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+})
+
 describe('empty-shell detection', () => {
   it('treats a sub-200-byte empty shell as blocked, not a parseable page', async () => {
     const originalFetch = global.fetch

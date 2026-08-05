@@ -595,13 +595,17 @@ async function extractFromHtmlImpl(html: string, hostname: string, pageUrl: stri
   // Rewrite the period marker to "per hour" so annualization kicks in.
   // MUST run after extractSalaryAndMetadata (which sets salary_range)
   // and the description must be populated for the Pay Grade label
-  // check. Other sources that say "per annum" without the Pay Grade
-  // prefix are left alone.
+  // check. The magnitude guard keeps this from firing for management
+  // (EXM-) grades, which quote genuine ANNUAL salaries with the same
+  // "per annum" phrasing — annualizing those would inflate them
+  // 2,000× ($102,960/yr → $205,920,000). Other sources that say
+  // "per annum" without the Pay Grade prefix are left alone.
   if (
     result.source === 'Vancouver Jobs' &&
     result.salary_range &&
     result.description &&
-    /pay\s*grade\s+[A-Z]{2,4}-/i.test(result.description)
+    /pay\s*grade\s+[A-Z]{2,4}-/i.test(result.description) &&
+    isHourlyScaleSalary(result.salary_range)
   ) {
     result.salary_range = result.salary_range
       .replace(/\s*per\s*annum\b/gi, ' per hour')
@@ -1474,6 +1478,25 @@ function applyUltiPro(result: ScrapedJob, html: string): void {
     const m = plain.match(/^([A-Z][A-Za-z0-9&'.,\- ]{2,80}?)\s+is\s+(?:an?|the)\b/)
     if (m) result.company = m[1].trim()
   }
+}
+
+/**
+ * Whether a raw salary range is on the hourly scale (every amount under
+ * $1,000). Vancouver Jobs union pay grades quote hourly rates (e.g.
+ * "Pay Grade RNG-091: $60.26 to $75.32 per annum"), while management /
+ * excluded grades quote genuine annual salaries with the same phrasing
+ * (e.g. "$102,960 to $128,691 per annum"). The "per annum" → "per hour"
+ * rewrite must only fire for the former; annualizing an already-annual
+ * amount would inflate it by the hour→year multiplier (2,000×).
+ */
+function isHourlyScaleSalary(salaryRange: string): boolean {
+  const amounts = salaryRange.match(/[$€£¥][\d,]+(?:\.\d+)?(?:k|K)?/g)
+  if (!amounts) return false
+  return amounts.every((a) => {
+    let n = parseFloat(a.replace(/[$€£¥,]/g, ''))
+    if (/k$/i.test(a)) n *= 1000
+    return n < 1000
+  })
 }
 
 function extractSalaryFromText(text: string): string | undefined {
