@@ -127,6 +127,7 @@ export interface Api {
   notificationsDismiss: (params: { id: number }) => Promise<{ ok: true } | { error: 'INTERNAL' }>
   notificationsDismissAll: () => Promise<{ updated: number } | { error: 'INTERNAL' }>
   notificationsPurgeOldDismissed: () => Promise<{ deleted: number }>
+  onMainError: (cb: (message: string) => void) => () => void
 }
 
 declare global {

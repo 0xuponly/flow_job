@@ -12,10 +12,13 @@ import FollowUpsPage from './pages/FollowUpsPage'
 import InterviewsPage from './pages/InterviewsPage'
 import SettingsPage from './pages/SettingsPage'
 import ScanJobsPage from './pages/ScanJobsPage'
+import { useMainErrorToasts } from './useMainErrorToasts'
 import type { Page } from './types'
 
 export default function App() {
   const [page, setPage] = useState<Page>('dashboard')
+
+  useMainErrorToasts()
 
   // External navigation channel: the "fit computed" toast dispatches
   // `app:navigate` before requesting a specific job detail, so the
