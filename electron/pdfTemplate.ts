@@ -47,11 +47,17 @@ const orgLocationLooseRe = /,\s*(?:[A-Z]{2}|[A-Z][a-z]+)(?:\s+\d{5})?$/
 
 // Cover letters are plain text with a paragraph cap; CVs use the
 // Harvard-format ceiling helper. Both run before the markdown parser.
+//
+// The culling helpers' trace lines default to console.info and would
+// print to the terminal during every PDF export. Silence them by
+// default; FLOW_JOB_VERBOSE=1 restores the original console output.
+const NOOP_LOG = () => {}
 function applyDocumentRules(raw: string, kind: string, jobDesc: string): string {
+  const log = process.env.FLOW_JOB_VERBOSE ? undefined : NOOP_LOG
   if (kind === 'cover_letter') {
-    return enforceParagraphCeilings(raw, { max: 4 })
+    return enforceParagraphCeilings(raw, { max: 4, log })
   }
-  return enforceAllCvCeilings(raw, { jobDescription: jobDesc })
+  return enforceAllCvCeilings(raw, { jobDescription: jobDesc, log })
 }
 
 export function buildPdfHtml(content: string, docType: string, documentId: number | null, scale: number): string {
