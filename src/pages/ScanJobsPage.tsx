@@ -6,6 +6,7 @@ import type { LocationPick } from '../locations'
 import type { ScanResult, WorkType } from '../types'
 import { BOARD_TYPES, groupOf, groupSelection } from '../boardTypes'
 import { usePersistedState } from '../persistedState'
+import { applyProgressBatch, applyProgressMessage } from './scanProgress'
 
 // Backfill fields that may be missing on results cached from older
 // app versions. _scanState.result is in-memory across renderer
@@ -217,10 +218,14 @@ export default function ScanJobsPage() {
       if (scanActiveRef.current) return
       if (status.scanning) {
         setScanning(true)
-        const initialEntries = status.progress.map((msg) => ({ id: _nextId++, msg, timestamp: Date.now() }))
-        setEntries(initialEntries)
-        entriesRef.current = initialEntries
-        fullLogRef.current = initialEntries
+        // Replay the accumulated progress through the same lifecycle
+        // reducer as the live stream: end markers retroactively retire
+        // their board's "Scanning" line, so the display list reflects
+        // only what's still being scanned.
+        const stream = applyProgressBatch(status.progress, () => _nextId++)
+        entriesRef.current = stream.entries
+        fullLogRef.current = stream.fullLog
+        setEntries(stream.entries)
         if (status.startedAt) {
           setElapsed(Math.floor((Date.now() - status.startedAt) / 1000))
           timerRef.current = setInterval(() => {
@@ -232,18 +237,18 @@ export default function ScanJobsPage() {
           if (cancelled || !mountedRef.current) return
           if (seenAtMount.has(msg)) return
           seenAtMount.add(msg)
-          const entry = { id: _nextId++, msg, timestamp: Date.now() }
-          entriesRef.current = [...entriesRef.current, entry]
-          fullLogRef.current = [...fullLogRef.current, entry]
-          setEntries(entriesRef.current)
+          const next = applyProgressMessage({ entries: entriesRef.current, fullLog: fullLogRef.current }, msg, () => _nextId++)
+          entriesRef.current = next.entries
+          fullLogRef.current = next.fullLog
+          setEntries(next.entries)
         })
         unsubRef.current = unsub
       } else if (status.result) {
         setResult(normalizeScanResult(status.result))
-        const initialEntries = status.progress.map((msg) => ({ id: _nextId++, msg, timestamp: Date.now() }))
-        setEntries(initialEntries)
-        entriesRef.current = initialEntries
-        fullLogRef.current = initialEntries
+        const stream = applyProgressBatch(status.progress, () => _nextId++)
+        entriesRef.current = stream.entries
+        fullLogRef.current = stream.fullLog
+        setEntries(stream.entries)
         if (status.startedAt) {
           setElapsed(Math.floor((Date.now() - status.startedAt) / 1000))
         }
@@ -386,18 +391,18 @@ export default function ScanJobsPage() {
     return () => { cancelled = true }
   }, [])
 
-  // Periodic cleanup: remove faded entries (grey + outdated blue) after 5s
+  // Periodic cleanup: grey lines age out after 5s. Blue "Scanning"
+  // lines are NOT time-pruned — they stay while their board/location
+  // is actively being scanned and are retired by the \u0000end: marker
+  // the main process emits when the board finishes. Green lines stay
+  // for the whole scan.
   useEffect(() => {
     const interval = setInterval(() => {
       const entries = entriesRef.current
       const cutoff = Date.now() - 5000
-      const latestBlueId = entries.filter(e => e.msg.startsWith('Scanning')).at(-1)?.id ?? -1
       const remaining = entries.filter((e) => {
         if (e.msg.startsWith('✓')) return true
-        if (e.msg.startsWith('Scanning')) {
-          // Keep latest blue; delete outdated blue after fade
-          return e.id === latestBlueId || e.timestamp > cutoff
-        }
+        if (e.msg.startsWith('Scanning')) return true
         // Grey: delete after 5s
         return e.timestamp > cutoff
       })
@@ -496,10 +501,10 @@ export default function ScanJobsPage() {
       if (!mountedRef.current) return
       if (seenMsgs.has(msg)) return
       seenMsgs.add(msg)
-      const entry = { id: _nextId++, msg, timestamp: Date.now() }
-      entriesRef.current = [...entriesRef.current, entry]
-      fullLogRef.current = [...fullLogRef.current, entry]
-      setEntries(entriesRef.current)
+      const next = applyProgressMessage({ entries: entriesRef.current, fullLog: fullLogRef.current }, msg, () => _nextId++)
+      entriesRef.current = next.entries
+      fullLogRef.current = next.fullLog
+      setEntries(next.entries)
     })
     unsubRef.current = unsub
 
@@ -907,7 +912,10 @@ export default function ScanJobsPage() {
             {(() => {
               // Show all green (✓) lines + all blue (Scanning) lines, but only the
               // most recent grey line. Each new grey line replaces the previous
-              // one in-place instead of stacking.
+              // one in-place instead of stacking. Blue lines here are exactly the
+              // active set: the lifecycle reducer keeps a "Scanning X..." line
+              // until the board's \u0000end: marker arrives, so stale lines from
+              // finished boards are already pruned out of `entries`.
               const greens = entries.filter((e) => e.msg.startsWith('✓'))
               const blues = entries.filter((e) => e.msg.startsWith('Scanning'))
               const greys = entries.filter((e) => !e.msg.startsWith('✓') && !e.msg.startsWith('Scanning'))

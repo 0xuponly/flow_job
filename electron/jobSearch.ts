@@ -6,7 +6,7 @@ import { enqueue } from './aiQueue'
 
 // File-backed category logger. Writes to <userData>/logs/scanner.log.
 const log = createLogger('scanner')
-import { paginateHtmlViaBrowser } from './browserScraper'
+import { closeCamoufox, paginateHtmlViaBrowser } from './browserScraper'
 import { fetchPageHtml, fetchSitemapText, extractSitemapUrls } from './netUtils'
 import { scoreJobFit } from './ai'
 import { scoreCompatibility } from './fitHeuristic'
@@ -807,7 +807,7 @@ export async function scanAllBoards(
    *     stop; this loop breaks on empty page or signal abort.
    *   - Default: single fetch, same as before.
    */
-  async function fetchBoardListingsHtml(searchUrl: string, board: BoardConfig, signal?: AbortSignal): Promise<string> {
+  async function fetchBoardListingsHtml(searchUrl: string, board: BoardConfig, signal?: AbortSignal, locTag = ''): Promise<string> {
     if (board.name === 'WorkBC') {
       // WorkBC's search-results page is `/find-job/search-jobs#/job-search;...`.
       // The hash carries `q`, `city`, and `page`. Build the hashes for pages
@@ -871,7 +871,15 @@ export async function scanAllBoards(
           if (r.html.length < 500) { stopped = true; break }
           chunks.push(r.html)
           if (r.pageNum === 1 || r.pageNum - lastReportedPage >= 5) {
-            progress(`Scanning ${board.name}... page ${r.pageNum + 1}`)
+            // Retire the previously reported page line so only the
+            // current page shows while the board is being scanned.
+            // The locTag keeps page lines on the same board identity
+            // as the board's "Scanning X..." line, so the board's
+            // end marker cleans up the final page line too.
+            if (lastReportedPage > 0) {
+              progress(`\u0000end:Scanning ${board.name}${locTag}... page ${lastReportedPage + 1}`)
+            }
+            progress(`Scanning ${board.name}${locTag}... page ${r.pageNum + 1}`)
             lastReportedPage = r.pageNum
           }
         }
@@ -888,8 +896,12 @@ export async function scanAllBoards(
       return { board: board.name, found: 0, added: 0, skipped: 0, errors: 0, incompatible: 0 }
     }
     const br: ScanBoardResult = { board: board.name, found: 0, added: 0, skipped: 0, errors: 0, incompatible: 0 }
+    // Hoisted out of the try so the end marker below can reuse it. The
+    // \u0000end: marker pairs with the board's "Scanning X..." start line;
+    // the renderer retires that line (and its per-page variants) from the
+    // scan-in-progress card the moment the board stops being scanned.
+    const locTag = location ? ` (${location})` : ''
     try {
-      const locTag = location ? ` (${location})` : ''
       progress(`Scanning ${board.name}${locTag}...`)
 
       // First-party API path. When a board exposes a structured
@@ -956,6 +968,10 @@ export async function scanAllBoards(
         }
         // No trailing bumpFound here — see the comment above br.found.
         result.boards.push(br)
+        // This path returns early, so the board's end marker goes here —
+        // otherwise the "Scanning X..." line would stick on the
+        // scan-in-progress card for the rest of the scan.
+        progress(`\u0000end:Scanning ${board.name}${locTag}...`)
         return br
       }
 
@@ -967,7 +983,7 @@ export async function scanAllBoards(
       const sitemapSource = !!board.sitemapListingUrls
       const searchUrl = sitemapSource ? '' : board.searchUrl(keywords, location)
       const tFetch0 = Date.now()
-      const html = sitemapSource ? '' : await fetchBoardListingsHtml(searchUrl, board, signal)
+      const html = sitemapSource ? '' : await fetchBoardListingsHtml(searchUrl, board, signal, locTag)
       if (process.env.FLOW_JOB_SCAN_TIMING) {
         log.info(`stage=board-fetch board=${board.name} bytes=${html.length} ms=${Date.now() - tFetch0}`)
       }
@@ -1189,6 +1205,10 @@ export async function scanAllBoards(
       }
     }
     result.boards.push(br)
+    // Retire the board's "Scanning X..." line (and any per-page
+    // variants) in the renderer's in-progress card now that the board
+    // is done — success, error, or abort all land here.
+    progress(`\u0000end:Scanning ${board.name}${locTag}...`)
     return br
   }
 
@@ -1327,6 +1347,15 @@ export async function scanAllBoards(
       }
     }
   }
+
+  // Recycle the shared Camoufox singleton now that the scan is done.
+  // Without this it accumulates leaked tabs/threads across scans (one
+  // wedged browser grew to 9GB/1307 threads and stopped answering
+  // newPage). Closing here bounds the footprint to a single scan; the
+  // browser is auto-recreated on the next fetchHtmlViaCamoufox() call.
+  // Not awaited — the scan result is ready and a slow teardown shouldn't
+  // gate the UI. The next initCamoufox() awaits any in-flight kill.
+  closeCamoufox()
 
   return result
 }
