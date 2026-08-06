@@ -292,6 +292,10 @@ function abortPromise(signal?: AbortSignal): Promise<true> {
   })
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 // Races a promise against a hard timeout and the optional abort signal.
 // Needed because Playwright page ops (newPage, evaluate, content, close,
 // addInitScript) and Electron loadURL/executeJavaScript calls have NO
@@ -348,8 +352,17 @@ function withTimeout<T>(p: Promise<T>, ms: number, signal?: AbortSignal, label =
 
 let camoufoxBrowser: any = null
 let camoufoxInit: Promise<any> | null = null
+// Non-null while a wedged/busy Camoufox is being torn down. New inits
+// await it so a fresh launch can't race the old process's profile lock
+// ("A copy of Camoufox is already open").
+let camoufoxKill: Promise<void> | null = null
 
 async function initCamoufox(proxyConfig?: { server: string; username?: string; password?: string }): Promise<any> {
+  // A previous fetch wedged the browser and we killed it — wait for the
+  // kill to fully land (process dead, profile lock released) before
+  // launching a replacement, otherwise the new launch races the old
+  // process's lock and fails with "A copy of Camoufox is already open".
+  if (camoufoxKill) await camoufoxKill
   if (camoufoxBrowser) return camoufoxBrowser
   if (camoufoxInit) return camoufoxInit
 
@@ -429,16 +442,63 @@ async function initCamoufox(proxyConfig?: { server: string; username?: string; p
   return camoufoxInit
 }
 
+// Kill the shared Camoufox browser at the process level. b.close()
+// alone can hang forever when the browser is wedged (its CDP/juggler
+// message loop is backed up, so the close handshake never completes).
+// The process kill is the one operation that works regardless of the
+// browser's internal state, and killing the process atomically reclaims
+// every leaked tab/context/thread in it. Dedupes concurrent callers via
+// the camoufoxKill promise so a burst of wedged fetches only kills once.
+//
+// Resolves only once the OS process has actually exited, so an
+// initCamoufox() racing this can't launch a replacement while the old
+// process still holds the profile lock.
+function killCamoufox(): Promise<void> {
+  if (camoufoxKill) return camoufoxKill
+  const b = camoufoxBrowser
+  camoufoxBrowser = null
+  camoufoxInit = null
+  camoufoxKill = (async () => {
+    try {
+      if (!b) return
+      // Camoufox with data_dir returns a BrowserContext (persistent
+      // context); the OS process handle lives on the parent Browser,
+      // reachable via _browser. A bare Browser (no data_dir) exposes
+      // process() directly.
+      const proc = b.process?.() ?? b._browser?.process?.()
+      if (proc?.pid) {
+        // SIGTERM first. SIGTERM may be swallowed by a main thread
+        // stuck in the event loop; escalate to SIGKILL after a grace
+        // period. unref() so the timer doesn't keep the app alive on
+        // quit.
+        proc.kill()
+        await Promise.race([
+          new Promise<void>((resolve) => proc.once?.('exit', () => resolve())),
+          sleep(3000)
+        ])
+        if (proc.exitCode === null && proc.signalCode === null) {
+          try { proc.kill('SIGKILL') } catch {}
+        }
+      } else {
+        // No handle to the OS process — fall back to the CDP close.
+        await Promise.race([b.close().catch(() => {}), sleep(5000)])
+      }
+    } catch {
+      // Kill is best-effort. Never reject: initCamoufox() awaits this
+      // promise, and a throw here would break every subsequent fetch.
+    } finally {
+      camoufoxKill = null
+    }
+  })()
+  return camoufoxKill
+}
+
 /** Close the shared Camoufox browser. Call when scans are done
  *  or when the app is quitting. The browser is auto-recreated
  *  on the next fetchHtmlViaCamoufox() call. */
 export async function closeCamoufox(): Promise<void> {
-  if (camoufoxBrowser) {
-    const b = camoufoxBrowser
-    camoufoxBrowser = null
-    camoufoxInit = null
-    await b.close().catch(() => {})
-  }
+  if (!camoufoxBrowser && !camoufoxInit) return
+  await killCamoufox()
 }
 
 // The camoufox-patched Firefox binary doesn't support isMobile in
@@ -553,7 +613,36 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
       abortHandler = () => { page?.close().catch(() => {}) }
       opts?.signal?.addEventListener('abort', abortHandler, { once: true })
 
-      page = await withTimeout(browser.newPage(), PAGE_OP_TIMEOUT_MS, opts?.signal, 'camoufox newPage')
+      // newPage has no Playwright-side timeout of its own, so withTimeout
+      // races it. When the timer fires first, the raw promise is still
+      // pending — if it later resolves, a page materializes that nobody
+      // closes (tab leak). Attach a cleanup that closes it on arrival.
+      // A newPage timeout is also a browser-level wedge signal (a healthy
+      // browser answers in <100ms): recycle the singleton so the next
+      // fetch launches fresh instead of every board falling back to
+      // BrowserWindow for the rest of the session.
+      const rawNewPage = browser.newPage()
+      let newPageAbandoned = false
+      rawNewPage.then((p: any) => {
+        if (newPageAbandoned && p?.close) p.close().catch(() => {})
+      }).catch(() => {})
+      try {
+        page = await withTimeout(rawNewPage, PAGE_OP_TIMEOUT_MS, opts?.signal, 'camoufox newPage')
+      } catch (err) {
+        // ANY newPage failure — timeout OR "Target closed" from a
+        // browser that died underneath us — means this singleton is no
+        // longer usable. Recycle it so the next fetch re-inits instead
+        // of every subsequent board falling back to BrowserWindow.
+        newPageAbandoned = true
+        // A user-initiated abort (cancel button) is not a browser failure —
+        // the singleton is fine, don't recycle it.
+        if (!(err instanceof DOMException && err.name === 'AbortError')) {
+          const message = err instanceof Error ? err.message : String(err)
+          log.info(`stage=camoufox-wedge url=${url} op=newPage action=recycle error="${message}"`)
+          void killCamoufox()
+        }
+        throw err
+      }
 
       // Inject our custom stealth script before every navigation.
       // addInitScript is the Playwright equivalent of puppeteer's
@@ -624,7 +713,19 @@ async function fetchHtmlViaCamoufox(url: string, opts?: { proxy?: string; signal
       if (opts?.signal) opts.signal.removeEventListener('abort', abortHandler)
       // Close the page, NOT the browser — the browser is a shared
       // singleton kept alive across board fetches.
-      if (page) await withTimeout(page.close(), PAGE_OP_TIMEOUT_MS, opts?.signal, 'camoufox close').catch(() => {})
+      if (page) {
+        await withTimeout(page.close(), PAGE_OP_TIMEOUT_MS, opts?.signal, 'camoufox close')
+          .catch((err) => {
+            // A user-initiated abort is not a browser failure.
+            if (err instanceof DOMException && err.name === 'AbortError') return
+            // A close that won't settle in 10s means the juggler loop is
+            // backed up — same wedge signature as a newPage timeout. The
+            // page is leaked either way; recycle the whole singleton so
+            // the leaked tab dies with it and the next fetch re-inits.
+            log.info(`stage=camoufox-wedge url=${url} op=close action=recycle`)
+            void killCamoufox()
+          })
+      }
     }
   } catch (err) {
     // Camoufox unavailable or navigation failed.
