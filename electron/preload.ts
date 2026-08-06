@@ -126,6 +126,7 @@ export interface Api {
   notificationsDismiss: (params: { id: number }) => Promise<{ ok: true } | { error: 'INTERNAL' }>
   notificationsDismissAll: () => Promise<{ updated: number } | { error: 'INTERNAL' }>
   notificationsPurgeOldDismissed: () => Promise<{ deleted: number }>
+  onMainError: (cb: (message: string) => void) => () => void
 }
 
 const api: Api = {
@@ -228,7 +229,12 @@ const api: Api = {
   notificationsList: () => ipcRenderer.invoke('notifications:notificationsList'),
   notificationsDismiss: (params) => ipcRenderer.invoke('notifications:notificationsDismiss', params),
   notificationsDismissAll: () => ipcRenderer.invoke('notifications:notificationsDismissAll'),
-  notificationsPurgeOldDismissed: () => ipcRenderer.invoke('notifications:notificationsPurgeOldDismissed')
+  notificationsPurgeOldDismissed: () => ipcRenderer.invoke('notifications:notificationsPurgeOldDismissed'),
+  onMainError: (cb: (message: string) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, message: string) => cb(message)
+    ipcRenderer.on('main:errorToast', handler)
+    return () => ipcRenderer.removeListener('main:errorToast', handler)
+  }
 }
 
 contextBridge.exposeInMainWorld('api', api)
