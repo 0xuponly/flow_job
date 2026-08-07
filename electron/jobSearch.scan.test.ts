@@ -47,7 +47,7 @@ vi.mock('./browserScraper', () => ({ paginateHtmlViaBrowser: vi.fn(), closeCamou
 // touching the network.
 vi.mock('./rssFetcher', () => ({ fetchRssFeed: vi.fn(async () => []) }))
 
-import { scanAllBoards } from './jobSearch'
+import { extractJobUrls, scanAllBoards } from './jobSearch'
 
 describe('scan progress end markers', () => {
   it('emits a matching end marker for every board Scanning line', async () => {
@@ -109,5 +109,32 @@ describe('run-level blocked-board bailout', () => {
     expect(cv[0].errors).toBe(40)
     expect(result.totalFound).toBe(40)
     expect(result.totalErrors).toBe(40)
+  })
+})
+
+describe('PowerToFly extractor (regression: filter links scraped as jobs)', () => {
+  // The search page at /jobs/ is a server-rendered shell whose only
+  // anchors are filter/nav links (the job grid is JS-rendered). Before
+  // the /jobs/detail/ path guard, every one of these passed the generic
+  // /^\/jobs?/ path match and was scraped as a job-detail page,
+  // producing "missing fields [description]" errors in scraper.log.
+  it('extracts zero listings from the search-page shell', () => {
+    const shell = `<!DOCTYPE html><html><head><title>Jobs - PowerToFly</title></head><body>
+      <a href="/jobs/?keywords=Software+Engineering">Software Engineering</a>
+      <a href="/jobs/?primary_skills=Java">Java</a>
+      <a href="/jobs/?experience_level=Junior">Junior</a>
+      <a href="/jobs/saved">Saved Jobs</a>
+      <a href="/jobs/">Browse All Jobs</a>
+    </body></html>`
+    expect(extractJobUrls(shell, 'https://powertofly.com/jobs/?keywords=Software', 'PowerToFly')).toEqual([])
+  })
+
+  it('extracts real /jobs/detail/ URLs from a rendered grid', () => {
+    const grid = `<!DOCTYPE html><html><head><title>Jobs - PowerToFly</title></head><body>
+      <a href="/jobs/detail/2560655">Emergency Services Event Staff at NASCAR</a>
+      <a href="/jobs/?keywords=Data">Data</a>
+    </body></html>`
+    const urls = extractJobUrls(grid, 'https://powertofly.com/jobs/?keywords=Software', 'PowerToFly')
+    expect(urls.map((u) => u.url)).toEqual(['https://powertofly.com/jobs/detail/2560655'])
   })
 })

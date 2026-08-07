@@ -327,7 +327,7 @@ const BOARD_NAV_TEXT_PATTERNS: Readonly<Record<string, readonly RegExp[]>> = {
   ]
 }
 
-function extractJobUrls(html: string, baseUrl: string, boardName: string): { url: string; title?: string; company?: string }[] {
+export function extractJobUrls(html: string, baseUrl: string, boardName: string): { url: string; title?: string; company?: string }[] {
   // JSON-LD and HTML anchors are complementary, not exclusive. Some
   // boards embed a single org-level `JobPosting` block on a listing
   // page that has nothing to do with the actual list of openings;
@@ -405,6 +405,15 @@ function extractJobUrls(html: string, baseUrl: string, boardName: string): { url
     } else if (boardLower.includes('dice')) {
       // Dice per-listing URLs: /job-detail/{uuid}
       if (!pathname.startsWith('/job-detail/')) continue
+    } else if (boardLower.includes('powertofly')) {
+      // PowerToFly per-job URLs are /jobs/detail/{numericId} (confirmed
+      // from the jobs sitemap at /common/sitemap/jobs/1.xml). The search
+      // page itself lives at /jobs/, so the generic /^\/jobs?/ path match
+      // below would admit every filter/nav link on it
+      // (/jobs/?keywords=..., /jobs/?primary_skills=..., /jobs/saved) as
+      // a "listing" — scraping those shells produced bogus missing-field
+      // errors. Require the /jobs/detail/ prefix.
+      if (!pathname.startsWith('/jobs/detail/')) continue
     } else if (boardLower.includes('behance')) {
       // Behance per-listing URLs: /joblist/{id}/{slug}
       if (!pathname.startsWith('/joblist/')) continue
