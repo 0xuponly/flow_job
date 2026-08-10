@@ -1,4 +1,5 @@
 import type { CreateJobInput } from './types'
+import { request as undiciRequest } from 'undici'
 import { fetchHtmlViaBrowser, isChallengePage, SCAN_LOAD_TIMEOUT_MS } from './browserScraper'
 import { normalizeEmploymentType, normalizeWorkMode } from './employmentType'
 import { createLogger } from './logger'
@@ -258,6 +259,46 @@ export function detectSource(hostname: string): string | undefined {
   return undefined
 }
 
+// undici speaks over Node's own socket stack (OpenSSL/llhttp), which
+// presents a curl-like TLS fingerprint. Electron's global `fetch` routes
+// through Chromium's net stack, and some WAFs (CharityVillage,
+// Crypto.jobs) fingerprint THAT and answer with an empty shell, a
+// challenge page, or a connection reset — while a plain curl gets a real
+// 200 page. Before paying for a headless-browser round trip (10-90s),
+// try one cheap undici pass (~1s). Returns null when the response isn't
+// a usable page so the caller falls through to the browser path.
+const UNDICI_TIMEOUT_MS = 30_000
+
+async function fetchViaUndici(url: string, signal?: AbortSignal): Promise<string | null> {
+  try {
+    const timeoutSignal = AbortSignal.timeout(UNDICI_TIMEOUT_MS)
+    const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
+    const { statusCode, body } = await undiciRequest(url, {
+      method: 'GET',
+      headers: {
+        'User-Agent': USER_AGENT,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9'
+      },
+      signal: combinedSignal
+    })
+    if (statusCode !== 200) return null
+    const html = await body.text()
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+    if (html.length < 200) return null
+    if (isChallengePage(html)) return null
+    // Crossover serves pages through prerender.io; the static response is
+    // a shell carrying the prerender marker while the real JobPosting
+    // content is client-rendered. A plain undici pass can't hydrate it —
+    // leave it for the browser path.
+    if (url.includes('crossover.com') && /prerender-status-code/i.test(html)) return null
+    return html
+  } catch (err) {
+    if (signal?.aborted) throw err instanceof Error ? err : new Error(String(err))
+    return null
+  }
+}
+
 async function fetchPageHtml(
   url: string,
   hostname: string,
@@ -273,12 +314,20 @@ async function fetchPageHtml(
   // Per-listing browser fallback. Uses the short 30s scrape timeout —
   // a blocked URL should fail fast so the consecutive-blocked guard
   // can fire, instead of burning 180s × 2 per URL.
-  const viaBrowser = () => fetchHtmlViaBrowser(
-    url,
-    opts.proxy
-      ? { proxy: opts.proxy, signal, timeoutMs: SCAN_LOAD_TIMEOUT_MS }
-      : { signal, timeoutMs: SCAN_LOAD_TIMEOUT_MS }
-  )
+  const viaBrowser = async () => {
+    // Skip the undici pass when a proxy is configured: undici makes a
+    // direct connection and would bypass the proxy (leaking the real IP
+    // or failing on a proxy-only network). The browser path below honors
+    // the proxy for every request.
+    const undiciHtml = opts.proxy ? null : await fetchViaUndici(url, signal)
+    if (undiciHtml !== null) return undiciHtml
+    return fetchHtmlViaBrowser(
+      url,
+      opts.proxy
+        ? { proxy: opts.proxy, signal, timeoutMs: SCAN_LOAD_TIMEOUT_MS }
+        : { signal, timeoutMs: SCAN_LOAD_TIMEOUT_MS }
+    )
+  }
   // Plain `fetch` has no built-in timeout, and Indeed (and other
   // Cloudflare-fronted sites) sometimes establishes a connection
   // that never completes a response. Without this race, the user's
@@ -303,20 +352,35 @@ async function fetchPageHtml(
   const RETRY_DELAYS_MS = [1000, 3000]
   let response: Response
   for (let attempt = 0; ; attempt++) {
-    response = await fetch(url, {
-      headers: {
-        'User-Agent': USER_AGENT,
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        // Node's fetch auto-decodes gzip/deflate/br when this header
-        // is set, so the response.text() body is identical to before
-        // but transferred over the wire 5-10× smaller for typical
-        // job-board listing pages.
-        'Accept-Encoding': 'gzip, deflate, br'
-      },
-      redirect: 'follow',
-      signal: combinedSignal
-    })
+    try {
+      response = await fetch(url, {
+        headers: {
+          'User-Agent': USER_AGENT,
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+          // Node's fetch auto-decodes gzip/deflate/br when this header
+          // is set, so the response.text() body is identical to before
+          // but transferred over the wire 5-10× smaller for typical
+          // job-board listing pages.
+          'Accept-Encoding': 'gzip, deflate, br'
+        },
+        redirect: 'follow',
+        signal: combinedSignal
+      })
+    } catch (err) {
+      // fetch() rejects on network-level failures (connection closed /
+      // reset / DNS / TLS) before any HTTP status exists. Some WAFs
+      // answer this way instead of with a challenge page — DailyRemote
+      // resets the connection from Electron's net stack while a plain
+      // curl succeeds. A reset isn't going to survive a retry, so hand
+      // it to the browser fallback (real TLS fingerprint) rather than
+      // surfacing a bare "fetch failed" scrape error. A user cancel
+      // rethrows so the scan stops promptly.
+      if (signal?.aborted) {
+        throw err instanceof Error ? err : new Error(String(err))
+      }
+      return viaBrowser()
+    }
     if (response.ok || signal?.aborted) break
     const status = response.status
     const transient = status === 429 || (status >= 500 && status !== 501)
@@ -350,15 +414,27 @@ async function fetchPageHtml(
       }
       return viaBrowser()
     }
+    // Crossover.com serves every job page through prerender.io: the
+    // static response is a shell carrying the prerender status marker
+    // while the actual JobPosting content is client-rendered. A 200
+    // with this marker means "page is fine, render it yourself" — fall
+    // through to the browser so the real description is extracted.
+    if (hostname.includes('crossover.com') && /prerender-status-code/i.test(html)) {
+      return viaBrowser()
+    }
     // Some WAFs (CharityVillage) answer 200 with a near-empty shell
     // (~39 bytes: <html><head></head><body></body></html>) that is not
-    // a detectable challenge page. Returning it makes extraction fail
-    // with "Missing required fields" — a reason that neither counts
-    // toward the blocked guard nor reads as blocked in logs. Treat any
-    // sub-200-byte response as a block; the challenge retry above has
-    // already had its chance.
+    // a detectable challenge page. The challenge retry above only fires
+    // for isChallengePage bodies, so an empty shell has NOT had its
+    // browser chance — the plain fetch was fingerprinted. Give the
+    // browser fallback an attempt; only if it too comes back empty is
+    // this a genuine block.
     if (html.length < 200) {
-      throw new Error('Blocked by anti-bot protection (empty shell)')
+      const browserHtml = await viaBrowser()
+      if (browserHtml.length < 200) {
+        throw new Error('Blocked by anti-bot protection (empty shell)')
+      }
+      return browserHtml
     }
     return html
   }
@@ -485,7 +561,6 @@ export { tryWorkBcApi }
 
 async function extractFromHtmlImpl(html: string, hostname: string, pageUrl: string, source?: string): Promise<ScrapedJob> {
   const result: ScrapedJob = { source }
-
   const jobPostings = collectJobPostings(extractJsonLd(html))
   const jobPosting = selectJobPosting(jobPostings, html, pageUrl)
   if (jobPosting) {
@@ -573,6 +648,9 @@ async function extractFromHtmlImpl(html: string, hostname: string, pageUrl: stri
   } else if (hostname.includes('catsone.com')) {
     applyCATSOne(result, html)
     result.source = 'CATS One'
+  } else if (hostname.includes('crossover.com')) {
+    applyCrossover(result, html)
+    result.source = 'Crossover'
   } else if (source) {
     result.source = source
   }
@@ -1883,6 +1961,105 @@ function applyCATSOne(result: ScrapedJob, html: string): void {
   }
 }
 
+/**
+ * Crossover (https://www.crossover.com) is an Angular SPA whose job
+ * pages are fully server-rendered into an `<xoc-pipeline>` tree:
+ *
+ *  - Title: `<h1 class="title"><strong class="name">…</strong>`
+ *  - Salary: `<xoc-pipeline-salary>` → `<span class="tw-bg-gradient-to-r
+ *    …"> $400,000 </span> USD/year` plus an `($200 USD/hour)` label.
+ *    Pay is quoted per year; keeping the "USD/year" unit intact lets
+ *    normalizeSalary stay on the yearly branch (no 2,000× hourly
+ *    inflation like the Vancouver Jobs pay-grade bug).
+ *  - Chips: an `<xoc-pipeline-chips>` block with one `.chip` per
+ *    attribute — location (map-marker-alt), work mode
+ *    (globe-americas), employment (clock) and company (building,
+ *    inside a `.chip-link` `<a href="…/clients/{slug}">`).
+ *  - Full JD: `<xoc-pipeline-content>` holds repeating
+ *    `.pipeline-content-section` blocks, each an `<h2>` section title
+ *    followed by the section body (paragraphs and/or bullet lists).
+ *
+ * Crossover pages carry a prerender-status-code marker in the static
+ * shell, which routes them through the browser path, so the HTML this
+ * extractor sees is always the rendered `<xoc-pipeline>` tree — never
+ * the empty prerender placeholder.
+ */
+function applyCrossover(result: ScrapedJob, html: string): void {
+  // Title from the h1 > strong.name.
+  if (!result.title) {
+    const title = html.match(
+      /<h1[^>]*class="[^"]*\btitle\b[^"]*"[^>]*>\s*<strong[^>]*class="[^"]*\bname\b[^"]*"[^>]*>\s*([^<]+?)\s*<\/strong>/i
+    )
+    if (title?.[1]) result.title = title[1].trim()
+  }
+
+  // Salary from xoc-pipeline-salary. The gradient span holds the
+  // annual amount; the trailing "USD/year" is the period marker.
+  if (!result.salary_range) {
+    const salary = html.match(
+      /<xoc-pipeline-salary[\s\S]*?<span[^>]*class="[^"]*\btw-bg-gradient-to-r\b[^"]*"[^>]*>\s*([$€£][\d,]+)\s*<\/span>\s*([A-Za-z]+)\s*\/\s*(year|month|hour)/i
+    )
+    if (salary) result.salary_range = `${salary[1]} ${salary[2]}/${salary[3]}`
+  }
+
+  // Chips: icon + .chip-text per row. The main header block precedes
+  // the sticky-header duplicate, so the first match wins.
+  if (!result.location || !result.work_mode || !result.employment_type || !result.company) {
+    const chipText = (icon: string): string | undefined =>
+      html.match(
+        new RegExp(
+          `<i[^>]*class="[^"]*\\bfa-${icon}\\b[^"]*"[^>]*><\\/i>\\s*<span[^>]*class="[^"]*\\bchip-text\\b[^"]*"[^>]*>\\s*([^<]*?)\\s*<`,
+          'i'
+        )
+      )?.[1]?.trim()
+    if (!result.location) result.location = chipText('map-marker-alt') || undefined
+    if (!result.work_mode) result.work_mode = normalizeWorkMode(chipText('globe-americas')) ?? undefined
+    if (!result.employment_type) result.employment_type = normalizeEmploymentType(chipText('clock')) ?? undefined
+    if (!result.company) result.company = chipText('building') || undefined
+  }
+
+  // Description from the repeating .pipeline-content-section blocks —
+  // each section title plus its body text, joined in document order.
+  // Each section runs to the next section's opening div (or the end of
+  // xoc-pipeline-content); Angular's trailing `<!---->` placeholders
+  // don't need to be present for the boundary to hold.
+  if (!result.description) {
+    const sections = [
+      ...html.matchAll(
+        /<div[^>]+class="[^"]*\bpipeline-content-section\b[^"]*"[^>]*>([\s\S]*?)(?=<div[^>]+class="[^"]*\bpipeline-content-section\b[^"]*"|<\/xoc-pipeline-content>)/gi
+      )
+    ]
+    if (sections.length > 0) {
+      const parts: string[] = []
+      for (const [, section] of sections) {
+        const sectionTitle = section.match(
+          /<h2[^>]*class="[^"]*\bpipeline-content-section-title\b[^"]*"[^>]*>([^<]*)<\/h2>/i
+        )?.[1]?.trim()
+        const body = section
+          .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+          .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+          .replace(/<h2[\s\S]*?<\/h2>/gi, ' ')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&ndash;/g, '–')
+          .replace(/&mdash;/g, '—')
+          .replace(/&rsquo;/g, '\u2019')
+          .replace(/&lsquo;/g, '\u2018')
+          .replace(/&ldquo;/g, '\u201C')
+          .replace(/&rdquo;/g, '\u201D')
+          .replace(/&amp;/g, '&')
+          .replace(/&[a-z]+;/gi, ' ')
+          .replace(/&#\d+;/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+        if (body) parts.push(sectionTitle ? `${sectionTitle}: ${body}` : body)
+      }
+      const description = parts.join('\n\n')
+      if (description.length > 200) result.description = description
+    }
+  }
+}
+
 function applyGeneric(result: ScrapedJob, html: string, pageUrl: string): void {
   if (!result.title) {
     const ogTitle = extractMeta(html, 'og:title')
@@ -2108,13 +2285,29 @@ function extractJsonLd(html: string): unknown[] {
 }
 
 function extractMeta(html: string, name: string): string | undefined {
-  const patterns = [
-    new RegExp(`<meta[^>]+(?:property|name)=["']${escapeRegex(name)}["'][^>]+content=["']([^"']*)["']`, 'i'),
-    new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]+(?:property|name)=["']${escapeRegex(name)}["']`, 'i')
-  ]
-  for (const p of patterns) {
-    const m = html.match(p)
-    if (m?.[1]) return decodeHtmlEntities(m[1])
+  // Scan the document one <meta> element at a time. The old
+  // implementation ran two full-document regex alternations
+  // (`<meta[^>]+…content=(["'])([\s\S]*?)\1`). When the requested tag
+  // is absent — which is the common case on large single-page-app
+  // renders — the engine backtracks the whole document on every call,
+  // taking ~14s per miss on a 756KB Camoufox render (8 misses ≈ 110s
+  // of the extract time). Splitting the document into individual tags
+  // keeps every match tiny and the scan linear.
+  const tags = html.match(/<meta\b(?:"[^"]*"|'[^']*'|[^>])*>/gi)
+  if (!tags) return undefined
+  // The content capture anchors on the quote that opens the attribute
+  // and back-references it, so values containing the OTHER quote
+  // character (e.g. Freelancer's "I'm looking for a product designer")
+  // are captured in full. A `[^"']*` class — which excludes both
+  // quotes — truncates at the apostrophe, and short meta snippets
+  // then fail the >100-char checks downstream, surfacing as
+  // "missing fields [description]".
+  const wanted = escapeRegex(name)
+  const nameFirst = new RegExp(`(?:property|name)=["']${wanted}["'][^>]*content=(["'])([\\s\\S]*?)\\1`, 'i')
+  const contentFirst = new RegExp(`content=(["'])([\\s\\S]*?)\\1[^>]*(?:property|name)=["']${wanted}["']`, 'i')
+  for (const tag of tags) {
+    const m = tag.match(nameFirst) || tag.match(contentFirst)
+    if (m?.[2]) return decodeHtmlEntities(m[2])
   }
   return undefined
 }
