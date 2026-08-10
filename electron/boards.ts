@@ -71,8 +71,13 @@ export const BOARDS: BoardConfig[] = [
   },
   {
     name: 'ZipRecruiter',
-    searchUrl: (k, l) => `https://www.ziprecruiter.com/jobs?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}`,
-    useBrowser: true
+    // The /jobs?q= page is Cloudflare-challenged for both the static
+    // fetcher and the browser (found=0 in every scan). The site's RSS
+    // endpoint (&format=rss) serves the same search without the WAF
+    // gauntlet — pull that instead.
+    searchUrl: (k, l) => `https://www.ziprecruiter.com/jobs?q=${encodeURIComponent(k)}${l ? `&l=${encodeURIComponent(l)}` : ''}&format=rss`,
+    useBrowser: false,
+    apiFetcher: (k, l, signal) => fetchZipRecruiterRss(k, l, signal)
   },
   {
     name: 'ZipRecruiter (RSS)',
@@ -102,13 +107,24 @@ export const BOARDS: BoardConfig[] = [
   },
   {
     name: 'We Work Remotely',
-    searchUrl: (k) => `https://weworkremotely.com/categories/remote-${encodeURIComponent(k)}-jobs`,
-    useBrowser: true
+    // The category search pages are Cloudflare-challenged (the scan
+    // always came back found=0 with "This site blocked automated access
+    // (Cloudflare)"). The site's public RSS feeds are not — this board
+    // pulls the same feed the (RSS) variant uses; URL dedup drops the
+    // overlap.
+    searchUrl: () => 'https://weworkremotely.com/categories/remote-programming-jobs.rss',
+    useBrowser: false,
+    apiFetcher: (_k, _l, signal) => fetchRssFeed('https://weworkremotely.com/categories/remote-programming-jobs.rss', 'weworkremotely', { signal })
   },
   {
+    // The ?q= search page renders job cards client-side (no server-side
+    // job links to extract), so this board uses the public Remotive API
+    // instead — same fetcher as the Remotive (API) entry below; URL
+    // dedup drops the overlap.
     name: 'Remotive',
-    searchUrl: (k) => `https://remotive.com/?q=${encodeURIComponent(k)}`,
-    useBrowser: false
+    searchUrl: () => 'https://remotive.com/remote-jobs',
+    useBrowser: false,
+    apiFetcher: (k, _l, signal) => fetchRemotiveJobs({ keywords: k, location: '', signal })
   },
   {
     name: 'Remote.co',
@@ -201,11 +217,6 @@ export const BOARDS: BoardConfig[] = [
     useBrowser: true
   },
   {
-    name: 'Cryptorecruit',
-    searchUrl: (k) => `https://www.cryptorecruit.com/jobs?q=${encodeURIComponent(k)}`,
-    useBrowser: true
-  },
-  {
     name: 'Remote3',
     searchUrl: (k) => `https://remote3.co/jobs?q=${encodeURIComponent(k)}`,
     useBrowser: true
@@ -227,8 +238,17 @@ export const BOARDS: BoardConfig[] = [
   },
   {
     name: 'Crypto.jobs',
-    searchUrl: (k) => `https://crypto.jobs/jobs?search=${encodeURIComponent(k)}`,
-    useBrowser: true
+    // The /jobs?search= page is Cloudflare-challenged (found=0 in every
+    // scan), but crypto.jobs publishes a public sitemap-jobs.xml (~1360
+    // per-job URLs, newest-first) that is NOT WAF'd, and each per-job
+    // page is server-rendered with JSON-LD — so this board walks the
+    // sitemap instead of the search page, same pattern as CharityVillage.
+    searchUrl: () => 'https://crypto.jobs/jobs',
+    useBrowser: false,
+    sitemapListingUrls: async (_k, _l, signal) => {
+      const xml = await fetchSitemapText('https://crypto.jobs/sitemap-jobs.xml', false, signal)
+      return extractSitemapUrls(xml).filter((loc) => loc.startsWith('https://crypto.jobs/jobs/'))
+    }
   },
   {
     name: 'Web3.career',
@@ -237,8 +257,27 @@ export const BOARDS: BoardConfig[] = [
   },
   {
     name: 'Startup.jobs',
-    searchUrl: (k) => `https://startup.jobs/${encodeURIComponent(k)}-jobs`,
-    useBrowser: true
+    // The site (startup.jobs) is Cloudflare-challenged on every path
+    // (found=0 in every scan), but the sitemap index lives on an
+    // unprotected CDN (cdn.startup.jobs) and lists job posts under
+    // posts*.xml. Walk those for listings; per-job pages still go
+    // through scrapeJobFromUrl's browser fallback when the static
+    // fetch is challenged.
+    searchUrl: () => 'https://startup.jobs/',
+    useBrowser: true,
+    sitemapListingUrls: async (_k, _l, signal) => {
+      const index = await fetchSitemapText('https://cdn.startup.jobs/sitemaps/startupjobs/sitemap.xml.gz', false, signal)
+      const posts = extractSitemapUrls(index).filter((loc) => /sitemaps\/startupjobs\/posts\d*\.xml(\.gz)?$/.test(loc))
+      const all: string[] = []
+      for (const url of posts) {
+        if (signal?.aborted) break
+        const xml = await fetchSitemapText(url, false, signal)
+        for (const loc of extractSitemapUrls(xml)) {
+          if (/^https:\/\/startup\.jobs\/.+-\d+$/.test(loc)) all.push(loc)
+        }
+      }
+      return all
+    }
   },
   {
     name: 'Selby Jennings',
@@ -707,14 +746,6 @@ export const BOARDS: BoardConfig[] = [
     // produce 0 results from the generic scraper, since Toptal
     // works through private matching.
     searchUrl: (k) => `https://www.toptal.com/jobs?q=${encodeURIComponent(k)}`,
-    useBrowser: true
-  },
-  {
-    name: 'Upwork',
-    // Upwork (upwork.com) is the largest freelance marketplace.
-    // Public project listings at /freelance-jobs/{keyword}/
-    // but details require login. JS-heavy SPA.
-    searchUrl: (k) => `https://www.upwork.com/freelance-jobs/${encodeURIComponent(k)}/`,
     useBrowser: true
   },
   {

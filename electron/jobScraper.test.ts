@@ -23,8 +23,20 @@ vi.mock('./browserScraper', async (importOriginal) => {
   return { ...actual, fetchHtmlViaBrowser: vi.fn(async () => '<html><body>cleared</body></html>') }
 })
 
+// Mock undici so the curl-like fallback never makes a real network call
+// in tests. Default: reject — fetchViaUndici swallows the error and
+// returns null, so existing tests that stub global.fetch with challenge /
+// empty-shell pages still exercise the browser fallback as before. The
+// rescue test below overrides it with a real page.
+vi.mock('undici', () => ({
+  request: vi.fn(async () => {
+    throw new Error('undici not mocked for this test')
+  })
+}))
+
 import { isLinkedInStubDescription, scrapeJobFromUrl, detectSource } from './jobScraper'
 import { fetchHtmlViaBrowser } from './browserScraper'
+import { request as undiciRequest } from 'undici'
 
 // We don't actually hit the network — we stub fetch and feed the
 // extractor a realistic LinkedIn HTML page. The shape below mirrors
@@ -379,6 +391,236 @@ describe('empty-shell detection', () => {
         // must NOT be the empty-shell signature.
         expect((err as Error).message).not.toContain('Blocked by anti-bot protection (empty shell)')
       }
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+})
+
+describe('undici fallback (curl-like TLS fingerprint rescues WAF-soft-blocked hosts)', () => {
+  // CharityVillage and Crypto.jobs answer Electron's global fetch
+  // (Chromium net stack) with an empty shell / challenge while serving a
+  // plain curl a real 200 page. Before burning a 10-90s headless-browser
+  // round trip, fetchPageHtml tries one undici pass over Node's own
+  // socket stack. This test proves the rescue: undici's page wins and the
+  // browser is never touched.
+  it('scrapes through undici when global fetch returns an empty shell', async () => {
+    const originalFetch = global.fetch
+    const fetchHtmlViaBrowserMock = vi.mocked(fetchHtmlViaBrowser)
+    const undiciRequestMock = vi.mocked(undiciRequest)
+    // A real CharityVillage listing page — comfortably over the 200-byte
+    // empty-shell floor, with og:title / og:site_name / og:description
+    // so the generic extractor can complete the scrape.
+    const pageHtml = `<!doctype html>
+<html>
+<head>
+  <meta property="og:title" content="Executive Director at Vancouver Food Bank">
+  <meta property="og:site_name" content="Vancouver Food Bank">
+  <meta property="og:description" content="${'We are seeking an experienced leader to guide our organization. '.repeat(5)}">
+</head>
+<body>
+  <p>${'Job description content. '.repeat(30)}</p>
+</body>
+</html>`
+    undiciRequestMock.mockImplementation(async () => ({
+      statusCode: 200,
+      body: { text: async () => pageHtml }
+    }))
+
+    try {
+      // Chromium net stack (global fetch) gets the 39-byte empty shell;
+      // undici gets the real page.
+      global.fetch = vi.fn(async () =>
+        new Response('<html><head></head><body></body></html>', { status: 200 })
+      ) as unknown as typeof fetch
+      fetchHtmlViaBrowserMock.mockClear()
+
+      const result = await scrapeJobFromUrl('https://www.charityvillage.com/job/test-1')
+      expect(result.title).toBe('Executive Director')
+      expect(result.company).toBe('Vancouver Food Bank')
+      expect(result.description).toMatch(/experienced leader/)
+      // The undici pass returned a parseable page, so the browser
+      // fallback never ran — no 10-90s round trip for a soft block.
+      expect(fetchHtmlViaBrowserMock).not.toHaveBeenCalled()
+    } finally {
+      global.fetch = originalFetch
+      undiciRequestMock.mockImplementation(async () => {
+        throw new Error('undici not mocked for this test')
+      })
+    }
+  })
+
+  it('rejects an undici challenge page and falls through to the browser', async () => {
+    const originalFetch = global.fetch
+    const fetchHtmlViaBrowserMock = vi.mocked(fetchHtmlViaBrowser)
+    const undiciRequestMock = vi.mocked(undiciRequest)
+    undiciRequestMock.mockImplementation(async () => ({
+      statusCode: 200,
+      body: { text: async () => '<html><title>Just a moment...</title></html>'.repeat(10) }
+    }))
+
+    try {
+      global.fetch = vi.fn(async () =>
+        new Response('<html><head></head><body></body></html>', { status: 200 })
+      ) as unknown as typeof fetch
+      fetchHtmlViaBrowserMock.mockClear()
+
+      await expect(scrapeJobFromUrl('https://www.charityvillage.com/job/test-1')).rejects.toThrow()
+      // The undici page was itself a challenge, so the browser got its
+      // chance (mocked) and the scan proceeded as before.
+      expect(fetchHtmlViaBrowserMock).toHaveBeenCalled()
+    } finally {
+      global.fetch = originalFetch
+      undiciRequestMock.mockImplementation(async () => {
+        throw new Error('undici not mocked for this test')
+      })
+    }
+  })
+})
+
+// Fixture shape for a Crossover (xoc-pipeline) job page. The Angular
+// SPA is fully server-rendered: the h1 > strong.name holds the title,
+// xoc-pipeline-salary carries the annual pay with an explicit
+// "USD/year" unit, the xoc-pipeline-chips block holds the
+// location/work-mode/employment/company chips, and the JD lives in
+// repeating .pipeline-content-section blocks (h2 title + body).
+// Mirrors the real DOM dumped 2026-08-06 from a Director of Academics
+// listing. Note the page deliberately omits the prerender-status-code
+// marker — with it, scrapeJobFromUrl would route through the browser.
+function crossoverHtml(): string {
+  return `<!doctype html>
+<html>
+<head>
+  <meta property="og:site_name" content="Crossover">
+  <title>Director of Academics</title>
+</head>
+<body>
+  <xoc-pipeline>
+    <div class="pipeline-header">
+      <h1 data-kontent-element-codename="name" class="title">
+        <strong class="name">Director of Academics </strong>
+        <div class="salary">
+          <xoc-pipeline-salary>
+            <span class="tw-bg-gradient-to-r tw-from-[#3bc4b2] tw-to-[#9c72fb] tw-bg-clip-text tw-text-xl tw-font-semibold tw-text-transparent ng-star-inserted"> $400,000 </span> USD/year <sup>info</sup>
+            <label class="hourlyrate tw-mb-0 ng-star-inserted">($200 USD/hour)</label>
+          </xoc-pipeline-salary>
+        </div>
+      </h1>
+      <xoc-pipeline-chips>
+        <div class="infoChips header ng-star-inserted">
+          <div class="chip ng-star-inserted">
+            <div class="chip-data ng-star-inserted" title="">
+              <i class="fas fa-map-marker-alt" aria-hidden="true"></i><span class="chip-text hours" title=""> Worldwide <!----></span>
+            </div>
+          </div>
+          <div class="chip ng-star-inserted">
+            <div class="chip-data ng-star-inserted" title="">
+              <i class="fas fa-globe-americas" aria-hidden="true"></i><span class="chip-text hours" title=""> Fully-remote <!----></span>
+            </div>
+          </div>
+          <div class="chip ng-star-inserted">
+            <div class="chip-data ng-star-inserted" title="">
+              <i class="fas fa-clock" aria-hidden="true"></i><span class="chip-text hours" title=""> full-time (40 hrs/week) <!----></span>
+            </div>
+          </div>
+          <div class="chip ng-star-inserted">
+            <div class="chip-data ng-star-inserted">
+              <a target="_blank" class="chip-link" href="https://ed.crossover.com/clients/2-hour-learning"><i class="fas fa-building" aria-hidden="true"></i><span class="chip-text hours"> 2 Hour Learning </span></a>
+            </div>
+          </div>
+        </div>
+      </xoc-pipeline-chips>
+    </div>
+    <div class="pipeline-body">
+      <xoc-pipeline-content>
+        <div class="pipeline-content">
+          <div xoccontentvisibility="" class="pipeline-content-section ng-star-inserted" style="content-visibility: visible;">
+            <h2 class="pipeline-content-section-title">Description</h2>
+            <div data-kontent-element-codename="hook" class="contentsection">
+              <p>You’ve defined a bold academic vision before and owned the outcomes. You’ve led from the front, not from behind the scenes.</p>
+              <p>At 2 Hour Learning, we’ve engineered a model where students learn twice as fast in just two hours a day. AI tutors, mastery-based progression, and a radical departure from conventional classroom structures drive these outcomes.</p>
+              <p>This is not an academic theory role. It’s a leadership mandate. You’ll own the academic strategy in practice, set clear standards, identify execution gaps, and coach top-tier teams to deliver real outcomes.</p>
+            </div>
+          </div>
+          <div xoccontentvisibility="" class="pipeline-content-section ng-star-inserted" style="content-visibility: visible;">
+            <h2 class="pipeline-content-section-title">What you will be doing</h2>
+            <div data-kontent-element-codename="what_you_will_be_doing">
+              <ul>
+                <li>Creating academic frameworks that translate learning science into practical guidance for curriculum and app design.</li>
+                <li>Leading academic execution reviews across Heads of Academics to ensure school teams are aligned, accountable, and delivering results.</li>
+              </ul>
+            </div>
+          </div>
+          <div xoccontentvisibility="" class="pipeline-content-section ng-star-inserted" style="content-visibility: visible;">
+            <h2 class="pipeline-content-section-title">Candidate requirements</h2>
+            <div data-kontent-element-codename="candidate_requirements">
+              <ul>
+                <li>Advanced degree (Masters or Ph.D) in Learning Science, Educational Psychology, or a related field.</li>
+                <li>At least 7 years in academic or EdTech leadership roles, leading a team of staff/employees.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </xoc-pipeline-content>
+    </div>
+  </xoc-pipeline>
+</body>
+</html>`
+}
+
+describe('Crossover extractor (xoc-pipeline pages)', () => {
+  it('extracts title, chips, salary and full JD from a rendered listing', async () => {
+    const originalFetch = global.fetch
+    global.fetch = vi.fn(async () =>
+      new Response(crossoverHtml(), { status: 200 })
+    ) as unknown as typeof fetch
+
+    try {
+      const result = await scrapeJobFromUrl('https://www.crossover.com/jobs/5595/2-hour-learning/director-of-academics')
+
+      expect(result.source).toBe('Crossover')
+      expect(result.title).toBe('Director of Academics')
+      expect(result.company).toBe('2 Hour Learning')
+      expect(result.location).toBe('Worldwide')
+      expect(result.work_mode).toBe('REMOTE')
+      expect(result.employment_type).toBe('FULL_TIME')
+      expect(result.salary_range).toBe('$400,000 USD/year')
+      expect(result.description).toContain('Description: You’ve defined a bold academic vision')
+      expect(result.description).toContain('What you will be doing: Creating academic frameworks')
+      expect(result.description).toContain('Candidate requirements: Advanced degree')
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+})
+
+describe('extractMeta apostrophe handling (regression: Freelancer description)', () => {
+  // The og:description capture class used to be [^"']* — it stops at
+  // the first apostrophe, so Freelancer's "I'm looking for a product
+  // designer…" was truncated to 59 chars and rejected by the >100-char
+  // threshold in applyGeneric. That surfaced as
+  // "missing fields [description]" on real project pages. The capture
+  // now back-references the opening quote so apostrophes survive.
+  it('extracts a full meta description containing an apostrophe', async () => {
+    const originalFetch = global.fetch
+    const body =
+      '<!doctype html><html><head>' +
+      '<meta property="og:title" content="Universal Beverage Dispenser Prototype">' +
+      '<meta property="og:site_name" content="Freelancer">' +
+      '<meta property="og:description" content="3D Modelling Projects for INR 15000-45000. ' +
+      "I'm looking for a skilled product designer to create a physical prototype of a " +
+      "universal beverage dispensing platform. The device should dispense multiple beverages " +
+      'from a single unit.">' +
+      '</head><body></body></html>'
+
+    global.fetch = vi.fn(async () =>
+      new Response(body, { status: 200 })
+    ) as unknown as typeof fetch
+
+    try {
+      const job = await scrapeJobFromUrl('https://www.freelancer.com/projects/prototyping/universal-beverage-dispenser-prototype')
+      expect(job.description).toContain("I'm looking for a skilled product designer")
+      expect(job.description).toContain('dispense multiple beverages')
     } finally {
       global.fetch = originalFetch
     }

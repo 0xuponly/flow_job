@@ -48,6 +48,8 @@ vi.mock('./browserScraper', () => ({ paginateHtmlViaBrowser: vi.fn(), closeCamou
 vi.mock('./rssFetcher', () => ({ fetchRssFeed: vi.fn(async () => []) }))
 
 import { extractJobUrls, scanAllBoards } from './jobSearch'
+import { BOARDS } from './boards'
+import { fetchSitemapText } from './netUtils'
 
 describe('scan progress end markers', () => {
   it('emits a matching end marker for every board Scanning line', async () => {
@@ -136,5 +138,231 @@ describe('PowerToFly extractor (regression: filter links scraped as jobs)', () =
     </body></html>`
     const urls = extractJobUrls(grid, 'https://powertofly.com/jobs/?keywords=Software', 'PowerToFly')
     expect(urls.map((u) => u.url)).toEqual(['https://powertofly.com/jobs/detail/2560655'])
+  })
+})
+
+describe('web3.career extractor (regression: nav/category links scraped as jobs)', () => {
+  // The homepage's only real job links are /{company-slug}/{numericId}.
+  // Category, salary, learn, and hire pages (/crypto-jobs,
+  // /web3-salaries/nft, /learn-web3/tutorial, /hire/ai,
+  // /web3-jobs-oceania) are shells — scraping them triggered
+  // Cloudflare blocks and produced bogus errors.
+  it('extracts zero listings from nav/category/salary links', () => {
+    const shell = `<!DOCTYPE html><html><head><title>Web3 Jobs</title></head><body>
+      <a href="/crypto-jobs">Crypto Jobs</a>
+      <a href="/infrastructure-jobs">Infrastructure</a>
+      <a href="/web3-salaries/nft">NFT Salaries</a>
+      <a href="/learn-web3/tutorial">Tutorial</a>
+      <a href="/hire/ai">Hire AI</a>
+      <a href="/ads">Ads</a>
+    </body></html>`
+    expect(extractJobUrls(shell, 'https://web3.career/', 'Web3.career')).toEqual([])
+  })
+
+  it('extracts real /{slug}/{numericId} URLs', () => {
+    const grid = `<!DOCTYPE html><html><head><title>Web3 Jobs</title></head><body>
+      <a href="/binance-accelerator-program-marketing-bd-operations-binance/152415">Binance Accelerator Program</a>
+      <a href="/crypto-jobs">Crypto Jobs</a>
+    </body></html>`
+    const urls = extractJobUrls(grid, 'https://web3.career/', 'Web3.career')
+    expect(urls.map((u) => u.url)).toEqual([
+      'https://web3.career/binance-accelerator-program-marketing-bd-operations-binance/152415'
+    ])
+  })
+})
+
+describe('Built In extractor (regression: filter/nav links scraped as jobs)', () => {
+  // Built In (builtin.com) and its Toronto/Vancouver variants share the
+  // /job/{slug}/{numericId} listing pattern. The listing page's filter
+  // and category links (/jobs?city=..., /jobs/artificial-intelligence,
+  // /jobs/dev-engineering/search/...) are shells — scraping them
+  // triggered Cloudflare blocks.
+  it('extracts zero listings from search/filter/category links', () => {
+    const shell = `<!DOCTYPE html><html><head><title>Jobs - Built In</title></head><body>
+      <a href="/jobs?city=Austin&state=Texas">All Austin Jobs</a>
+      <a href="/jobs/artificial-intelligence">AI Jobs</a>
+      <a href="/jobs/dev-engineering/search/director-of-engineering">Engineering Search</a>
+      <a href="/jobs">Browse Jobs</a>
+    </body></html>`
+    expect(extractJobUrls(shell, 'https://builtin.com/jobs?search=engineer', 'Built In')).toEqual([])
+  })
+
+  it('extracts real /job/{slug}/{numericId} URLs on all three Built In variants', () => {
+    const grid = `<!DOCTYPE html><html><head><title>Jobs</title></head><body>
+      <a href="/job/devops-engineer/10084814">DevOps Engineer</a>
+      <a href="/jobs/artificial-intelligence">AI</a>
+    </body></html>`
+    const builtIn = extractJobUrls(grid, 'https://builtin.com/jobs?search=engineer', 'Built In')
+    const builtInToronto = extractJobUrls(grid, 'https://builtintoronto.com/jobs?q=engineer', 'Built In Toronto')
+    const builtInVan = extractJobUrls(grid, 'https://www.builtinvancouver.org/jobs?q=engineer', 'Built In Vancouver')
+    // The knownBoardDomains gate previously dropped the Toronto and
+    // Vancouver domains entirely, so those boards scraped zero jobs.
+    expect(builtIn.map((u) => u.url)).toEqual(['https://builtin.com/job/devops-engineer/10084814'])
+    expect(builtInToronto.map((u) => u.url)).toEqual(['https://builtintoronto.com/job/devops-engineer/10084814'])
+    expect(builtInVan.map((u) => u.url)).toEqual([
+      'https://www.builtinvancouver.org/job/devops-engineer/10084814'
+    ])
+  })
+})
+
+describe('Remote Rocketship extractor (regression: category pages wedged camoufox)', () => {
+  // Real Remote Rocketship job URLs are /job/{slug} or
+  // /remote-job/{slug}. The search page's category links
+  // (/jobs/recruitment/, /jobs/software-engineer/, /jobs/project-manager/)
+  // are index pages — scraping them triggered Cloudflare blocks and
+  // "camoufox newPage timed out after 10000ms" wedges that stalled the
+  // whole scan while the board's card stayed blue.
+  it('extracts zero listings from /jobs/ category index links', () => {
+    const shell = `<!DOCTYPE html><html><head><title>Remote Rocketship</title></head><body>
+      <a href="/jobs/recruitment/">Recruitment Jobs</a>
+      <a href="/jobs/software-engineer/">Software Engineer Jobs</a>
+      <a href="/jobs/project-manager/">Project Manager Jobs</a>
+      <a href="/jobs/">All Remote Jobs</a>
+    </body></html>`
+    expect(extractJobUrls(shell, 'https://remoterocketship.com/remote-jobs?q=engineer', 'Remote Rocketship')).toEqual([])
+  })
+
+  it('extracts real /job/ and /remote-job/ URLs', () => {
+    const grid = `<!DOCTYPE html><html><head><title>Remote Rocketship</title></head><body>
+      <a href="/job/senior-backend-engineer-nodejs/">Senior Backend Engineer</a>
+      <a href="/remote-job/product-designer-remote/">Product Designer</a>
+      <a href="/jobs/recruitment/">Recruitment</a>
+    </body></html>`
+    const urls = extractJobUrls(grid, 'https://remoterocketship.com/remote-jobs?q=engineer', 'Remote Rocketship')
+    expect(urls.map((u) => u.url)).toEqual([
+      'https://remoterocketship.com/job/senior-backend-engineer-nodejs/',
+      'https://remoterocketship.com/remote-job/product-designer-remote/'
+    ])
+  })
+})
+
+describe('rewired Cloudflare-blocked boards (regression: sitemap extractors admit non-job URLs)', () => {
+  // These boards were re-rewired from Cloudflare-challenged search pages
+  // to public sitemaps. The extractors must keep only real per-job URLs:
+  // Crypto.jobs' sitemap leads with its own bare /jobs search page, and
+  // Startup.jobs' CDN index lists non-job sitemaps (collections, tags,
+  // markets, roles, articles...) alongside the posts sitemaps.
+  it('Crypto.jobs keeps /jobs/ prefixed URLs, drops the bare /jobs search page', async () => {
+    vi.mocked(fetchSitemapText).mockImplementation(async (url: string) => {
+      if (url === 'https://crypto.jobs/sitemap-jobs.xml') {
+        return `<urlset>
+          <url><loc>https://crypto.jobs/jobs</loc></url>
+          <url><loc>https://crypto.jobs/jobs/business-developer-at-miren-partners</loc></url>
+          <url><loc>https://crypto.jobs/jobs/head-of-engineering-at-alemx</loc></url>
+          <url><loc>https://crypto.jobs/</loc></url>
+        </urlset>`
+      }
+      return '<urlset></urlset>'
+    })
+    try {
+      const board = BOARDS.find((b) => b.name === 'Crypto.jobs')
+      expect(board?.sitemapListingUrls).toBeDefined()
+      const urls = await board!.sitemapListingUrls!('data', '')
+      expect(urls).toEqual([
+        'https://crypto.jobs/jobs/business-developer-at-miren-partners',
+        'https://crypto.jobs/jobs/head-of-engineering-at-alemx'
+      ])
+    } finally {
+      vi.mocked(fetchSitemapText).mockImplementation(async (url: string) =>
+        url.includes('page=1')
+          ? `<urlset>${Array.from({ length: 40 }, (_, i) =>
+              `<url><loc>https://www.charityvillage.com/job/test-job-${i}</loc></url>`
+            ).join('\n')}</urlset>`
+          : '<urlset></urlset>'
+      )
+    }
+  })
+
+  it('Startup.jobs walks posts sitemaps only, keeps /{slug}-{numericId} URLs', async () => {
+    vi.mocked(fetchSitemapText).mockImplementation(async (url: string) => {
+      if (url === 'https://cdn.startup.jobs/sitemaps/startupjobs/sitemap.xml.gz') {
+        return `<sitemapindex>
+          <sitemap><loc>https://cdn.startup.jobs/sitemaps/startupjobs/collections.xml.gz</loc></sitemap>
+          <sitemap><loc>https://cdn.startup.jobs/sitemaps/startupjobs/tags.xml.gz</loc></sitemap>
+          <sitemap><loc>https://cdn.startup.jobs/sitemaps/startupjobs/posts.xml.gz</loc></sitemap>
+          <sitemap><loc>https://cdn.startup.jobs/sitemaps/startupjobs/posts1.xml</loc></sitemap>
+          <sitemap><loc>https://cdn.startup.jobs/sitemaps/startupjobs/markets.xml.gz</loc></sitemap>
+        </sitemapindex>`
+      }
+      if (url === 'https://cdn.startup.jobs/sitemaps/startupjobs/posts.xml.gz') {
+        return `<urlset>
+          <url><loc>https://startup.jobs/general-inquiries-dots-23020</loc></url>
+          <url><loc>https://startup.jobs/blog</loc></url>
+        </urlset>`
+      }
+      if (url === 'https://cdn.startup.jobs/sitemaps/startupjobs/posts1.xml') {
+        return `<urlset>
+          <url><loc>https://startup.jobs/deployment-strategist-palantir-23781</loc></url>
+          <url><loc>https://startup.jobs/pricing</loc></url>
+        </urlset>`
+      }
+      return '<urlset></urlset>'
+    })
+    try {
+      const board = BOARDS.find((b) => b.name === 'Startup.jobs')
+      expect(board?.sitemapListingUrls).toBeDefined()
+      const urls = await board!.sitemapListingUrls!('data', '')
+      // collections/tags/markets sitemaps never fetched; only posts
+      // sitemaps are walked, and only /{slug}-{numericId} URLs kept.
+      expect(urls).toEqual([
+        'https://startup.jobs/general-inquiries-dots-23020',
+        'https://startup.jobs/deployment-strategist-palantir-23781'
+      ])
+    } finally {
+      vi.mocked(fetchSitemapText).mockImplementation(async (url: string) =>
+        url.includes('page=1')
+          ? `<urlset>${Array.from({ length: 40 }, (_, i) =>
+              `<url><loc>https://www.charityvillage.com/job/test-job-${i}</loc></url>`
+            ).join('\n')}</urlset>`
+          : '<urlset></urlset>'
+      )
+    }
+  })
+})
+
+describe('sitemap listing cap (regression: archive-size phantom errors)', () => {
+  // Sitemap-listing boards (DailyRemote, NoDesk, CharityVillage) draw
+  // from an XML sitemap covering the site's ENTIRE history — DailyRemote
+  // ~225k URLs, NoDesk ~15k. Before the cap, the scan ground through the
+  // whole archive, the host rate-limited (~2k scrapes in), and the
+  // blocked-bailout counted every untouched listing as an error (223k
+  // phantom errors from one board). The cap keeps the newest-first head
+  // of the list only.
+  it('caps sitemap listings at MAX_SITEMAP_LISTINGS, not the full archive', async () => {
+    const bigSitemap = Array.from(
+      { length: 2000 },
+      (_, i) => `<url><loc>https://www.charityvillage.com/job/capped-job-${i}</loc></url>`
+    ).join('\n')
+    vi.mocked(fetchSitemapText).mockImplementation(async (url: string) =>
+      url.includes('page=1') ? `<urlset>${bigSitemap}</urlset>` : '<urlset></urlset>'
+    )
+
+    try {
+      const result = await scanAllBoards({
+        keywords: 'data',
+        boards: ['CharityVillage'],
+        locations: [{ display: 'Vancouver' }]
+      })
+      const cv = result.boards.filter((b) => b.board === 'CharityVillage')
+      // 2000 sitemap URLs → 1500 listings. Un-capped this would be 2000
+      // (and the bailout would phantom-count the ~1980 untouched ones).
+      expect(cv).toHaveLength(1)
+      expect(cv[0].found).toBe(1500)
+      // The scan never grinds the archive tail: only the capped head is
+      // ever touched, so the error tally is bounded by the cap — NOT the
+      // sitemap's full archive size (which is what produced the 223k
+      // DailyRemote / 11.6k NoDesk phantom totals).
+      expect(result.totalErrors).toBe(1500)
+      expect(result.totalFound).toBe(1500)
+    } finally {
+      // Restore the default 40-URL sitemap fixture for other tests.
+      vi.mocked(fetchSitemapText).mockImplementation(async (url: string) =>
+        url.includes('page=1')
+          ? `<urlset>${Array.from({ length: 40 }, (_, i) =>
+              `<url><loc>https://www.charityvillage.com/job/test-job-${i}</loc></url>`
+            ).join('\n')}</urlset>`
+          : '<urlset></urlset>'
+      )
+    }
   })
 })

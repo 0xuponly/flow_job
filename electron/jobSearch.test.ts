@@ -199,12 +199,6 @@ describe('BOARDS config', () => {
     expect(url).toContain('q=python')
   })
 
-  it('has Upwork with useBrowser', () => {
-    const board = BOARDS.find((b) => b.name === 'Upwork')
-    expect(board).toBeDefined()
-    expect(board!.useBrowser).toBe(true)
-  })
-
   it('has Toptal with useBrowser', () => {
     const board = BOARDS.find((b) => b.name === 'Toptal')
     expect(board).toBeDefined()

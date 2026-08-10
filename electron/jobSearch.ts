@@ -56,6 +56,18 @@ const LLM_SCAN_CONCURRENCY = 2
 // instead of a scan that hangs forever.
 const BATCH_TIMEOUT_MS = 5 * 60_000
 
+// Sitemap-listing boards (DailyRemote, NoDesk, CharityVillage) get
+// their listings from an XML sitemap that covers the site's ENTIRE
+// history — DailyRemote's is ~225k URLs, NoDesk's ~15k. The sitemap
+// lists newest-first, so a scan needs only the head of the list: the
+// recent window it hasn't seen yet. Without a cap, the scan grinds
+// through the whole archive until the host rate-limits (DailyRemote
+// closed connections after ~2k scrapes), and the blocked-bailout then
+// counts every untouched listing as an error — 223k phantom errors
+// from one board. 1500 is a generous recent window (weeks of
+// listings) while bounding wall time and the error tally.
+const MAX_SITEMAP_LISTINGS = 1500
+
 // pLimit-style async limiter. Resolves tasks FIFO with at most
 // `n` running concurrently. Aborted tasks reject immediately so
 // the scan's cancel signal propagates through the queue.
@@ -362,7 +374,7 @@ export function extractJobUrls(html: string, baseUrl: string, boardName: string)
     if (seen.has(lowerUrl)) continue
     seen.add(lowerUrl)
 
-    const knownBoardDomains = /linkedin\.com|indeed\.com|ca\.indeed\.com|monster\.com|ziprecruiter\.com|simplyhired\.com|adzuna\.com|talent\.com|jora\.com|remoteok\.com|weworkremotely\.com|remotive\.com|remote\.co|workingnomads\.com|justremote\.co|jobbank\.gc\.ca|eluta\.ca|workopolis\.com|jobboom\.com|workbc\.ca|careerbeacon\.com|charityvillage\.com|crypto-careers\.com|cryptorecruit\.com|remote3\.co|cryptocurrencyjobs\.co|cryptojobslist\.com|cryptojobs\.com|crypto\.jobs|web3\.career|startup\.jobs|selbyjennings\.com|idealist\.org|builtin\.com|jobs\.vancouver\.ca|google\.com\/about\/careers|careerhound\.io|usebraintrust\.com|hiring\.cafe|sproutjobs\.com|arc\.dev|contra\.com|skipthedrive\.com|jobspresso\.co|dynamitejobs\.com|dailyremote\.com|nodesk\.co|remote100k\.com|rareroles\.com|flexa\.careers|flexjobs\.com|virtualvocations\.com|pangian\.com|powertofly\.com|dice\.com|theladders\.com|workatastartup\.com|careervault\.io|remoterocketship\.com|dribbble\.com|behance\.net|crossover\.com|aijobs\.ai|toptal\.com|upwork\.com|fiverr\.com|gun\.io|freelancer\.com|peopleperhour\.com|hubstaff\.com/
+    const knownBoardDomains = /linkedin\.com|indeed\.com|ca\.indeed\.com|monster\.com|ziprecruiter\.com|simplyhired\.com|adzuna\.com|talent\.com|jora\.com|remoteok\.com|weworkremotely\.com|remotive\.com|remote\.co|workingnomads\.com|justremote\.co|jobbank\.gc\.ca|eluta\.ca|workopolis\.com|jobboom\.com|workbc\.ca|careerbeacon\.com|charityvillage\.com|crypto-careers\.com|cryptorecruit\.com|remote3\.co|cryptocurrencyjobs\.co|cryptojobslist\.com|cryptojobs\.com|crypto\.jobs|web3\.career|startup\.jobs|selbyjennings\.com|idealist\.org|builtin\.com|builtintoronto\.com|builtinvancouver\.org|jobs\.vancouver\.ca|google\.com\/about\/careers|careerhound\.io|usebraintrust\.com|hiring\.cafe|sproutjobs\.com|arc\.dev|contra\.com|skipthedrive\.com|jobspresso\.co|dynamitejobs\.com|dailyremote\.com|nodesk\.co|remote100k\.com|rareroles\.com|flexa\.careers|flexjobs\.com|virtualvocations\.com|pangian\.com|powertofly\.com|dice\.com|theladders\.com|workatastartup\.com|careervault\.io|remoterocketship\.com|dribbble\.com|behance\.net|crossover\.com|aijobs\.ai|toptal\.com|upwork\.com|fiverr\.com|gun\.io|freelancer\.com|peopleperhour\.com|hubstaff\.com/
     if (!knownBoardDomains.test(lowerUrl)) continue
 
     const pathname = new URL(fullUrl).pathname
@@ -381,15 +393,28 @@ export function extractJobUrls(html: string, baseUrl: string, boardName: string)
     } else if (boardLower.includes('indeed')) {
       if (!pathname.includes('/viewjob') && !pathname.includes('/rc/')) continue
     } else if (boardLower.includes('web3.career')) {
-      if (pathname === '/' || pathname === '/index.html') continue
-      const pathParts = pathname.split('/').filter(Boolean)
-      if (pathParts.length < 1) continue
-      if (inner.length < 3 || inner.length >= 300) continue
+      // Real web3.career job URLs are /{company-slug}/{numericId}
+      // (e.g. /binance-accelerator-program-marketing-bd-operations-binance/152415).
+      // The homepage's nav links (/crypto-jobs, /web3-salaries/nft,
+      // /learn-web3/tutorial, /hire/ai, /web3-jobs-oceania) are
+      // category/salary pages, not listings — scraping those shells
+      // triggers Cloudflare blocks and produces bogus errors.
+      if (!/^\/[^/]+\/\d+\/?$/.test(pathname)) continue
+    } else if (boardLower.includes('built in')) {
+      // Built In job URLs are /job/{slug}/{numericId} (confirmed on
+      // builtin.com, builtintoronto.com, and builtinvancouver.org).
+      // The listing page's nav and filter links (/jobs?city=...,
+      // /jobs/{category}, /jobs/dev-engineering/search/...) are not
+      // listings — scraping them triggers Cloudflare blocks.
+      if (!/^\/job\/[^/]+\/\d+\/?$/.test(pathname)) continue
     } else if (boardLower.includes('google')) {
-      // Google Careers lives under /about/careers/applications/jobs/... —
-      // the generic /jobs|...|... regex anchors at `^/` and would reject
-      // every real listing. Accept any path under /about/careers instead.
-      if (!pathname.startsWith('/about/careers')) continue
+      // Google Careers job URLs are
+      // /about/careers/applications/jobs/results/{numericJobId}. The
+      // search page's filter chips link to named sub-pages
+      // (results/ai, results/cloud, results/how-we-hire,
+      // applications/eeo) that carry no job data. Require the numeric
+      // id segment.
+      if (!/^\/about\/careers\/applications\/jobs\/results\/\d+$/.test(pathname)) continue
     } else if (boardLower.includes('ziprecruiter')) {
       // ZipRecruiter per-listing URLs come in two shapes:
       //   /jobs/view/{numericId}            (legacy direct view)
@@ -417,9 +442,41 @@ export function extractJobUrls(html: string, baseUrl: string, boardName: string)
     } else if (boardLower.includes('behance')) {
       // Behance per-listing URLs: /joblist/{id}/{slug}
       if (!pathname.startsWith('/joblist/')) continue
-    } else if (boardLower.includes('workatastartup')) {
+    } else if (boardLower.includes('work at a startup')) {
       // Work At A Startup per-company URLs: /companies/{slug}
       if (!pathname.startsWith('/companies/')) continue
+    } else if (boardLower.includes('hiring cafe')) {
+      // Hiring Cafe job URLs are /job/{slug} (singular) with full
+      // static JobPosting content. The listing page's filter chips
+      // link to /jobs/{state} and /jobs/{keyword} (plural) — scraping
+      // those shells produced missing-description errors. Require the
+      // singular /job/ prefix.
+      if (!/^\/job\//.test(pathname)) continue
+    } else if (boardLower.includes('crossover')) {
+      // Crossover job URLs are /jobs/{numericId}/{slug}/{title}. The
+      // listing page also links to /jobs/{single-slug} category pages
+      // (e.g. /jobs/ai-engineer, /jobs/finance) that carry no
+      // JobPosting data. Require the numeric id segment.
+      if (!/^\/jobs\/\d+\//.test(pathname)) continue
+    } else if (boardLower.includes('remote rocketship')) {
+      // Remote Rocketship job URLs are /job/{slug} or
+      // /remote-job/{slug}. The search page's category links
+      // (/jobs/recruitment/, /jobs/software-engineer/,
+      // /jobs/project-manager/) are index pages, not listings —
+      // scraping them triggered Cloudflare blocks and camoufox
+      // newPage timeouts. Require the singular /job/ or
+      // /remote-job/ prefix.
+      if (!/^\/(job|remote-job)\//.test(pathname)) continue
+    } else if (boardLower.includes('ladders')) {
+      // The Ladders listing cards link to /jobs/{companySlug}/{jobId}.
+      // Its nav links include /jobs/search-jobs, which is the search
+      // page itself, not a listing.
+      if (pathname === '/jobs/search-jobs') continue
+    } else if (boardLower.includes('dribbble')) {
+      // Dribbble jobs live under /jobs/{slug}. The board's nav links
+      // to /careers (a Framer careers index) and /job-board are not
+      // listings.
+      if (pathname === '/careers' || pathname === '/job-board') continue
     } else if (boardLower.includes('freelancer')) {
       // Freelancer per-project URLs: /projects/{slug}
       if (!pathname.startsWith('/projects/')) continue
@@ -1011,7 +1068,12 @@ export async function scanAllBoards(
         // title + company from each per-job page's JSON-LD / HTML.
         progress(`Fetching sitemap for ${board.name}${locTag}...`)
         const urls = await board.sitemapListingUrls(keywords, location, signal)
-        listings = urls.map((url) => ({ url }))
+        // Cap the head of the sitemap (listed newest-first) so the scan
+        // doesn't grind through the site's ENTIRE history — DailyRemote's
+        // sitemap is ~225k URLs, NoDesk's ~15k. Un-capped, the host
+        // rate-limits after ~2k scrapes and the blocked-bailout counts
+        // every untouched listing as an error (223k phantom errors).
+        listings = urls.slice(0, MAX_SITEMAP_LISTINGS).map((url) => ({ url }))
         if (process.env.FLOW_JOB_SCAN_TIMING) {
           log.info(`stage=parse board=${board.name} listings=${listings.length} (sitemap) ms=${Date.now() - tParse0}`)
         }
