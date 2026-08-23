@@ -1062,36 +1062,62 @@ export async function navigateToHashViaBrowser(
 }
 
 export function isChallengePage(html: string): boolean {
-  return (
-    // Cloudflare-specific challenge signals
+  // Strong challenge signals that ALWAYS indicate a real challenge
+  const strongSignal =
     html.includes('Just a moment...') ||
     html.includes('cf-challenge') ||
-    html.includes('challenge-platform') ||
     html.includes('Enable JavaScript and cookies to continue') ||
     html.includes('Verifying you are human') ||
     html.includes('Checking your browser before accessing') ||
-    html.includes('cf-turnstile') ||
-    html.includes('data-turnstile') ||
     html.includes('_cf_chl_opt') ||
     html.includes('_cf_chl_tk') ||
-    html.includes('turnstile.render') ||
     html.includes('cf-browser-verification') ||
     html.includes('data-cf-challenge') ||
     html.includes('cf_challenge_response') ||
     html.includes('Cloudflare') && (html.includes('challenge') || html.includes('security check')) ||
-    html.includes('Attention Required') && html.includes('Cloudflare') ||
-    // Non-Cloudflare WAF / anti-bot signals
-    html.includes('Please enable cookies') && html.includes('continue') ||
-    html.includes('Your request has been blocked') ||
-    html.includes('Access to this page has been denied') ||
-    html.includes('blocked') && html.includes('automated access') ||
-    html.includes('Something about the behavior of your browser') ||
-    html.includes('Pardon Our Interruption') ||
-    html.includes('Browser Check') && html.includes('captcha') ||
-    html.includes('Detected unusual traffic') ||
-    // Generic "access denied" from Akamai / F5 / Imperva
-    html.includes('Access Denied') && (html.includes('bot') || html.includes('automated') || html.includes('security') || html.includes('blocked'))
-  )
+    html.includes('Attention Required') && html.includes('Cloudflare')
+
+  if (strongSignal) return true
+
+  // Weak signals that can appear on legitimate pages:
+  // - 'challenge-platform': Cloudflare injects /cdn-cgi/challenge-platform/scripts/jsd/main.js
+  //   into EVERY page it serves for passive bot scoring, even non-challenge pages.
+  // - 'cf-turnstile' / 'data-turnstile' / 'turnstile.render': Turnstile widgets appear
+  //   on legitimate apply forms for bot protection, not challenge pages.
+  // These only count as challenge markers when combined with other suspicious content.
+  const hasWeakSignal =
+    html.includes('challenge-platform') ||
+    html.includes('cf-turnstile') ||
+    html.includes('data-turnstile') ||
+    html.includes('turnstile.render')
+
+  if (hasWeakSignal) {
+    // A real challenge page has the weak signal + suspicious content like
+    // a tiny body (challenge shells are usually <10KB) or meta refresh.
+    // Legitimate job pages are 50KB+ and have rich content markers.
+    const hasRichContent =
+      html.includes('<article') ||
+      html.includes('<main') ||
+      html.includes('job-description') ||
+      html.includes('job-listing') ||
+      html.length > 50000
+    if (!hasRichContent) return true
+  }
+
+  // Non-Cloudflare WAF / anti-bot signals
+  if (html.includes('Please enable cookies') && html.includes('continue')) return true
+  if (html.includes('Your request has been blocked')) return true
+  if (html.includes('Access to this page has been denied')) return true
+  if (html.includes('blocked') && html.includes('automated access')) return true
+  if (html.includes('Something about the behavior of your browser')) return true
+  if (html.includes('Pardon Our Interruption')) return true
+  if (html.includes('Browser Check') && html.includes('captcha')) return true
+  if (html.includes('Detected unusual traffic')) return true
+
+  // Generic "access denied" from Akamai / F5 / Imperva
+  if (html.includes('Access Denied') && (html.includes('bot') || html.includes('automated') || html.includes('security') || html.includes('blocked'))) return true
+
+  return false
 }
 
 /**

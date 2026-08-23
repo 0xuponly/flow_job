@@ -35,7 +35,7 @@ vi.mock('undici', () => ({
 }))
 
 import { isLinkedInStubDescription, scrapeJobFromUrl, detectSource } from './jobScraper'
-import { fetchHtmlViaBrowser } from './browserScraper'
+import { fetchHtmlViaBrowser, isChallengePage } from './browserScraper'
 import { request as undiciRequest } from 'undici'
 
 // We don't actually hit the network — we stub fetch and feed the
@@ -591,6 +591,64 @@ describe('Crossover extractor (xoc-pipeline pages)', () => {
     } finally {
       global.fetch = originalFetch
     }
+  })
+})
+
+describe('isChallengePage weak signal handling (regression: crypto.jobs/web3.career false positives)', () => {
+  // challenge-platform and cf-turnstile appear on legitimate Cloudflare-fronted
+  // job pages (crypto.jobs, web3.career) — they're injected for passive bot scoring
+  // or appear as apply-form widgets. The detector must not false-positive on these
+  // when the page has rich job content.
+  const richJobPage = (weakSignal: string): string =>
+    `<!doctype html><html><head><title>Senior Blockchain Engineer</title></head>
+<body><article class="job-listing"><div class="job-description">
+<p>We are looking for a senior engineer...</p>
+</div></article>
+<script src="${weakSignal}"></script>
+</body></html>`
+
+  it('returns false for challenge-platform on a rich job page (>50KB)', () => {
+    const html = ' '.repeat(50001) + '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>'
+    expect(isChallengePage(html)).toBe(false)
+  })
+
+  it('returns false for cf-turnstile on a page with <article>', () => {
+    const html = richJobPage('/turnstile.js')
+    expect(isChallengePage(html)).toBe(false)
+  })
+
+  it('returns false for challenge-platform on a page with <main>', () => {
+    const html = `<!doctype html><html><body><main><div class="job">Job details here</div></main>
+<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script></body></html>`
+    expect(isChallengePage(html)).toBe(false)
+  })
+
+  it('returns true for challenge-platform on a tiny shell (<10KB, no rich markers)', () => {
+    const html = '<html><head></head><body><script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script></body></html>'
+    expect(isChallengePage(html)).toBe(true)
+  })
+
+  it('returns true for strong signal "Just a moment..." regardless of rich content', () => {
+    const html = richJobPage('') + '<title>Just a moment...</title>'
+    expect(isChallengePage(html)).toBe(true)
+  })
+
+  it('returns true for strong signal _cf_chl_opt regardless of size', () => {
+    const html = ' '.repeat(60000) + '<script>var _cf_chl_opt={}</script>'
+    expect(isChallengePage(html)).toBe(true)
+  })
+
+  it('returns false for data-turnstile on a page with job-description class', () => {
+    const html = `<!doctype html><html><body>
+<div class="job-description">We are hiring!</div>
+<div data-turnstile-sitekey="test"></div>
+</body></html>`
+    expect(isChallengePage(html)).toBe(false)
+  })
+
+  it('returns true for data-turnstile on a shell with no rich content', () => {
+    const html = '<html><body><div data-turnstile-sitekey="test"></div></body></html>'
+    expect(isChallengePage(html)).toBe(true)
   })
 })
 
