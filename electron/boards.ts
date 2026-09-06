@@ -25,6 +25,35 @@ export interface ScanBoardResult {
   error?: string
 }
 
+// Boards that were Cloudflare-walled in every scan (per-listing 403s
+// stalled runs for hours with no fixable cause). Shipped as the default
+// disabled_boards list in 1ca07d9 — but that default only reached fresh
+// installs, because existing stores already had a saved (empty) array.
+// These names must match `BOARDS[].name` exactly.
+export const DEFAULT_DISABLED_BOARDS = [
+  'Startup.jobs',
+  'Monster',
+  'Crypto.jobs',
+  'CryptoJobsList',
+  'Contra'
+]
+
+/**
+ * One-time settings migration (v1, 2026-09-06): union the walled-board
+ * defaults into whatever disabled_boards list already exists. Empty
+ * lists (every pre-1ca07d9 install) get all 5; lists with user-disabled
+ * extras keep them. Idempotent — a list already containing every
+ * default is returned unchanged.
+ */
+export function unionDisabledBoards(existing: string[], defaults: string[]): string[] {
+  const seen = new Set(existing)
+  const next = [...existing]
+  for (const name of defaults) {
+    if (!seen.has(name)) next.push(name)
+  }
+  return next
+}
+
 export interface ScanResult {
   totalFound: number
   totalAdded: number

@@ -1286,6 +1286,16 @@ function runDeferredStoreWork(): void {
     log.startup.error('Location array migration failed:', err)
   }
 
+  // One-shot: union the Cloudflare-walled default-disabled boards into
+  // the saved disabled_boards list (1ca07d9 shipped them as a fresh-
+  // install default only). Idempotent, flag-gated.
+  try {
+    const boardMig = db.migrateDefaultDisabledBoardsV1()
+    if (boardMig.updated) log.startup.info('Disabled default Cloudflare-walled boards (existing install migration).')
+  } catch (err) {
+    log.startup.error('Disabled-boards migration failed:', err)
+  }
+
   // One-shot: annualize legacy salary strings ("$43/hour" → "$86,000",
   // "CAD Monthly" → annual equivalent, etc.) on first load with a
   // populated store. Idempotent — gated by a flag. New jobs added
