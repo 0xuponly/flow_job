@@ -443,8 +443,14 @@ export function extractJobUrls(html: string, baseUrl: string, boardName: string)
       // Behance per-listing URLs: /joblist/{id}/{slug}
       if (!pathname.startsWith('/joblist/')) continue
     } else if (boardLower.includes('work at a startup')) {
-      // Work At A Startup per-company URLs: /companies/{slug}
-      if (!pathname.startsWith('/companies/')) continue
+      // Work At A Startup (YC) renders each job card as
+      // /companies/{companySlug} (the company wrapper) linking to
+      // /jobs/{numericId} — the JobDetailPage route with full
+      // descriptionHtml. Company pages carry no job-level description
+      // (only a company blurb short of the >100-char meta threshold),
+      // so requiring /jobs/{id} both picks the right page and fixes
+      // the recurring missing-description errors.
+      if (!/^\/jobs\/\d+\/?$/.test(pathname)) continue
     } else if (boardLower.includes('hiring cafe')) {
       // Hiring Cafe job URLs are /job/{slug} (singular) with full
       // static JobPosting content. The listing page's filter chips
