@@ -438,6 +438,21 @@ describe('Job Bank (GC) extractor (regression: RSS feed and hash links scraped a
   })
 })
 
+describe('href entity unescaping (regression: Indeed /rc/clk params lost to &amp;)', () => {
+  // href attributes are HTML-escaped: <a href="/rc/clk?jk=X&amp;bb=Y">.
+  // Fetching the raw attr value sends the literal '&amp;' — Indeed then
+  // serves a page with no description (missing-field errors 2026-09-06).
+  it('unescapes &amp; into & in extracted URLs', () => {
+    const grid = `<!DOCTYPE html><html><head><title>Indeed</title></head><body>
+      <a href="/rc/clk?jk=92b8166c200420cf&amp;bb=MXBXYYhpaoJQ&amp;vjs=3">Senior Developer</a>
+    </body></html>`
+    const urls = extractJobUrls(grid, 'https://www.indeed.com/jobs?q=developer', 'Indeed')
+    expect(urls.map((u) => u.url)).toEqual([
+      'https://www.indeed.com/rc/clk?jk=92b8166c200420cf&bb=MXBXYYhpaoJQ&vjs=3'
+    ])
+  })
+})
+
 describe('rewired Cloudflare-blocked boards (regression: sitemap extractors admit non-job URLs)', () => {
   // These boards were re-rewired from Cloudflare-challenged search pages
   // to public sitemaps. The extractors must keep only real per-job URLs:
