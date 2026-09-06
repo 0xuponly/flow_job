@@ -320,6 +320,40 @@ describe('WorkBC extractor (regression: legacy .aspx links scraped as jobs)', ()
   })
 })
 
+describe('Dribbble extractor (regression: homepage/social links scraped as jobs)', () => {
+  // Dribbble's real per-job URLs are /jobs/{numericId}-{slug}. The
+  // jobs page also links the homepage, /session/new, /for-designers,
+  // /advertise, and footer social profiles — including a TikTok
+  // profile whose handle contains "dribbble.com" and passes the
+  // domain-substring gate.
+  it('extracts zero listings from homepage, utility, and social links', () => {
+    const shell = `<!DOCTYPE html><html><head><title>Dribbble Jobs</title></head><body>
+      <a href="/">Dribbble</a>
+      <a href="/session/new">Sign in</a>
+      <a href="/for-designers">For Designers</a>
+      <a href="/advertise">Advertise</a>
+      <a href="/careers">Careers</a>
+      <a href="/job-board">Job Board</a>
+      <a href="https://www.tiktok.com/@dribbble.com">TikTok</a>
+      <a href="https://www.instagram.com/dribbble">Instagram</a>
+    </body></html>`
+    expect(extractJobUrls(shell, 'https://dribbble.com/jobs', 'Dribbble Jobs')).toEqual([])
+  })
+
+  it('extracts real /jobs/{numericId}-{slug} URLs', () => {
+    const grid = `<!DOCTYPE html><html><head><title>Dribbble Jobs</title></head><body>
+      <a href="/jobs/183719-Graphic-Designer?source=index">Graphic Designer</a>
+      <a href="/jobs/267968-Social-Media-Designer">Social Media Designer</a>
+      <a href="/jobs?page=2">Next page</a>
+    </body></html>`
+    const urls = extractJobUrls(grid, 'https://dribbble.com/jobs', 'Dribbble Jobs')
+    expect(urls.map((u) => u.url)).toEqual([
+      'https://dribbble.com/jobs/183719-Graphic-Designer?source=index',
+      'https://dribbble.com/jobs/267968-Social-Media-Designer'
+    ])
+  })
+})
+
 describe('Work At A Startup extractor (regression: company wrappers scraped as jobs)', () => {
   // WAS renders each job card as /companies/{companySlug} (company
   // wrapper, only a short company blurb) linking to /jobs/{numericId}
