@@ -479,10 +479,15 @@ export function extractJobUrls(html: string, baseUrl: string, boardName: string)
       // page itself, not a listing.
       if (pathname === '/jobs/search-jobs') continue
     } else if (boardLower.includes('dribbble')) {
-      // Dribbble jobs live under /jobs/{slug}. The board's nav links
-      // to /careers (a Framer careers index) and /job-board are not
-      // listings.
-      if (pathname === '/careers' || pathname === '/job-board') continue
+      // Dribbble's real per-job URLs are /jobs/{numericId}-{slug}
+      // (e.g. /jobs/183719-Graphic-Designer). The jobs page also links
+      // the homepage ('/'), /session/new, /for-designers, /advertise,
+      // and footer social profiles — notably
+      // https://www.tiktok.com/@dribbble.com, whose handle contains
+      // the substring "dribbble.com" and thus passes the
+      // knownBoardDomains domain gate. Requiring the numeric-id job
+      // path rejects all of those (recurring missing-field errors).
+      if (!/^\/jobs\/\d+/.test(pathname)) continue
     } else if (boardLower.includes('freelancer')) {
       // Freelancer per-project URLs: /projects/{slug}
       if (!pathname.startsWith('/projects/')) continue
