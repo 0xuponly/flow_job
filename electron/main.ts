@@ -287,27 +287,9 @@ function registerIpc(): void {
   }
 
   // Auto-queue: any job without a real fit score is enqueued for
-  // background scoring. Covers the scan paths that persist
-  // score=null (heuristic pre-filter, LLM-error fallback) plus legacy
-  // rows. The fit_score_version guard matches database.ts's
-  // documented invariant: score-less rows have version null/old, so
-  // they qualify; rows scored against the current CV (version match,
-  // real score) are skipped.
-  function enqueueScoreFitBacklog(): void {
-    const cvVersion = db.getSettings().cv_version ?? 0
-    for (const j of db.listJobs()) {
-      if (j.score === null && j.fit_score_version !== cvVersion) {
-        enqueue({ type: 'score_fit', jobId: j.id })
-      }
-    }
-  }
-
+  // 'job:scoreUpdated' broadcaster shared with module-scope callers.
   function emitJobScoreUpdated(jobId: number): void {
-    const job = db.getJob(jobId)
-    if (!job) return
-    for (const win of BrowserWindow.getAllWindows()) {
-      if (!win.isDestroyed()) win.webContents.send('job:scoreUpdated', job)
-    }
+    emitJobScoreUpdatedModule(jobId)
   }
 
   ipcMain.handle('jobs:list', (_e, status?: JobStatus) => db.listJobs(status))
@@ -1203,6 +1185,35 @@ function registerIpc(): void {
       return { deleted: 0 }
     }
   })
+}
+
+// Auto-queue: any job without a real fit score is enqueued for
+// background scoring. Covers the scan paths that persist
+// score=null (heuristic pre-filter, LLM-error fallback) plus legacy
+// rows. The fit_score_version guard matches database.ts's
+// documented invariant: score-less rows have version null/old, so
+// they qualify; rows scored against the current CV (version match,
+// real score) are skipped.
+// Module scope: called from both registerIpc (post-scan) and
+// runDeferredStoreWork (session-start re-seed). Was previously
+// nested inside registerIpc, which made the deferred call a
+// ReferenceError that aborted the deferred work — including the
+// disabled-boards migration.
+function enqueueScoreFitBacklog(): void {
+  const cvVersion = db.getSettings().cv_version ?? 0
+  for (const j of db.listJobs()) {
+    if (j.score === null && j.fit_score_version !== cvVersion) {
+      enqueue({ type: 'score_fit', jobId: j.id })
+    }
+  }
+}
+
+function emitJobScoreUpdatedModule(jobId: number): void {
+  const job = db.getJob(jobId)
+  if (!job) return
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('job:scoreUpdated', job)
+  }
 }
 
 // Deferred startup work — runs only after the renderer has finished
