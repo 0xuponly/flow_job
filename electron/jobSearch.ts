@@ -483,6 +483,34 @@ export function extractJobUrls(html: string, baseUrl: string, boardName: string)
     } else if (boardLower.includes('peopleperhour')) {
       // PeoplePerHour per-listing URLs: /hire/{slug}
       if (!pathname.startsWith('/hire/')) continue
+    } else if (boardLower.includes('eluta')) {
+      // Eluta's real per-job URLs are /spl/{slug} (single-job landing
+      // pages, server-rendered with JobPosting JSON-LD). The search
+      // page also links /jobs-at-{company}?imo=N employer index pages
+      // (via onclick navigation and employer-listing sidebars) that
+      // have no description — scraping them produced recurring
+      // missing-field errors. Require the /spl/ prefix.
+      if (!pathname.startsWith('/spl/')) continue
+    } else if (boardLower.includes('jobboom')) {
+      // Jobboom per-job URLs are /en/job-offer/{slug}_p{numericId}.
+      // The search page carries a sponsored banner anchored to
+      // /en/job/?id=GXXXX (id="searchResults_commandites_banner") plus
+      // facet/category links carrying the same id as a query param
+      // (/en/permanent-job/_t1?id=..., /en/jobs-part-time/_s1?id=...).
+      // All of those render "Job search by employer" shells —
+      // scraping them produced the same missing-field errors on every
+      // scan. Require the /en/job-offer/ path (some pages prefix the
+      // locale segment).
+      if (!pathname.includes('/job-offer/')) continue
+    } else if (boardLower.includes('workbc')) {
+      // WorkBC (browser board) is a hash-routed SPA: real job cards live
+      // in the fragment (`#/job-details/{id}`). The rendered page also
+      // carries legacy .aspx links (e.g. /Jobs-Careers.aspx) whose
+      // pathname slips past the generic ^\/jobs? prefix match because
+      // there's no boundary after "Jobs" — scraping that path yields a
+      // maintenance shell with no description (recurring error on every
+      // scan). Require a hash fragment.
+      if (!fullUrl.includes('#/')) continue
     } else {
       // Generic branch: require the URL path itself to look like a job
       // (the previous version also accepted links whose visible text
