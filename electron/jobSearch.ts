@@ -1379,7 +1379,7 @@ export async function scanAllBoards(
   const httpBoards = selectedBoards.filter((b) => !b.useBrowser)
   const browserBoards = selectedBoards.filter((b) => b.useBrowser)
   // Track per-board totals across locations for health recording
-  const boardTotals = new Map<string, { found: number; errored: boolean }>()
+  const boardTotals = new Map<string, { found: number; errors: number; errored: boolean }>()
   // Per-board accumulated scan time (ms) across all locations, used for
   // the scan-time estimate. Recorded even for errored/blocked boards.
   const boardScanMs = new Map<string, number>()
@@ -1416,9 +1416,10 @@ export async function scanAllBoards(
         for (let j = 0; j < results.length; j++) {
           const r = results[j]
           const boardName = chunk[j].name
-          const totals = boardTotals.get(boardName) || { found: 0, errored: false }
+          const totals = boardTotals.get(boardName) || { found: 0, errors: 0, errored: false }
           if (r.status === 'fulfilled') {
             totals.found += r.value.found
+            totals.errors += r.value.errors
             if (r.value.error) totals.errored = true
           } else {
             totals.errored = true
@@ -1440,9 +1441,25 @@ export async function scanAllBoards(
       break
     }
   }
-  // Record per-board health (-1 means errored with no listings)
+  // Record per-board health. The entry must reflect whether jobs were
+  // actually PROCESSED, not just seen (2026-09-06: nodesk/remote100k
+  // searched fine but every listing was Cloudflare-blocked; recording
+  // +found kept the picker's red flag blind to the outage).
+  // Precedence (first match wins):
+  //   board-level error (throw/abort flag) → -1, even if some listings
+  //     scraped first — a mid-scan throw means unreliable data.
+  //   found > 0 but none processed (every listing blocked/errored) → -1.
+  //   otherwise → +processed (partial credit; 0 when nothing found —
+  //     a legit "no jobs" scan is not an error).
   for (const [name, totals] of boardTotals) {
-    recordBoardResults(name, totals.errored && totals.found === 0 ? -1 : totals.found)
+    const processed = totals.found - totals.errors
+    if (totals.errored) {
+      recordBoardResults(name, -1)
+    } else if (totals.found > 0 && processed <= 0) {
+      recordBoardResults(name, -1)
+    } else {
+      recordBoardResults(name, processed)
+    }
   }
   // Record per-board scan times for the estimate. Skipped on cancel —
   // a partial run would poison the averages with artificially short times.
