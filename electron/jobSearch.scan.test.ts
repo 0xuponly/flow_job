@@ -320,6 +320,31 @@ describe('WorkBC extractor (regression: legacy .aspx links scraped as jobs)', ()
   })
 })
 
+describe('Work At A Startup extractor (regression: company wrappers scraped as jobs)', () => {
+  // WAS renders each job card as /companies/{companySlug} (company
+  // wrapper, only a short company blurb) linking to /jobs/{numericId}
+  // — the JobDetailPage route with full descriptionHtml. Requiring
+  // /jobs/{id} picks the page that actually has the description.
+  it('extracts zero listings from company-wrapper links', () => {
+    const shell = `<!DOCTYPE html><html><head><title>WAS</title></head><body>
+      <a href="/companies/sitefire">Sitefire</a>
+      <a href="/companies">All companies</a>
+    </body></html>`
+    expect(extractJobUrls(shell, 'https://www.workatastartup.com/jobs?query=developer', 'Work At A Startup')).toEqual([])
+  })
+
+  it('extracts real /jobs/{id} detail URLs', () => {
+    const grid = `<!DOCTYPE html><html><head><title>WAS</title></head><body>
+      <a href="/companies/sitefire">Sitefire</a>
+      <a href="/jobs/98761">Founding Product Engineer</a>
+    </body></html>`
+    const urls = extractJobUrls(grid, 'https://www.workatastartup.com/jobs?query=developer', 'Work At A Startup')
+    expect(urls.map((u) => u.url)).toEqual([
+      'https://www.workatastartup.com/jobs/98761'
+    ])
+  })
+})
+
 describe('rewired Cloudflare-blocked boards (regression: sitemap extractors admit non-job URLs)', () => {
   // These boards were re-rewired from Cloudflare-challenged search pages
   // to public sitemaps. The extractors must keep only real per-job URLs:
