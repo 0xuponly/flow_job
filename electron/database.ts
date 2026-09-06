@@ -269,10 +269,20 @@ export function loadStore(): Store {
     }
     if (!Array.isArray(store.settings.disabled_boards)) {
       // Per-board on/off list, populated by the Settings > Boards tab.
-      // Empty array = all boards enabled (current default for users
-      // upgrading to this version). Strings are board names matching
-      // `BOARDS[].name` in `electron/jobSearch.ts`.
-      store.settings.disabled_boards = []
+      // Strings are board names matching `BOARDS[].name` in
+      // `electron/boards.ts`. New default: the boards that were
+      // Cloudflare-walled in every scan (startup.jobs, Monster,
+      // Crypto.jobs, CryptoJobsList, Contra) ship disabled — their
+      // scraper logic stays intact for add-by-URL imports, but they
+      // no longer stall scans with per-listing 403s. Users can
+      // re-enable any of them in Settings > Boards.
+      store.settings.disabled_boards = [
+        'Startup.jobs',
+        'Monster',
+        'Crypto.jobs',
+        'CryptoJobsList',
+        'Contra'
+      ]
     }
     let jobsMigrated = false
     // Build a Set of dedup keys up front so the per-job dedup check is
