@@ -359,7 +359,11 @@ export function extractJobUrls(html: string, baseUrl: string, boardName: string)
   const anchorPattern = /<a[^>]+href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi
   let match: RegExpExecArray | null
   while ((match = anchorPattern.exec(html)) !== null) {
-    const href = match[1].trim()
+    // href attributes carry HTML-escaped entities (&amp; is the common
+    // one); fetching the raw value sends the literal string — Indeed's
+    // /rc/clk links then lose their bb/xkcb params and serve pages with
+    // no description (recurring missing-field errors).
+    const href = match[1].trim().replace(/&amp;/g, '&')
     const inner = match[2].replace(/<[^>]+>/g, '').trim()
     if (!href || href === '#' || href.startsWith('javascript:')) continue
 
