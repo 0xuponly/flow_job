@@ -20,6 +20,27 @@ export function groupOf(name: string): string {
   return BOARD_GROUP_OF[name] ?? name
 }
 
+// Expand failing board names to the full member list of their picker
+// group. The red "frequent errors" flag is group-level (the checkbox
+// goes red when ANY member is failing), so the "+/- Errors" bulk
+// button must toggle whole checkbox units — toggling only the failing
+// variant would leave the group partially selected and visually
+// unchecked. Names not present in `boards` (settings-disabled or
+// removed) are dropped; output is deduped and sorted.
+export function expandFailingToGroups(failing: string[], boards: { name: string }[]): string[] {
+  const membersByGroup = new Map<string, string[]>()
+  for (const b of boards) {
+    const g = groupOf(b.name)
+    const members = membersByGroup.get(g)
+    if (members) members.push(b.name)
+    else membersByGroup.set(g, [b.name])
+  }
+  const groups = new Set(failing.map(groupOf).filter((g) => membersByGroup.has(g)))
+  const out: string[] = []
+  for (const g of groups) out.push(...membersByGroup.get(g)!)
+  return out.sort()
+}
+
 // Group-based selection summary for a board list. Registry entries in
 // the same group collapse into one selectable unit; a group counts as
 // selected only when EVERY member is selected, matching the picker's

@@ -4,7 +4,7 @@ import { LocationPicker } from '../components/LocationPicker'
 import { parseLocationPicks } from '../utils'
 import type { LocationPick } from '../locations'
 import type { ScanResult, WorkType } from '../types'
-import { BOARD_TYPES, groupOf, groupSelection } from '../boardTypes'
+import { BOARD_TYPES, groupOf, groupSelection, expandFailingToGroups } from '../boardTypes'
 import { usePersistedState } from '../persistedState'
 import { applyProgressBatch, applyProgressMessage } from './scanProgress'
 
@@ -323,7 +323,12 @@ export default function ScanJobsPage() {
           // "enabled" (legacy behaviour) rather than filtering the
           // user to zero boards.
           const enabledBoardsFirstLoad = boards.filter((b) => b.enabled !== false)
-          const frequentErrors = new Set(findFrequentErrorBoards(enabledBoardsFirstLoad, health))
+          // Default-deselect whole groups that contain a failing
+          // board, so the group checkbox reads unchecked — matching
+          // the red flag, which is also group-level.
+          const frequentErrors = new Set(
+            expandFailingToGroups(findFrequentErrorBoards(enabledBoardsFirstLoad, health), enabledBoardsFirstLoad)
+          )
           setSelectedBoardsRaw(enabledBoardsFirstLoad.map((b) => b.name).filter((n) => !frequentErrors.has(n)))
         } else {
           // User already has a persisted selection. Strip any names
@@ -679,7 +684,13 @@ export default function ScanJobsPage() {
               // un-hide via the 👁/🙈 icon first, then this button
               // appears and lets them select the revealed boards.
               if (!showFrequentErrors) return null
-              const allSelected = frequentErrors.every((n) => selectedBoards.has(n))
+              // Toggle whole checkbox units: expand failing names to
+              // every member of their picker group, matching the red
+              // flag's group-level semantics. Toggling only the
+              // failing variant left the group partially selected and
+              // visually unchecked — the bug this fixes.
+              const failingBoards = expandFailingToGroups(frequentErrors, enabledBoards)
+              const allSelected = failingBoards.every((n) => selectedBoards.has(n))
               // Label collapses the "some selected" case into the same
               // "Select Errors" as the "none selected" case. Clicking
               // either way adds the rest; clicking when all-selected
@@ -696,9 +707,9 @@ export default function ScanJobsPage() {
                     setSelectedBoards((prev) => {
                       const next = new Set(prev)
                       if (allSelected) {
-                        for (const name of frequentErrors) next.delete(name)
+                        for (const name of failingBoards) next.delete(name)
                       } else {
-                        for (const name of frequentErrors) next.add(name)
+                        for (const name of failingBoards) next.add(name)
                       }
                       return next
                     })

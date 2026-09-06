@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { groupOf, groupSelection } from './boardTypes'
+import { groupOf, groupSelection, expandFailingToGroups } from './boardTypes'
 
 describe('groupOf', () => {
   it('maps variants to their canonical group', () => {
@@ -49,5 +49,40 @@ describe('groupSelection', () => {
 
   it('ignores names not in the board list', () => {
     expect(groupSelection(boards, new Set(['Nope']))).toEqual({ selected: 0, total: 3 })
+  })
+})
+
+describe('expandFailingToGroups', () => {
+  const boards = [
+    { name: 'Indeed' },
+    { name: 'Indeed (RSS)' },
+    { name: 'LinkedIn' },
+    { name: 'Monster' }
+  ]
+
+  it('expands a failing variant to every member of its group', () => {
+    // The red flag is group-level (any member failing makes the
+    // checkbox red), so the +/- Errors button must toggle the whole
+    // checkbox unit — otherwise the group stays partially selected
+    // and reads as unchecked.
+    expect(expandFailingToGroups(['Indeed (RSS)'], boards)).toEqual(['Indeed', 'Indeed (RSS)'])
+  })
+
+  it('keeps single-member failing boards as themselves', () => {
+    expect(expandFailingToGroups(['Monster'], boards)).toEqual(['Monster'])
+  })
+
+  it('expands multiple failing boards, deduped and sorted', () => {
+    expect(expandFailingToGroups(['Monster', 'Indeed (RSS)'], boards))
+      .toEqual(['Indeed', 'Indeed (RSS)', 'Monster'])
+  })
+
+  it('drops failing names that are not in the picker list (disabled/settings-off)', () => {
+    expect(expandFailingToGroups(['Monster', 'GhostBoard'], boards)).toEqual(['Monster'])
+    expect(expandFailingToGroups(['Indeed (RSS)'], [{ name: 'Monster' }])).toEqual([])
+  })
+
+  it('returns empty for empty input', () => {
+    expect(expandFailingToGroups([], boards)).toEqual([])
   })
 })
