@@ -822,14 +822,27 @@ export function nextConsecutiveBlocked(
   consecutiveBlocked: number
 ): number {
   let batchBlocked = 0
+  let counted = 0
   for (const r of results) {
-    if (r.status === 'rejected') continue
+    if (r.status === 'rejected') {
+      counted++
+      continue
+    }
     const { action, reason } = r.value
+    counted++
     if (action === 'error' && reason && !/^create failed/i.test(reason)) {
       batchBlocked++
     }
   }
-  return batchBlocked === results.length && batchBlocked > 0
+  // A batch counts as blocked when MOST of it errored, not all:
+  // Cloudflare is intermittently lenient, so a board-size block can
+  // let one static fetch through per few batches; that listing then
+  // dedups as already-in-DB ('skipped') and previously reset the
+  // streak to 0 — startup.jobs then ground through 95+ fully-blocked
+  // batches in a 100-minute stall without ever tripping the guard.
+  // Ties (0/2 of 4, 3 of 6) are NOT blocked: a batch that is half
+  // healthy proves the site is reachable.
+  return counted > 0 && batchBlocked * 2 > counted
     ? consecutiveBlocked + 1
     : 0
 }

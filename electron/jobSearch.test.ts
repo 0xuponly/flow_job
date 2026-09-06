@@ -237,13 +237,52 @@ describe('nextConsecutiveBlocked', () => {
     expect(nextConsecutiveBlocked(results, 2)).toBe(0)
   })
 
-  it('resets the counter when any listing succeeds', () => {
+  it('resets the counter when most listings succeed (tied or majority-healthy)', () => {
+    // 1-of-3 errored: site is clearly reachable.
     const results = [
       err('Scrape failed: TimeoutError: page.goto: Timeout 180000ms exceeded'),
       ok('added'),
-      err('Scrape failed: NS_ERROR_ABORT: Load failed')
+      ok('added')
     ]
     expect(nextConsecutiveBlocked(results, 2)).toBe(0)
+    // 3-of-6 ties: half healthy is reachable too.
+    const tied = [
+      err('Scrape failed: Timeout'),
+      ok('added'),
+      err('Scrape failed: Timeout'),
+      ok('added'),
+      err('Scrape failed: Timeout'),
+      ok('added')
+    ]
+    expect(nextConsecutiveBlocked(tied, 2)).toBe(0)
+  })
+
+  it('counts a mostly-errored batch as blocked (intermittent rescue must not reset the streak)', () => {
+    // Cloudflare is intermittently lenient: one static fetch may slip
+    // through per few batches, producing a single 'skipped' among
+    // errors. Found live when startup.jobs ground through 95+
+    // fully-blocked batches in a 100-minute stall because each lucky
+    // rescue reset the streak to 0.
+    const results = [
+      err('Scrape failed: This site blocked automated access (Cloudflare).'),
+      err('Scrape failed: This site blocked automated access (Cloudflare).'),
+      err('Scrape failed: This site blocked automated access (Cloudflare).'),
+      err('Scrape failed: This site blocked automated access (Cloudflare).'),
+      err('Scrape failed: This site blocked automated access (Cloudflare).'),
+      ok('skipped')
+    ]
+    expect(nextConsecutiveBlocked(results, 0)).toBe(1)
+    expect(nextConsecutiveBlocked(results, 2)).toBe(3)
+  })
+
+  it('still resets on a tied batch (half healthy proves the site is reachable)', () => {
+    const results = [
+      err('Scrape failed: This site blocked automated access (Cloudflare).'),
+      err('Scrape failed: This site blocked automated access (Cloudflare).'),
+      ok('added'),
+      ok('added')
+    ]
+    expect(nextConsecutiveBlocked(results, 1)).toBe(0)
   })
 
   it('returns 0 for an empty batch', () => {
