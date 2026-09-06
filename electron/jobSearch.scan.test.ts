@@ -379,6 +379,65 @@ describe('Work At A Startup extractor (regression: company wrappers scraped as j
   })
 })
 
+describe('Ladders extractor (regression: upgrade/corporate links scraped as jobs)', () => {
+  // The Ladders' real per-job URLs are /jobs/{companySlug}/{jobId}.
+  // The rendered page links /upgrade, /jobs/search-jobs (the search
+  // page), and /corporate/{terms,privacy,editorial-policy} — all of
+  // which passed the old single-URL rejection and errored.
+  it('extracts zero listings from upgrade, search, and corporate links', () => {
+    const shell = `<!DOCTYPE html><html><head><title>Ladders</title></head><body>
+      <a href="/upgrade">Upgrade</a>
+      <a href="/jobs/search-jobs">Search jobs</a>
+      <a href="/corporate/terms">Terms</a>
+      <a href="/corporate/privacy">Privacy</a>
+      <a href="/corporate/editorial-policy">Editorial Policy</a>
+    </body></html>`
+    expect(extractJobUrls(shell, 'https://www.theladders.com/jobs/search?q=developer', 'Ladders')).toEqual([])
+  })
+
+  it('extracts real /jobs/{company}/{id} detail URLs', () => {
+    const grid = `<!DOCTYPE html><html><head><title>Ladders</title></head><body>
+      <a href="/jobs/acme-corp/12345678">Senior Software Engineer</a>
+      <a href="/upgrade">Upgrade</a>
+    </body></html>`
+    const urls = extractJobUrls(grid, 'https://www.theladders.com/jobs/search?q=developer', 'Ladders')
+    expect(urls.map((u) => u.url)).toEqual([
+      'https://www.theladders.com/jobs/acme-corp/12345678'
+    ])
+  })
+})
+
+describe('Job Bank (GC) extractor (regression: RSS feed and hash links scraped as jobs)', () => {
+  // Job Bank's real per-job URLs are /jobsearch/jobposting/{id}. The
+  // search page also links the RSS feed
+  // (/jobsearch/feed/jobSearchRSSfeed;jsessionid=...), favourite
+  // popups (#favourite-popup-N), in-page anchors (#wb-cont), and
+  // /career-planning — all passed the generic path regex and errored;
+  // the feed URL recurs on every scan.
+  it('extracts zero listings from feed, hash, and career-planning links', () => {
+    const shell = `<!DOCTYPE html><html><head><title>Job Bank</title></head><body>
+      <a href="/jobsearch/feed/jobSearchRSSfeed;jsessionid=ABC?dkw=developer&amp;sort=D">RSS</a>
+      <a href="#favourite-popup-50209079">Save to favourites</a>
+      <a href="#wb-cont">Skip to main</a>
+      <a href="/career-planning">Career planning</a>
+    </body></html>`
+    expect(extractJobUrls(shell, 'https://www.jobbank.gc.ca/jobsearch/jobsearch?searchstring=developer', 'Job Bank (GC)')).toEqual([])
+  })
+
+  it('extracts real /jobsearch/jobposting/{id} URLs (with jsessionid suffix)', () => {
+    const card = (id) => `<a href="/jobsearch/jobposting/${id};jsessionid=ABC?source=searchresults" class="resultJobItem"><h3 class="title"><span class="new">New</span><span class="postedonJB">Posted on Job Bank <span class="description">This job was posted directly by the employer on Job Bank.</span></span><span class="noctitle">framing carpenter ${id}</span></h3><ul><li class="date">September 02, 2026</li><li class="business">Megastruct Developments Ltd</li><li class="location">Vancouver BC</li></ul></a>`
+    const grid = `<!DOCTYPE html><html><head><title>Job Bank</title></head><body>
+      ${card(50209079)}
+      ${card(50201021)}
+    </body></html>`
+    const urls = extractJobUrls(grid, 'https://www.jobbank.gc.ca/jobsearch/jobsearch?searchstring=developer', 'Job Bank (GC)')
+    expect(urls.map((u) => u.url).sort()).toEqual([
+      'https://www.jobbank.gc.ca/jobsearch/jobposting/50201021;jsessionid=ABC?source=searchresults',
+      'https://www.jobbank.gc.ca/jobsearch/jobposting/50209079;jsessionid=ABC?source=searchresults'
+    ])
+  })
+})
+
 describe('rewired Cloudflare-blocked boards (regression: sitemap extractors admit non-job URLs)', () => {
   // These boards were re-rewired from Cloudflare-challenged search pages
   // to public sitemaps. The extractors must keep only real per-job URLs:

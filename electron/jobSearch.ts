@@ -475,9 +475,12 @@ export function extractJobUrls(html: string, baseUrl: string, boardName: string)
       if (!/^\/(job|remote-job)\//.test(pathname)) continue
     } else if (boardLower.includes('ladders')) {
       // The Ladders listing cards link to /jobs/{companySlug}/{jobId}.
-      // Its nav links include /jobs/search-jobs, which is the search
-      // page itself, not a listing.
-      if (pathname === '/jobs/search-jobs') continue
+      // The rendered page also links /upgrade, /jobs/search-jobs (the
+      // search page itself), /corporate/terms, /corporate/privacy, and
+      // /corporate/editorial-policy — all of which passed the old
+      // single-URL rejection and errored with missing fields. Require
+      // the real per-job shape.
+      if (!/^\/jobs\/[^/]+\/\d+/.test(pathname)) continue
     } else if (boardLower.includes('dribbble')) {
       // Dribbble's real per-job URLs are /jobs/{numericId}-{slug}
       // (e.g. /jobs/183719-Graphic-Designer). The jobs page also links
@@ -513,6 +516,16 @@ export function extractJobUrls(html: string, baseUrl: string, boardName: string)
       // scan. Require the /en/job-offer/ path (some pages prefix the
       // locale segment).
       if (!pathname.includes('/job-offer/')) continue
+    } else if (boardLower.includes('jobbank') || boardLower.includes('job bank')) {
+      // Job Bank (GC) real per-job URLs are /jobsearch/jobposting/{id}
+      // (optionally with ;jsessionid and ?source=searchresults). The
+      // search page also links the RSS feed
+      // (/jobsearch/feed/jobSearchRSSfeed;jsessionid=...), favourite
+      // popups (#favourite-popup-N), in-page anchors (#wb-cont,
+      // #searchString), /career-planning, and RSS-aggregator CTAs —
+      // all of which passed the generic path regex and errored with
+      // missing fields (the feed URL recurs on every scan).
+      if (!/^\/jobsearch\/jobposting\/\d+/.test(pathname)) continue
     } else if (boardLower.includes('workbc')) {
       // WorkBC (browser board) is a hash-routed SPA: real job cards live
       // in the fragment (`#/job-details/{id}`). The rendered page also
@@ -561,7 +574,11 @@ export function extractJobUrls(html: string, baseUrl: string, boardName: string)
     const navPatterns = BOARD_NAV_TEXT_PATTERNS[boardName]
     if (navPatterns && navPatterns.some((re) => re.test(inner))) continue
 
-    if (inner.length > 2 && inner.length < 300) {
+    // The upper bound guards against nav/footer junk that swallows whole
+    // page regions (broken markup pairing an unrelated href with page
+    // text). Job Bank's "Posted on Job Bank" flag block pushes real
+    // cards' text to 277-347 chars, so the cap sits above that range.
+    if (inner.length > 2 && inner.length < 400) {
       results.push({ url: fullUrl, title: inner })
     }
   }
