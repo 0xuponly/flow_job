@@ -236,6 +236,90 @@ describe('Remote Rocketship extractor (regression: category pages wedged camoufo
   })
 })
 
+describe('Eluta extractor (regression: employer index links scraped as jobs)', () => {
+  // Eluta's real per-job URLs are /spl/{slug} (server-rendered with
+  // JobPosting JSON-LD). The search page's employer sidebar and
+  // onclick-navigated cards produce /jobs-at-{company}?imo=N links —
+  // company INDEX pages with no og:description and no individual job
+  // links — which produced recurring "missing fields" errors.
+  it('extracts zero listings from jobs-at employer links', () => {
+    const shell = `<!DOCTYPE html><html><head><title>Eluta.ca Search</title></head><body>
+      <a href="/jobs-at-atkinsréalis?imo=12">Jobs at AtkinsRéalis</a>
+      <a href="/jobs-at-coeur-mining?imo=12">Jobs at Coeur Mining</a>
+      <a href="/browse-jobs">Browse Jobs</a>
+      <a href="/search?q=developer">Search</a>
+    </body></html>`
+    expect(extractJobUrls(shell, 'https://www.eluta.ca/search?q=developer', 'Eluta.ca')).toEqual([])
+  })
+
+  it('extracts real /spl/ detail URLs', () => {
+    const grid = `<!DOCTYPE html><html><head><title>Eluta.ca Search</title></head><body>
+      <a href="/spl/account-manager-f9180f30c3e2aa85ede039eb75dd6458?imo=12">Account Manager</a>
+      <a href="/spl/full-stack-developer-ai-platform-2ab9f0c1?imo=12">Full Stack Developer</a>
+      <a href="/jobs-at-aritzia?imo=12">Jobs at Aritzia</a>
+    </body></html>`
+    const urls = extractJobUrls(grid, 'https://www.eluta.ca/search?q=developer', 'Eluta.ca')
+    expect(urls.map((u) => u.url)).toEqual([
+      'https://www.eluta.ca/spl/account-manager-f9180f30c3e2aa85ede039eb75dd6458?imo=12',
+      'https://www.eluta.ca/spl/full-stack-developer-ai-platform-2ab9f0c1?imo=12'
+    ])
+  })
+})
+
+describe('Jobboom extractor (regression: sponsored banner id links scraped as jobs)', () => {
+  // Jobboom's real per-job URLs are /en/job-offer/{slug}_p{numericId}.
+  // The search page carries a sponsored banner anchored to
+  // /en/job/?id=GXXXX plus facet links reusing the id as a query param
+  // — all of which render "Job search by employer" shells and produced
+  // the same missing-field error on every scan.
+  it('extracts zero listings from /en/job/?id= and facet links', () => {
+    const shell = `<!DOCTYPE html><html><head><title>Jobboom</title></head><body>
+      <a href="/en/job/?id=G353748">Featured employer</a>
+      <a href="/en/permanent-job/_t1?id=G353748">Permanent jobs</a>
+      <a href="/en/jobs-part-time/_s1?id=G353748">Part-time jobs</a>
+      <a href="/en/jobs?q=developer">All jobs</a>
+    </body></html>`
+    expect(extractJobUrls(shell, 'https://www.jobboom.com/en/jobs?q=developer', 'Jobboom')).toEqual([])
+  })
+
+  it('extracts real /en/job-offer/ URLs', () => {
+    const grid = `<!DOCTYPE html><html><head><title>Jobboom</title></head><body>
+      <a href="/en/job-offer/cuisinier-a-temps-partiel_hotel-honeyrosemontreal-a-tribute-portfolio-hotel_p3675355">Cuisinier</a>
+      <a href="/en/job/?id=G353748">Featured employer</a>
+    </body></html>`
+    const urls = extractJobUrls(grid, 'https://www.jobboom.com/en/jobs?q=developer', 'Jobboom')
+    expect(urls.map((u) => u.url)).toEqual([
+      'https://www.jobboom.com/en/job-offer/cuisinier-a-temps-partiel_hotel-honeyrosemontreal-a-tribute-portfolio-hotel_p3675355'
+    ])
+  })
+})
+
+describe('WorkBC extractor (regression: legacy .aspx links scraped as jobs)', () => {
+  // WorkBC (browser board) is hash-routed: real cards live in the
+  // fragment (#/job-details/{id}). The rendered page also carries
+  // legacy /Jobs-Careers.aspx links whose pathname slips past the
+  // generic ^\/jobs? prefix match (no boundary after "Jobs") — that
+  // path is a maintenance shell with no description.
+  it('extracts zero listings from path-only .aspx links', () => {
+    const shell = `<!DOCTYPE html><html><head><title>WorkBC</title></head><body>
+      <a href="/Jobs-Careers.aspx">Jobs and Careers</a>
+      <a href="/find-job/search-jobs">Search jobs</a>
+    </body></html>`
+    expect(extractJobUrls(shell, 'https://www.workbc.ca/find-job/search-jobs#/job-search;q=developer', 'WorkBC')).toEqual([])
+  })
+
+  it('extracts hash-fragment job cards', () => {
+    const grid = `<!DOCTYPE html><html><head><title>WorkBC</title></head><body>
+      <a href="/find-job/search-jobs#/job-details/49898249">Software Developer</a>
+      <a href="/Jobs-Careers.aspx">Jobs and Careers</a>
+    </body></html>`
+    const urls = extractJobUrls(grid, 'https://www.workbc.ca/find-job/search-jobs#/job-search;q=developer', 'WorkBC')
+    expect(urls.map((u) => u.url)).toEqual([
+      'https://www.workbc.ca/find-job/search-jobs#/job-details/49898249'
+    ])
+  })
+})
+
 describe('rewired Cloudflare-blocked boards (regression: sitemap extractors admit non-job URLs)', () => {
   // These boards were re-rewired from Cloudflare-challenged search pages
   // to public sitemaps. The extractors must keep only real per-job URLs:
