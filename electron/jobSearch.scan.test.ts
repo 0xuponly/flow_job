@@ -114,6 +114,38 @@ describe('run-level blocked-board bailout', () => {
   })
 })
 
+describe('default-disabled boards', () => {
+  // These 5 boards were Cloudflare-walled in every scan (per-listing 403s
+  // stalled runs for hours). They ship disabled by default — the scraper
+  // logic stays in BOARDS for add-by-URL imports — so a rename would
+  // silently re-enable them and reintroduce the stalls.
+  const DEFAULT_DISABLED = [
+    'Startup.jobs',
+    'Monster',
+    'Crypto.jobs',
+    'CryptoJobsList',
+    'Contra'
+  ]
+  const fixture = { disabled_boards: DEFAULT_DISABLED }
+
+  it('excludes all 5 default-disabled boards from the scan', async () => {
+    const getSettings = (await import('./database')).getSettings as ReturnType<typeof vi.fn>
+    getSettings.mockReturnValue({ ...getSettings(), ...fixture })
+    const result = await scanAllBoards({ keywords: 'x' })
+    const names = result.boards.map((b) => b.board)
+    for (const name of DEFAULT_DISABLED) expect(names).not.toContain(name)
+  })
+
+  it('still scans them when the user re-enables (filters.boards overrides disabled for explicit picks... only if not in disabled set)', async () => {
+    // Defence-in-depth check: disabled wins even over explicit picks,
+    // so a stale renderer selection can't bypass the toggle.
+    const getSettings = (await import('./database')).getSettings as ReturnType<typeof vi.fn>
+    getSettings.mockReturnValue({ ...getSettings(), ...fixture })
+    const result = await scanAllBoards({ keywords: 'x', boards: ['Contra'] })
+    expect(result.boards.map((b) => b.board)).not.toContain('Contra')
+  })
+})
+
 describe('PowerToFly extractor (regression: filter links scraped as jobs)', () => {
   // The search page at /jobs/ is a server-rendered shell whose only
   // anchors are filter/nav links (the job grid is JS-rendered). Before
