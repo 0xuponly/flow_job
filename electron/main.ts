@@ -286,6 +286,22 @@ function registerIpc(): void {
     }
   }
 
+  // Auto-queue: any job without a real fit score is enqueued for
+  // background scoring. Covers the scan paths that persist
+  // score=null (heuristic pre-filter, LLM-error fallback) plus legacy
+  // rows. The fit_score_version guard matches database.ts's
+  // documented invariant: score-less rows have version null/old, so
+  // they qualify; rows scored against the current CV (version match,
+  // real score) are skipped.
+  function enqueueScoreFitBacklog(): void {
+    const cvVersion = db.getSettings().cv_version ?? 0
+    for (const j of db.listJobs()) {
+      if (j.score === null && j.fit_score_version !== cvVersion) {
+        enqueue({ type: 'score_fit', jobId: j.id })
+      }
+    }
+  }
+
   function emitJobScoreUpdated(jobId: number): void {
     const job = db.getJob(jobId)
     if (!job) return
@@ -401,6 +417,10 @@ function registerIpc(): void {
       })
       _scanState.result = result
       markScanCompleted()
+      // Auto-queue: scan-added jobs that still lack a real fit score
+      // (heuristic pre-filter or LLM-error fallback paths) get picked
+      // up by the persistent queue processor.
+      enqueueScoreFitBacklog()
       // Notify all renderers that the scan has completed (success or cancelled)
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) win.webContents.send('scan:complete', result)
@@ -1195,6 +1215,11 @@ function registerIpc(): void {
 // harmless either way.
 function runDeferredStoreWork(): void {
   startQueueProcessor()
+  // Re-seed the score_fit backlog on every session start: jobs left
+  // score-less by a crashed/killed scan (or by queue items that burned
+  // their attempts) get re-enqueued here, so the backlog drains across
+  // sessions until empty.
+  enqueueScoreFitBacklog()
   scheduleNextAutoScan()
   // Fire-and-forget: the returned `stop` is intentionally dropped
   // (the interval lives for the app's lifetime; the helper

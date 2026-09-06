@@ -325,7 +325,7 @@ export interface ScanStatus {
   startedAt: number | null
 }
 
-export type AIQueueItemType = 'generate_cv' | 'generate_cover_letter' | 'regenerate_section' | 'verify' | 'tailor_job_docs'
+export type AIQueueItemType = 'generate_cv' | 'generate_cover_letter' | 'regenerate_section' | 'verify' | 'tailor_job_docs' | 'score_fit'
 export type AIQueueItemStatus = 'pending' | 'processing' | 'failed'
 
 export interface AIQueueItem {

@@ -44,6 +44,26 @@ async function processItem(item: AIQueueItem): Promise<void> {
         removeAIQueueItem(item.id)
         break
       }
+      case 'score_fit': {
+        // Lazy import breaks the main.ts <-> aiQueue.ts static cycle.
+        // scoreOneJobInBackground returns the updated job, or null when
+        // the job was deleted mid-run. score === null means the LLM
+        // scorer failed and the heuristic fallback stamped no score —
+        // throw so the caller's backoff path retries it later.
+        const { scoreOneJobInBackground } = await import('./main')
+        const updated = await scoreOneJobInBackground(item.jobId)
+        if (!updated) {
+          removeAIQueueItem(item.id)
+          return
+        }
+        if (updated.score == null) {
+          throw new Error(
+            updated.fit_last_error || 'LLM scorer fell back to heuristic (no score).'
+          )
+        }
+        removeAIQueueItem(item.id)
+        break
+      }
       case 'tailor_job_docs': {
         // Dynamic import keeps the processor free of the heavier
         // tailorJobDocs dependency (which in turn pulls in ai.ts's LLM
@@ -61,6 +81,17 @@ async function processItem(item: AIQueueItem): Promise<void> {
 
     const attempts = item.attempts + 1
     if (isRateLimit && attempts < 10) {
+      updateAIQueueItem(item.id, {
+        status: 'pending',
+        attempts,
+        lastError: msg,
+        nextRetryAt: Date.now() + backoffMs({ ...item, attempts })
+      })
+    } else if (item.type === 'score_fit' && !isRateLimit && attempts < 5) {
+      // A score_fit miss (LLM error / heuristic fallback) is usually
+      // transient — network hiccup, per-request 429 vs rate-limiter,
+      // provider blip. Retry a bounded number of times instead of
+      // abandoning the job's score forever.
       updateAIQueueItem(item.id, {
         status: 'pending',
         attempts,
@@ -94,7 +125,7 @@ export function stopQueueProcessor(): void {
 
 export { RateLimitError }
 
-async function processQueue(): Promise<void> {
+export async function processQueue(): Promise<void> {
   const queue = getAIQueue()
   const now = Date.now()
   const pending = queue.filter(
