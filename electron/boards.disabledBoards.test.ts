@@ -2,17 +2,23 @@ import { describe, it, expect } from 'vitest'
 import { BOARDS, DEFAULT_DISABLED_BOARDS, unionDisabledBoards } from './boards'
 
 describe('DEFAULT_DISABLED_BOARDS', () => {
-  // These 5 boards were Cloudflare-walled in every scan (per-listing 403s
+  // These boards were Cloudflare-walled in every scan (per-listing 403s
   // stalled runs for hours). The names must match `BOARDS[].name` exactly —
   // a rename here without a matching rename in BOARDS would silently
   // re-enable the board and reintroduce the stalls.
-  it('names exactly the 5 walled boards, each matching a BOARDS entry', () => {
+  it('names exactly the walled boards, each matching a BOARDS entry', () => {
     expect(DEFAULT_DISABLED_BOARDS).toEqual([
       'Startup.jobs',
       'Monster',
       'Crypto.jobs',
       'CryptoJobsList',
-      'Contra'
+      'Contra',
+      'CharityVillage',
+      'DailyRemote',
+      'NoDesk',
+      'Work At A Startup',
+      'Crossover',
+      'Hiring Cafe'
     ])
     const names = new Set(BOARDS.map((b) => b.name))
     for (const name of DEFAULT_DISABLED_BOARDS) {
@@ -35,7 +41,19 @@ describe('unionDisabledBoards', () => {
   })
 
   it('is idempotent: a list already containing all defaults is unchanged', () => {
-    const existing = ['Contra', 'Monster', 'Crypto.jobs', 'CryptoJobsList', 'Startup.jobs']
+    const existing = [
+      'Contra',
+      'Monster',
+      'Crypto.jobs',
+      'CryptoJobsList',
+      'Startup.jobs',
+      'CharityVillage',
+      'DailyRemote',
+      'NoDesk',
+      'Work At A Startup',
+      'Crossover',
+      'Hiring Cafe'
+    ]
     expect(unionDisabledBoards(existing, DEFAULT_DISABLED_BOARDS)).toEqual(existing)
   })
 
