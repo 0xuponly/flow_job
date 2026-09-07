@@ -15,6 +15,29 @@ const PREFERRED_RE = /\b(preferred|nice[- ]?to[- ]?haves?|bonus|plus(?:es)?|good
 // the typical headings that follow a required/preferred block.
 const RESET_RE = /^(about|overview|company|role|responsibilities|duties|benefits|perks|equal opportunity|what we|who we|why|how we|how to apply|apply now|join|our team|mission|vision|summary|what you'll do|what you will do|compensation|salary|interview process|working at|life at)\b/i
 
+// Canonical trailing-section headings, matched exactly (after markdown
+// stripping + lowercasing) before the prose gates apply: phrases like
+// "Who we are" or "What you'll do" contain be/modal verbs ("are", "do")
+// that the prose gate rightly rejects in longer lines, but as exact
+// heading forms they are unambiguous reset points.
+const RESET_EXACT = new Set([
+  'who we are',
+  'who we',
+  'what we do',
+  'what we offer',
+  "what you'll do",
+  'what you will do',
+  'about us',
+  'about the role',
+  'about the team',
+  'about the company',
+  'our story',
+  'why join us',
+  'how to apply',
+  'benefits',
+  'perks'
+])
+
 // Lines that start like prose, not like a heading. Guards every header
 // classification so body/bullet text never flips the section bucket.
 const HEADING_START_BLOCK_RE = /^(we|our|ours|you|your|you're|youre|this|that|these|those|it|its|there|they|their|the|i|me|my)\b/i
@@ -49,9 +72,11 @@ function isHeaderLine(line: string): { required: true } | { preferred: true } | 
   // Headers are short lines without terminal sentence punctuation.
   if (t.length > 60) return null
   if (/[.!?]$/.test(t)) return null
-  // List-item lines (starting with -, *, •, or a digit) are content,
-  // never headers — even when they contain a section word.
-  if (/^[-*•\d]/.test(t)) return null
+  // Content lines (bullets, digits, compensation figures) are never
+  // headers — even when they contain a section or preference word
+  // ("$150k–$190k plus equity" must not flip the bucket).
+  if (/^[-*•\d$]/.test(t)) return null
+  if (RESET_EXACT.has(t.toLowerCase())) return { reset: true }
   if (PREFERRED_RE.test(t) && looksLikeHeading(t)) return { preferred: true }
   if (REQUIRED_RE.test(t) && looksLikeHeading(t)) return { required: true }
   // Reset headings are gated the same way, so a wrapped content line

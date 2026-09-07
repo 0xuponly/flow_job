@@ -10,7 +10,310 @@ import {
   missingForKeywords
 } from './keywordExtractor'
 import { loadKeywordAllowlists, matchKey, KEYWORD_ALIASES } from './keywordAllowlists'
-import type { KeywordEntry } from './types'
+import type { KeywordEntry, KeywordResult } from './types'
+
+// ---------------------------------------------------------------------------
+// Fixture corpus: realistic job-description snippets that lock in bucketing
+// and top-keyword behavior. Each fixture asserts section buckets (required /
+// preferred / body) and the keywords that must (or must not) survive
+// extraction. These are regression anchors for future refactors.
+// ---------------------------------------------------------------------------
+
+interface Fixture {
+  name: string
+  jd: string
+  title?: string
+  requiredHas?: string[]
+  requiredNotHas?: string[]
+  preferredHas?: string[]
+  preferredNotHas?: string[]
+  bodyHas?: string[]
+  // Phrases that must appear in the extracted (top-30) keyword list.
+  keywordsContain?: string[]
+  // Phrases that must never appear in the extracted keyword list.
+  keywordsNotContain?: string[]
+  // Phrases that must appear with source 'title'.
+  titleKeywords?: string[]
+}
+
+const FIXTURES: Fixture[] = [
+  {
+    name: "startup posting with 'What you'll need' header",
+    jd: [
+      'Senior Backend Engineer',
+      '',
+      'About the role',
+      'We build payments infrastructure used by millions.',
+      '',
+      "What you'll need",
+      '- 5+ years of Python',
+      '- Experience with PostgreSQL and Redis',
+      '',
+      'Nice to have',
+      '- Kubernetes and Terraform',
+      '',
+      'Benefits',
+      'Competitive salary and equity'
+    ].join('\n'),
+    title: 'Senior Backend Engineer',
+    requiredHas: ['5+ years of python', 'postgresql and redis'],
+    preferredHas: ['kubernetes and terraform'],
+    bodyHas: ['payments infrastructure', 'Competitive salary'],
+    requiredNotHas: ['competitive salary'],
+    keywordsContain: ['python', 'postgres', 'redis', 'kubernetes', 'terraform', 'senior'],
+    keywordsNotContain: ['competitive salary']
+  },
+  {
+    name: 'all-caps Google-style posting',
+    jd: [
+      'Software Engineer, Cloud',
+      '',
+      'MINIMUM QUALIFICATIONS',
+      '- Experience with Java or Go',
+      '- Experience with SQL',
+      '',
+      'PREFERRED QUALIFICATIONS',
+      '- Experience with GCP',
+      '',
+      'ABOUT THE TEAM',
+      'The Cloud team builds developer tooling.'
+    ].join('\n'),
+    title: 'Software Engineer, Cloud',
+    requiredHas: ['java or go', 'experience with sql'],
+    preferredHas: ['experience with gcp'],
+    bodyHas: ['Cloud team builds developer tooling'],
+    requiredNotHas: ['experience with gcp'],
+    keywordsContain: ['java', 'go', 'gcp']
+  },
+  {
+    name: 'markdown-ish posting with ATX and bold headers',
+    jd: [
+      '# Staff Frontend Engineer',
+      '',
+      '## Requirements',
+      '- **Deep React expertise**',
+      '- TypeScript in production',
+      '',
+      '## Nice to have',
+      '- GraphQL experience',
+      '',
+      '## What we offer',
+      'Learning budget and remote-first culture'
+    ].join('\n'),
+    title: 'Staff Frontend Engineer',
+    requiredHas: ['deep react expertise', 'typescript in production'],
+    preferredHas: ['graphql experience'],
+    bodyHas: ['Learning budget'],
+    keywordsContain: ['react', 'typescript', 'graphql', 'staff'],
+    titleKeywords: ['staff']
+  },
+  {
+    name: 'finance analyst posting (no tech stack)',
+    jd: [
+      'Financial Analyst',
+      '',
+      'Qualifications',
+      '- 3+ years in financial modeling and valuation',
+      '- Advanced Excel skills',
+      '- Strong communication',
+      '',
+      'Preferred',
+      '- CFA charterholder or progress towards CFA',
+      '- Power BI experience',
+      '',
+      'About us',
+      'We advise on M&A transactions.'
+    ].join('\n'),
+    title: 'Financial Analyst',
+    requiredHas: ['financial modeling and valuation', 'advanced excel skills'],
+    preferredHas: ['cfa charterholder', 'power bi experience'],
+    bodyHas: ['M&A transactions'],
+    keywordsContain: ['communication', 'cfa']
+  },
+  {
+    name: 'low-latency trading engineer posting',
+    jd: [
+      'C++ Engineer — Low Latency Trading Systems',
+      '',
+      'Requirements',
+      '- Expert-level modern C++ (C++17/20)',
+      '- Experience with Linux performance tuning',
+      '- Knowledge of FIX protocol and market data feeds',
+      '',
+      'Nice to have',
+      '- kdb+/q time-series experience',
+      '',
+      'Who we are',
+      'A proprietary trading firm.'
+    ].join('\n'),
+    title: 'C++ Engineer — Low Latency Trading Systems',
+    requiredHas: ['modern c++', 'linux performance tuning', 'fix protocol'],
+    preferredHas: ['kdb+/q time-series'],
+    bodyHas: ['A proprietary trading firm'],
+    keywordsContain: ['c++', 'linux']
+  },
+  {
+    name: 'posting with no required/preferred sections at all',
+    jd: [
+      'Growth Marketer',
+      'We are a small team looking for a marketer who owns campaigns end to end.',
+      'You will run A/B testing, own analytics, and report on SEO performance.',
+      'Our stack includes Looker and Snowflake.'
+    ].join('\n'),
+    title: 'Growth Marketer',
+    requiredHas: [],
+    preferredHas: [],
+    bodyHas: ['owns campaigns end to end', 'report on SEO performance', 'Looker and Snowflake'],
+    keywordsContain: ['a/b testing', 'snowflake']
+  },
+  {
+    name: 'cloud/devops posting with bonus section',
+    jd: [
+      'Platform Engineer',
+      '',
+      'Requirements',
+      '- AWS (EKS, S3, IAM)',
+      '- Terraform and Helm',
+      '- CI/CD with GitHub Actions',
+      '',
+      'Bonus points',
+      '- Datadog observability',
+      '',
+      'Perks',
+      'Fully remote'
+    ].join('\n'),
+    title: 'Platform Engineer',
+    requiredHas: ['aws (eks, s3, iam)'.replace(',', ','), 'terraform and helm', 'ci/cd with github actions'],
+    preferredHas: ['datadog observability'],
+    bodyHas: ['Fully remote'],
+    keywordsContain: ['aws', 'terraform', 'helm', 'ci/cd', 'datadog']
+  },
+  {
+    name: "data posting with 'What you'll do' before requirements",
+    jd: [
+      'Data Engineer',
+      '',
+      "What you'll do",
+      'Build streaming pipelines powering analytics.',
+      '',
+      "What you'll need",
+      '- Spark and Airflow in production',
+      '- dbt and Snowflake modeling',
+      '',
+      'Nice to have',
+      '- Scala',
+      '',
+      'Compensation',
+      '$150k–$190k plus equity'
+    ].join('\n'),
+    title: 'Data Engineer',
+    requiredHas: ['spark and airflow', 'dbt and snowflake'],
+    preferredHas: ['scala'],
+    bodyHas: ['Build streaming pipelines', '$150k–$190k plus equity'],
+    keywordsContain: ['spark', 'airflow', 'dbt', 'snowflake', 'scala']
+  },
+  {
+    name: 'boilerplate-heavy preferred section stays clean',
+    jd: [
+      'Product Manager',
+      '',
+      'Requirements',
+      '- 5 years of product management',
+      '- Experience with SQL and analytics',
+      '',
+      'Bonus points',
+      '- Competitive salary expectations',
+      '- Health insurance familiarity',
+      '',
+      'Equal Opportunity',
+      'We are an equal opportunity employer.'
+    ].join('\n'),
+    title: 'Product Manager',
+    requiredHas: ['product management', 'sql and analytics'],
+    preferredHas: ['competitive salary expectations', 'health insurance familiarity'],
+    keywordsContain: ['product management'],
+    keywordsNotContain: ['equal opportunity', 'years experience']
+  },
+  {
+    name: 'aliased tech spelling in requirements',
+    jd: [
+      'Full Stack Engineer',
+      '',
+      'Requirements',
+      '- k8s in production',
+      '- JS and Node.js',
+      '- CI/CD ownership',
+      '',
+      'Nice to have',
+      '- Postgres tuning'
+    ].join('\n'),
+    title: 'Full Stack Engineer',
+    requiredHas: ['k8s in production', 'js and node.js', 'ci/cd ownership'],
+    preferredHas: ['postgres tuning'],
+    keywordsContain: ['kubernetes', 'javascript', 'node', 'ci/cd', 'postgres']
+  },
+  {
+    name: 'prose bullets without terminal punctuation and wrapped lines',
+    jd: [
+      'Machine Learning Engineer',
+      '',
+      'Overview',
+      'We ship ML features weekly.',
+      '',
+      'Responsibilities',
+      'Own the model lifecycle from prototype to production',
+      'Partner with product on roadmap',
+      '',
+      'Requirements',
+      'PyTorch and scikit-learn expertise across several domains',
+      'About the modeling stack you will own it end to end',
+      '',
+      'About the team',
+      'We are eight people.'
+    ].join('\n'),
+    title: 'Machine Learning Engineer',
+    requiredHas: ['pytorch and scikit-learn expertise', 'about the modeling stack'],
+    bodyHas: ['We ship ML features', 'We are eight people'],
+    keywordsContain: ['machine learning', 'pytorch', 'scikit-learn']
+  }
+]
+
+function checkFixture(f: Fixture) {
+  const sections = parseSections(f.jd)
+  if (f.title !== undefined) {
+    expect(sections.title, `${f.name}: title`).toBe(f.title)
+  }
+  for (const s of f.requiredHas ?? []) {
+    expect(sections.required, `${f.name}: required should contain "${s}"`).toContain(s)
+  }
+  for (const s of f.requiredNotHas ?? []) {
+    expect(sections.required, `${f.name}: required should not contain "${s}"`).not.toContain(s)
+  }
+  for (const s of f.preferredHas ?? []) {
+    expect(sections.preferred, `${f.name}: preferred should contain "${s}"`).toContain(s)
+  }
+  for (const s of f.preferredNotHas ?? []) {
+    expect(sections.preferred, `${f.name}: preferred should not contain "${s}"`).not.toContain(s)
+  }
+  for (const s of f.bodyHas ?? []) {
+    expect(sections.body, `${f.name}: body should contain "${s}"`).toContain(s)
+  }
+
+  const result: KeywordResult = extractJobKeywordsStructured(f.jd)
+  const phrases = result.keywords.map((k) => k.phrase)
+  for (const s of f.keywordsContain ?? []) {
+    expect(phrases, `${f.name}: keywords should contain "${s}"`).toContain(s)
+  }
+  for (const s of f.keywordsNotContain ?? []) {
+    expect(phrases, `${f.name}: keywords should not contain "${s}"`).not.toContain(s)
+  }
+  for (const s of f.titleKeywords ?? []) {
+    expect(
+      result.keywords.some((k) => k.phrase === s && k.source === 'title'),
+      `${f.name}: "${s}" should be a title-sourced keyword`
+    ).toBe(true)
+  }
+}
 
 describe('parseSections', () => {
   it('returns the first non-empty line as title', () => {
@@ -721,5 +1024,25 @@ describe('coverage-safe keyword matching (additive helpers)', () => {
     const keywords = extractJobKeywords(jd)
     expect(keywords).toContain('c++')
     expect(coverageForKeywords('I write C++ and C# daily', keywords)).toBeGreaterThan(0)
+  })
+})
+
+describe('JD fixture regression suite', () => {
+  for (const f of FIXTURES) {
+    it(`buckets and extracts: ${f.name}`, () => {
+      checkFixture(f)
+    })
+  }
+
+  it('covers the corpus breadth required by the brief', () => {
+    expect(FIXTURES.length).toBeGreaterThanOrEqual(8)
+    expect(FIXTURES.length).toBeLessThanOrEqual(12)
+  })
+
+  it('every fixture yields a non-empty keyword list', () => {
+    for (const f of FIXTURES) {
+      const phrases = extractJobKeywords(f.jd)
+      expect(phrases.length, f.name).toBeGreaterThan(0)
+    }
   })
 })
