@@ -4,7 +4,10 @@ import {
   extractPhases,
   extractJobKeywordsStructured,
   extractJobKeywords,
-  mergeKeywordResults
+  mergeKeywordResults,
+  keywordMatchPattern,
+  coverageForKeywords,
+  missingForKeywords
 } from './keywordExtractor'
 import { loadKeywordAllowlists, matchKey, KEYWORD_ALIASES } from './keywordAllowlists'
 import type { KeywordEntry } from './types'
@@ -639,5 +642,84 @@ describe('mergeKeywordResults', () => {
     const r = mergeKeywordResults(llm, [], lists)
     expect(r.unknownPhrases).toHaveLength(50)
     expect(r.keywords).toHaveLength(30)
+  })
+
+  it('canonicalizes aliases so LLM shorthand merges with rule spellings', () => {
+    const llm: KeywordEntry[] = [
+      { phrase: 'k8s', weight: 0.9, category: 'hard', source: 'body' }
+    ]
+    const rule: KeywordEntry[] = [
+      { phrase: 'kubernetes', weight: 0.5, category: 'hard', source: 'required' }
+    ]
+    const r = mergeKeywordResults(llm, rule, lists)
+    expect(r.keywords).toHaveLength(1)
+    expect(r.keywords[0]).toMatchObject({
+      phrase: 'kubernetes',
+      weight: 0.9,
+      source: 'required'
+    })
+  })
+
+  it('canonicalizes js/javascript across LLM and rule candidates', () => {
+    const llm: KeywordEntry[] = [
+      { phrase: 'js', weight: 0.8, category: 'hard', source: 'body' }
+    ]
+    const rule: KeywordEntry[] = [
+      { phrase: 'javascript', weight: 0.5, category: 'hard', source: 'title' }
+    ]
+    const r = mergeKeywordResults(llm, rule, lists)
+    expect(r.keywords).toHaveLength(1)
+    expect(r.keywords[0].phrase).toBe('javascript')
+    expect(r.keywords[0].source).toBe('title')
+  })
+
+  it('canonicalizes LLM-only unknown phrases too', () => {
+    const llm: KeywordEntry[] = [
+      { phrase: 'obscureframework', weight: 1.0, category: 'hard', source: 'body' }
+    ]
+    const r = mergeKeywordResults(llm, [], lists)
+    expect(r.unknownPhrases).toEqual(['obscureframework'])
+  })
+})
+
+describe('coverage-safe keyword matching (additive helpers)', () => {
+  it('matches tech tokens with trailing +/# that \\b can never match', () => {
+    expect(keywordMatchPattern('c++').test('Built high-throughput services in C++')).toBe(true)
+    expect(keywordMatchPattern('c#').test('Professional C# developer')).toBe(true)
+  })
+
+  it('rejects lookalike contexts around tech tokens', () => {
+    expect(keywordMatchPattern('c++').test('We ported the VC++ codebase')).toBe(false)
+    expect(keywordMatchPattern('c#').test('C#2 fragments')).toBe(false)
+    expect(keywordMatchPattern('.net').test('we use asp.net hosting')).toBe(false)
+    expect(keywordMatchPattern('.net').test('we build on .NET')).toBe(true)
+  })
+
+  it('keeps standard word-boundary semantics for plain words', () => {
+    expect(keywordMatchPattern('go').test('we use google cloud')).toBe(false)
+    expect(keywordMatchPattern('react').test('React and TypeScript')).toBe(true)
+  })
+
+  it('coverageForKeywords counts c++ as present where plain \\b coverage cannot', () => {
+    expect(coverageForKeywords('Systems code in C++ and C#', ['c++', 'c#'])).toBe(1)
+    expect(coverageForKeywords('Systems code in C++', ['c++', 'c#'])).toBeCloseTo(0.5)
+    expect(coverageForKeywords('any document', [])).toBe(0)
+  })
+
+  it('coverageForKeywords matches the plain semantics for ordinary phrases', () => {
+    expect(coverageForKeywords('react and typescript', ['react', 'typescript', 'python'])).toBeCloseTo(2 / 3)
+    expect(coverageForKeywords('we use google cloud', ['go'])).toBe(0)
+  })
+
+  it('missingForKeywords returns only unmatched keywords', () => {
+    expect(missingForKeywords('Systems code in C++', ['c++', 'c#'])).toEqual(['c#'])
+    expect(missingForKeywords('Built with C++ and C#', ['c++', 'c#'])).toEqual([])
+  })
+
+  it('coverage helpers work on extractor output end to end', () => {
+    const jd = 'Requirements: deep C++ and C# experience. C++ is core. C# is core.'
+    const keywords = extractJobKeywords(jd)
+    expect(keywords).toContain('c++')
+    expect(coverageForKeywords('I write C++ and C# daily', keywords)).toBeGreaterThan(0)
   })
 })

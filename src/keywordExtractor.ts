@@ -188,6 +188,16 @@ export function extractJobKeywordsStructured(description: string): KeywordResult
 
 const UNKNOWN_DOWNWEIGHT = 0.8
 
+// Single-token alias canonicalization for merge dedupe: LLM shorthand
+// ("k8s", "js") and rule/allowlist spellings ("kubernetes",
+// "javascript") collapse onto one canonical phrase instead of
+// appearing as two duplicate keywords. Multi-word phrases pass through
+// untouched.
+function canonicalPhrase(s: string): string {
+  const t = s.toLowerCase().trim()
+  return KEYWORD_ALIASES[t] ?? t
+}
+
 function isInAllowlist(phrase: string, lists: KeywordAllowlists): boolean {
   if (lists.hard.has(phrase)) return true
   if (lists.soft.has(phrase)) return true
@@ -204,7 +214,8 @@ function isPhraseSubstring(longer: string, shorter: string): boolean {
 /**
  * Merge LLM-extracted candidates with rule-pipeline candidates.
  *
- * - Phrase in both: LLM wins category+weight; rule wins source.
+ * - Phrase in both (after alias canonicalization): LLM wins
+ *   category+weight; rule wins source.
  * - LLM-only:
  *   - In allowlist: accept as-is.
  *   - Unknown: accept with weight *= 0.8, add to unknownPhrases.
@@ -217,9 +228,8 @@ export function mergeKeywordResults(
   rule: KeywordEntry[],
   lists: KeywordAllowlists
 ): KeywordResult {
-  const norm = (s: string) => s.toLowerCase().trim()
   const ruleByPhrase = new Map<string, KeywordEntry>()
-  for (const e of rule) ruleByPhrase.set(norm(e.phrase), e)
+  for (const e of rule) ruleByPhrase.set(canonicalPhrase(e.phrase), e)
 
   const merged: KeywordEntry[] = []
   const unknownPhrases = new Set<string>()
@@ -227,7 +237,7 @@ export function mergeKeywordResults(
 
   // 1. Process LLM candidates.
   for (const llmEntry of llm) {
-    const phraseNorm = norm(llmEntry.phrase)
+    const phraseNorm = canonicalPhrase(llmEntry.phrase)
     if (!phraseNorm) continue
     if (seen.has(phraseNorm)) continue
     seen.add(phraseNorm)
@@ -259,7 +269,7 @@ export function mergeKeywordResults(
 
   // 2. Append rule-only candidates (safety net).
   for (const ruleEntry of rule) {
-    const phraseNorm = norm(ruleEntry.phrase)
+    const phraseNorm = canonicalPhrase(ruleEntry.phrase)
     if (!phraseNorm) continue
     if (seen.has(phraseNorm)) continue
     seen.add(phraseNorm)
@@ -286,6 +296,46 @@ export function mergeKeywordResults(
 
 export function extractJobKeywords(description: string): string[] {
   return extractJobKeywordsStructured(description).keywords.map((k) => k.phrase)
+}
+
+/**
+ * Case-insensitive match pattern for a keyword phrase, with boundaries
+ * that tolerate tech punctuation. `\b` only works against word
+ * characters, so the plain `\\b${kw}\\b` used by simple consumers never
+ * matches phrases whose edge is a non-word char: "c++", "c#", or a
+ * hypothetical ".net" can never be found in a document. Here the
+ * standard boundary is kept for word edges and replaced by a
+ * lookaround over tech-token chars (+/#/.) for punctuation edges.
+ * Additive helper — consumers can adopt it without changing call-site
+ * signatures.
+ */
+export function keywordMatchPattern(phrase: string): RegExp {
+  const esc = phrase.replace(/[.*+?${}()|[\]\\]/g, '\\$&')
+  const left = /^[a-z0-9]/i.test(phrase) ? '\\b' : '(?<![a-z0-9+#])'
+  const right = /[a-z0-9]$/i.test(phrase) ? '\\b' : '(?![a-z0-9+#])'
+  return new RegExp(`${left}${esc}${right}`, 'i')
+}
+
+/**
+ * Coverage over `document` for `keywords`, identical in semantics to
+ * the documentRules helper but with boundary-tolerant matching so tech
+ * tokens like "c++" or "c#" count as present when written in the
+ * document. Additive; no existing signature changes.
+ */
+export function coverageForKeywords(document: string, keywords: string[]): number {
+  if (keywords.length === 0) return 0
+  let present = 0
+  for (const kw of keywords) {
+    if (keywordMatchPattern(kw).test(document)) present++
+  }
+  return present / keywords.length
+}
+
+/**
+ * Missing-keyword list companion to coverageForKeywords.
+ */
+export function missingForKeywords(document: string, keywords: string[]): string[] {
+  return keywords.filter((kw) => !keywordMatchPattern(kw).test(document))
 }
 
 function tokenize(section: string): string[] {
