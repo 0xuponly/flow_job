@@ -26,7 +26,11 @@ vi.mock('./database', () => ({
 // matching the style of the `callAI failure summary` tests above.
 
 import * as database from './database'
-import { callAI, extractJobKeywordsV3, KeywordExtractionError, RateLimitError, scoreJobFit } from './ai'
+import { callAI, extractJobKeywordsV3, KeywordExtractionError, RateLimitError, resetModelHealth, scoreJobFit } from './ai'
+
+beforeEach(() => {
+  resetModelHealth()
+})
 
 describe('extractJobKeywordsV3 (orchestrator)', () => {
   beforeEach(() => {
@@ -142,6 +146,7 @@ describe('KeywordExtractionError', () => {
 describe('callAI failure summary', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    resetModelHealth()
   })
 
   it('throws RateLimitError whose first line names the configured model count when all are rate limited', async () => {
@@ -186,6 +191,7 @@ describe('callAI failure summary', () => {
 describe('scoreJobFit error passthrough', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    resetModelHealth()
   })
 
   it('surfaces the callAI failure with the configured model count and no extra wrapper prefix', async () => {
@@ -215,6 +221,7 @@ describe('scoreJobFit error passthrough', () => {
 describe('callAI model pool hygiene', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    resetModelHealth()
     delete process.env.FLOW_JOB_MAX_TOKENS
   })
 
@@ -280,6 +287,103 @@ describe('callAI model pool hygiene', () => {
     await callAI('sys', 'user')
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
     expect(body.max_tokens).toBe(512)
+  })
+})
+
+describe('callAI resilient failover', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    resetModelHealth()
+  })
+
+  it('coalesces duplicate concurrent requests into a single fetch', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 'm1', name: 'chat', enabled: true, base_url: 'https://openrouter.ai', model: 'openai/gpt-4o-mini', api_key: 'k' } as any
+    ])
+    let fetchCount = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      fetchCount++
+      await new Promise((r) => setTimeout(r, 10))
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'shared response' } }]
+      }), { status: 200 })
+    }))
+
+    const [a, b] = await Promise.all([
+      callAI('sys', 'user'),
+      callAI('sys', 'user')
+    ])
+    expect(a.content).toBe('shared response')
+    expect(b.content).toBe('shared response')
+    expect(fetchCount).toBe(1)
+  })
+
+  it('skips a model on cooldown after a 429 and returns a cooldown error when all are cooling', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 'm1', name: 'a', enabled: true, base_url: 'https://openrouter.ai', model: 'a', api_key: 'k' } as any,
+      { id: 'm2', name: 'b', enabled: true, base_url: 'https://openrouter.ai', model: 'b', api_key: 'k' } as any
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 429 })))
+
+    await expect(callAI('sys', 'user')).rejects.toBeInstanceOf(RateLimitError)
+
+    // Second call immediately after should find all models on cooldown and
+    // throw without making any new fetch requests.
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockClear()
+    await expect(callAI('sys', 'user')).rejects.toBeInstanceOf(RateLimitError)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('opens a circuit breaker for 401/402/404 and skips the dead model', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 'm1', name: 'dead', enabled: true, base_url: 'https://openrouter.ai', model: 'dead', api_key: 'k' } as any,
+      { id: 'm2', name: 'live', enabled: true, base_url: 'https://openrouter.ai', model: 'live', api_key: 'k' } as any
+    ])
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string)
+      const status = body.model === 'dead' ? 401 : 200
+      const content = body.model === 'dead' ? '' : 'ok'
+      return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await callAI('sys', 'user')
+    expect(result.content).toBe('ok')
+    // First call tried dead (401) then live.
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    fetchMock.mockClear()
+    const result2 = await callAI('sys', 'user')
+    expect(result2.content).toBe('ok')
+    // Second call skipped the circuit-broken dead model entirely.
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body.model).toBe('live')
+  })
+
+  it('respects 429 cooldown and retries after the cooldown expires', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 'm1', name: 'a', enabled: true, base_url: 'https://openrouter.ai', model: 'a', api_key: 'k' } as any
+    ])
+    let calls = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls++
+      if (calls === 1) return new Response('', { status: 429 })
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 })
+    }))
+
+    await expect(callAI('sys', 'user')).rejects.toBeInstanceOf(RateLimitError)
+    // Immediate retry is blocked by cooldown.
+    await expect(callAI('sys', 'user')).rejects.toBeInstanceOf(RateLimitError)
+
+    // Advance past the maximum 429 backoff (10 minutes).
+    vi.advanceTimersByTime(11 * 60 * 1000)
+    const result = await callAI('sys', 'user')
+    expect(result.content).toBe('ok')
+
+    vi.useRealTimers()
   })
 })
 
