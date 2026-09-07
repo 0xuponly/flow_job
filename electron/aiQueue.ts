@@ -71,6 +71,10 @@ async function processItem(item: AIQueueItem): Promise<void> {
         // lazy-load pattern other optional call sites already use.
         const { tailorJobDocsForJob } = await import('./tailorJobDocs')
         await tailorJobDocsForJob(item.jobId)
+        // Generation no longer sets status itself; refresh the
+        // doc-derived status (sourced <-> reviewing) after both docs land.
+        const { recomputeJobStatusFromDocs } = await import('./database')
+        recomputeJobStatusFromDocs(item.jobId)
         removeAIQueueItem(item.id)
         break
       }

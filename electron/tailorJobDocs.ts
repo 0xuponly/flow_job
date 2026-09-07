@@ -8,8 +8,7 @@ import {
 import {
   getJob,
   writeDocuments,
-  writeTailorTimingFields,
-  setJobStatus
+  writeTailorTimingFields
 } from './database'
 import { log } from './logger'
 
@@ -105,9 +104,11 @@ export async function tailorJobDocsForJob(jobId: number): Promise<TailorJobDocsR
     lastError: pickErrorMessage(cvFailed, cv.error, clFailed, cl.error)
   })
 
-  if (!cvFailed && !clFailed) {
-    await setJobStatus(jobId, 'ready')
-  }
+  // Status is intentionally NOT set here. Generation no longer promotes
+  // jobs to 'ready' (or any other status): the doc-derived recompute in
+  // database.ts moves sourced -> reviewing once both docs exist, and
+  // 'ready' is reserved for the user's own decision. main.ts triggers
+  // recompute after the tailor IPC completes.
 
   return { cvId: ids.cvId, clId: ids.clId, ms_cv: cv.ms, ms_cl: cl.ms }
 }

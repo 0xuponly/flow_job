@@ -28,6 +28,8 @@ export interface Job {
   salary_range: string | null
   requirements: string | null
   application_requirements: string | null
+  // 1 = user set this status explicitly; doc recompute must skip it.
+  manual_status?: 0 | 1
   hiring_manager: string | null
   employment_type: string | null
   work_mode: string | null

@@ -28,6 +28,10 @@ export interface Job {
   salary_range: string | null
   requirements: string | null
   application_requirements: string | null
+  // 1 = the user set this job's status explicitly (Pipeline drag,
+  // JobDetail status select, mark-applied flow). Doc-driven recompute
+  // skips these jobs entirely so their status is never overwritten.
+  manual_status?: 0 | 1
   hiring_manager: string | null
   employment_type: string | null
   work_mode: string | null
@@ -227,6 +231,12 @@ export interface Settings {
   auto_tailor_on_scan: boolean
   auto_tailor_min_fit: number
   quick_apply_shortcut: string | null
+  // One-shot gates for status migrations. 'statuses_recomputed' backfilled
+  // the original doc-derived rule; 'statuses_manual_v2' demotes jobs that
+  // the old rule auto-promoted to 'ready' on verification (now a
+  // user-only status).
+  statuses_recomputed: string
+  statuses_manual_v2: string
 }
 
 export type MatchGrade = 'S' | 'A' | 'B' | 'C' | 'D' | 'F' | null

@@ -6,6 +6,7 @@ import { getOrCreateDek, encryptJson, decryptJson, deleteDek, encryptionMode } f
 import { formatLocation, canonicalizeCountry, countryNameFromCode, decodeEntities, normalizeTitle, normalizeCompany, normalizeSalary, dedupKey } from './utils'
 import { normalizeEmploymentType, normalizeWorkMode } from './employmentType'
 import { matchGradeFor } from './matchGrade'
+import { nextStatusFromDocs } from './docStatus'
 import { DEFAULT_DISABLED_BOARDS, DEFAULT_DISABLED_BOARDS_V1, DEFAULT_DISABLED_BOARDS_V2_ADDITIONS, unionDisabledBoards } from './boards'
 import type {
   ApiModelConfig,
@@ -96,6 +97,7 @@ function defaultStore(): Store {
       title_casing_normalized: '',
       title_casing_normalized_v2: '',
       statuses_recomputed: '',
+      statuses_manual_v2: '',
       backup_path: '',      backup_last_success_at: '',
       backup_last_error: '',
       passphrase: '',
@@ -628,6 +630,7 @@ export function createJob(
     work_mode: workModeNormalized,
     source: input.source ?? null,
     status: 'sourced',
+    manual_status: 0,
     score: input.score !== undefined ? (input.score ?? null) : 0.31,
     fit_rationale: input.fit_rationale ?? null,
     fit_breakdown: input.fit_breakdown ?? null,
@@ -717,6 +720,16 @@ export function updateJob(
       : existing.work_mode,
     source: fields.source !== undefined ? (fields.source ?? null) : existing.source,
     status: fields.status ?? existing.status,
+    // An explicitly-set status is user-owned. Programmatic flows reach
+    // for the same IPC: 'tailoring' is the transient JobDetail working
+    // state and the fit scorers never pass status, so only genuinely
+    // user-driven transitions (Pipeline drag/select, mark applied,
+    // manual review states) get the sticky flag. recompute skips
+    // manual_status jobs so documents can never override the choice.
+    manual_status:
+      fields.status !== undefined && fields.status !== existing.status && fields.status !== 'tailoring'
+        ? 1
+        : existing.manual_status,
     score: fields.score !== undefined ? (fields.score ?? null) : existing.score,
     match_grade: fields.score !== undefined ? matchGradeFor(fields.score ?? null) : existing.match_grade,
     fit_rationale: fields.fit_rationale !== undefined ? (fields.fit_rationale ?? null) : existing.fit_rationale,
@@ -1097,44 +1110,36 @@ export function updateDocumentVerification(
 // documents are added, updated, deleted, or their verification score
 // changes. Single source of truth for the doc-derived status transitions.
 //
-// Rule:
+// Rule (manual-status model):
+//   - Doc verification never sets 'ready'. 'ready' is a USER decision:
+//     the user reviewed the generated documents and moved the job
+//     forward (Pipeline drag / JobDetail status select). Documents only
+//     ever drive 'sourced' (no/partial docs) or 'reviewing' (both docs
+//     exist, however they scored).
 //   - Never overwrite a status the user has moved past the doc pipeline
-//     (applied, interviewing, offer, rejected, withdrawn).
-//   - Otherwise, if the job has both a CV and a cover letter with
-//     verification_score >= 70, status = 'ready'.
-//   - Otherwise, if the job has BOTH a CV and a cover letter (regardless
-//     of verification), status = 'reviewing'. Generating only one of the
-//     two keeps the job in 'sourced'.
-//   - With no docs (or only one type), status = 'sourced'.
-const DOC_PROTECTED_STATUSES: JobStatus[] = ['applied', 'interviewing', 'offer', 'rejected', 'withdrawn']
-
+//     (applied, interviewing, offer, rejected, withdrawn) — and never
+//     overwrite 'ready' either: once the user promoted the job there,
+//     regenerating or re-verifying documents must not yank it back.
+//   - Jobs whose status was set explicitly by the user carry
+//     manual_status=1 and are skipped by recompute entirely, so even
+//     sourced/reviewing stick once the user chose them.
 export function recomputeJobStatusFromDocs(jobId: number): JobStatus | null {
   const s = loadStore()
   const jobIdx = s.jobs.findIndex((j) => j.id === jobId)
   if (jobIdx === -1) return null
   const current = s.jobs[jobIdx].status
-  if (DOC_PROTECTED_STATUSES.includes(current)) return current
+  if (s.jobs[jobIdx].manual_status === 1) return current
 
   const docs = s.documents.filter((d) => d.job_id === jobId)
-  const cv = docs.find((d) => d.type === 'cv')
-  const cl = docs.find((d) => d.type === 'cover_letter')
+  const next = nextStatusFromDocs(current, {
+    hasCv: docs.some((d) => d.type === 'cv'),
+    hasCl: docs.some((d) => d.type === 'cover_letter'),
+    // Verification scores no longer drive status; passed for shape only.
+    cvVerified: (docs.find((d) => d.type === 'cv')?.verification_score ?? 0) >= 70,
+    clVerified: (docs.find((d) => d.type === 'cover_letter')?.verification_score ?? 0) >= 70
+  })
+  if (next === null) return current
 
-  let next: JobStatus
-  if (docs.length === 0 || !cv || !cl) {
-    // No docs yet, or only one of CV/cover letter exists. Stay in
-    // Sourced — Reviewing should only kick in once BOTH documents
-    // have been generated, even before verification passes.
-    next = 'sourced'
-  } else if (
-    (cv.verification_score ?? 0) >= 70 &&
-    (cl.verification_score ?? 0) >= 70
-  ) {
-    next = 'ready'
-  } else {
-    next = 'reviewing'
-  }
-
-  if (next === current) return current
   s.jobs[jobIdx] = { ...s.jobs[jobIdx], status: next, updated_at: now() }
   persistStore()
   return next
@@ -2037,6 +2042,36 @@ export function recomputeAllJobStatuses(): { updated: number; total: number } {
 
 export function hasStatusesRecomputed(): boolean {
   return loadStore().settings.statuses_recomputed === '1'
+}
+
+/**
+ * One-shot migration for the manual-status rule change: the OLD doc rule
+ * auto-promoted jobs to 'ready' whenever both documents verified >= 70.
+ * 'ready' is now user-only, so demote every auto-promoted 'ready' job
+ * back to 'reviewing' (both docs exist there by definition). Jobs a user
+ * genuinely promoted are indistinguishable from auto-promoted ones — the
+ * old rule never set manual_status — so all 'ready' jobs are demoted;
+ * the user re-promotes the ones they actually reviewed. Protected
+ * statuses (applied and beyond) are left untouched: those transitions
+ * were always user- or application-driven.
+ */
+export function demoteAutoReadyJobs(): { updated: number; total: number } {
+  const s = loadStore()
+  let updated = 0
+  for (const j of s.jobs) {
+    if (j.status === 'ready') {
+      j.status = 'reviewing'
+      j.updated_at = now()
+      updated++
+    }
+  }
+  s.settings.statuses_manual_v2 = '1'
+  persistStore()
+  return { updated, total: s.jobs.length }
+}
+
+export function hasStatusesManualV2(): boolean {
+  return loadStore().settings.statuses_manual_v2 === '1'
 }
 
 export async function backfillJobPostingDates(): Promise<number> {

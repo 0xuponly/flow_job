@@ -1429,6 +1429,21 @@ function runDeferredStoreWork(): void {
     }
   }
 
+  // One-shot v2: the old rule auto-promoted verified jobs to 'ready'.
+  // 'ready' is now user-only, so demote those auto-promotions back to
+  // 'reviewing'. Runs after the recompute backfill so both land before
+  // the UI ever renders. Idempotent — gated by its own flag.
+  if (!db.hasStatusesManualV2() && db.listJobs().length > 0) {
+    try {
+      const result = db.demoteAutoReadyJobs()
+      if (result.updated > 0) {
+        log.startup.info(`Demoted ${result.updated} auto-ready jobs to reviewing (manual-status rule).`)
+      }
+    } catch (err) {
+      log.startup.error('Manual-status migration failed:', err)
+    }
+  }
+
   // One-shot: bump the global CV version so the bootstrap score pass re-scores
   // every job that's currently holding a heuristic-only fit score. This
   // self-heals the bug where the LLM scorer silently fell back to a keyword
