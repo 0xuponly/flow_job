@@ -530,6 +530,45 @@ describe('href entity unescaping (regression: Indeed /rc/clk params lost to &amp
   })
 })
 
+describe('JSON-LD listings are filtered through per-board detail rules', () => {
+  function jsonLdBlock(url: string) {
+    return `<script type="application/ld+json">{"@type":"JobPosting","title":"Test","url":"${url}"}</script>`
+  }
+
+  it('drops Jobboom sponsored /en/job/?id=GXXXX shell URLs', () => {
+    const html = `<html><head><title>Jobboom</title></head><body>
+      ${jsonLdBlock('https://www.jobboom.com/en/job/?id=G12345')}
+      ${jsonLdBlock('https://www.jobboom.com/en/job-offer/cook_hotel-test_p1234567')}
+    </body></html>`
+    const urls = extractJobUrls(html, 'https://www.jobboom.com/en/jobs?q=developer', 'Jobboom')
+    expect(urls.map((u) => u.url)).toEqual([
+      'https://www.jobboom.com/en/job-offer/cook_hotel-test_p1234567'
+    ])
+  })
+
+  it('drops Eluta /jobs-at-{company} employer index URLs from JSON-LD', () => {
+    const html = `<html><head><title>Eluta</title></head><body>
+      ${jsonLdBlock('https://www.eluta.ca/jobs-at-mcdonalds?imo=12')}
+      ${jsonLdBlock('https://www.eluta.ca/spl/software-developer-test-co-abc123?imo=12')}
+    </body></html>`
+    const urls = extractJobUrls(html, 'https://www.eluta.ca/search?q=developer', 'Eluta.ca')
+    expect(urls.map((u) => u.url)).toEqual([
+      'https://www.eluta.ca/spl/software-developer-test-co-abc123?imo=12'
+    ])
+  })
+
+  it('drops Google Careers named filter pages from JSON-LD', () => {
+    const html = `<html><head><title>Google Careers</title></head><body>
+      ${jsonLdBlock('https://www.google.com/about/careers/applications/jobs/results/how-we-hire?q=&location=Vancouver&hl=en-GB')}
+      ${jsonLdBlock('https://www.google.com/about/careers/applications/jobs/results/123456')}
+    </body></html>`
+    const urls = extractJobUrls(html, 'https://www.google.com/about/careers/applications/jobs/results?q=developer', 'Google Careers')
+    expect(urls.map((u) => u.url)).toEqual([
+      'https://www.google.com/about/careers/applications/jobs/results/123456'
+    ])
+  })
+})
+
 describe('rewired Cloudflare-blocked boards (regression: sitemap extractors admit non-job URLs)', () => {
   // These boards were re-rewired from Cloudflare-challenged search pages
   // to public sitemaps. The extractors must keep only real per-job URLs:
