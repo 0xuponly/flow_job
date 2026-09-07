@@ -370,7 +370,6 @@ export function detectSource(hostname: string): string | undefined {
   if (hostname.includes('workbc.ca')) return 'WorkBC'
   if (hostname.includes('careerbeacon.com')) return 'CareerBeacon'
   if (hostname.includes('charityvillage.com')) return 'CharityVillage'
-  if (hostname.includes('crypto-careers.com')) return 'Crypto Careers'
   if (hostname.includes('cryptorecruit.com')) return 'Cryptorecruit'
   if (hostname === 'remote3.co') return 'Remote3'
   if (hostname.includes('startup.jobs')) return 'Startup.jobs'

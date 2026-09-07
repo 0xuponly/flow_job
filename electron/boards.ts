@@ -275,11 +275,6 @@ export const BOARDS: BoardConfig[] = [
     }
   },
   {
-    name: 'Crypto Careers',
-    searchUrl: (k) => `https://www.crypto-careers.com/jobs?q=${encodeURIComponent(k)}`,
-    useBrowser: true
-  },
-  {
     name: 'Remote3',
     searchUrl: (k) => `https://remote3.co/jobs?q=${encodeURIComponent(k)}`,
     useBrowser: true
