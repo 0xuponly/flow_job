@@ -188,7 +188,7 @@ Eluta.ca, Workopolis, Jobboom, WorkBC, CareerBeacon, Vancouver Jobs, Built
 In Vancouver/Toronto, UToronto), and startup / crypto / niche (Wellfound,
 Y Combinator, Built In, Selby Jennings, Braintrust, Google Careers,
 CareerHound, Idealist, CharityVillage, CVCA, Top Startups, Rocketships,
-Arc, plus a Crypto section: Crypto Careers, Cryptorecruit, Remote3,
+Arc, plus a Crypto section: Cryptorecruit, Remote3,
 Cryptocurrency Jobs, CryptoJobsList, cryptojobs.com, Crypto.jobs,
 Web3.career, Startup.jobs).
 

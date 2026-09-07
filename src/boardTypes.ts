@@ -81,7 +81,6 @@ export const BOARD_TYPES: { label: string; boards: string[] }[] = [
   {
     label: 'Crypto',
     boards: [
-      'Crypto Careers',
       'Cryptorecruit',
       'Cryptocurrency Jobs',
       'CryptoJobsList',
