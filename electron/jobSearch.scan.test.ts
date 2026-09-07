@@ -110,8 +110,27 @@ describe('run-level blocked-board bailout', () => {
     expect(cv).toHaveLength(1)
     expect(cv[0].found).toBe(40)
     expect(cv[0].errors).toBe(40)
+    expect(cv[0].error).toBe('walled')
     expect(result.totalFound).toBe(40)
     expect(result.totalErrors).toBe(40)
+  })
+
+  it('bails an HTTP board after 3 consecutive blocked batches without extra fetches', async () => {
+    const result = await scanAllBoards({
+      keywords: 'data',
+      boards: ['CharityVillage'],
+      locations: [{ display: 'Vancouver' }]
+    })
+
+    const cv = result.boards.find((b) => b.board === 'CharityVillage')
+    expect(cv).toBeDefined()
+    // 40 listings, concurrency 6 -> 7 batches. Bail after 3 batches
+    // (18 listings processed), so the remaining 22 are never fetched.
+    expect(cv!.found).toBe(40)
+    expect(cv!.errors).toBe(40)
+    expect(cv!.added).toBe(0)
+    expect(cv!.skipped).toBe(0)
+    expect(cv!.error).toBe('walled')
   })
 })
 

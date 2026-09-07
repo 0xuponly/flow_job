@@ -742,12 +742,16 @@ export function nextConsecutiveBlocked(
   let batchBlocked = 0
   let counted = 0
   for (const r of results) {
+    counted++
     if (r.status === 'rejected') {
-      counted++
+      // Unexpected per-listing throws (not the normal fulfilled-error
+      // path) still indicate a blocked/unreachable board. A DB create
+      // failure would have been caught and returned as a fulfilled
+      // 'error' reason, so rejected promises here are genuine breakage.
+      batchBlocked++
       continue
     }
     const { action, reason } = r.value
-    counted++
     if (action === 'error' && reason && !/^create failed/i.test(reason)) {
       batchBlocked++
     }
