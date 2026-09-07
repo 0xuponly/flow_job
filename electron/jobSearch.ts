@@ -379,6 +379,8 @@ function isJobDetailUrl(fullUrl: string, boardName: string): boolean {
   } else if (boardLower.includes('indeed')) {
     if (!pathname.includes('/viewjob') && !pathname.includes('/rc/')) return false
   } else if (boardLower.includes('web3.career')) {
+    // Salary / learn / hire index pages are never listings.
+    if (/^\/(web3-salaries|learn-web3|hire)\b/i.test(pathname)) return false
     if (!/^\/[^/]+\/\d+\/?$/.test(pathname)) return false
   } else if (boardLower.includes('built in')) {
     if (!/^\/job\/[^/]+\/\d+\/?$/.test(pathname)) return false

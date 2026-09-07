@@ -567,6 +567,30 @@ describe('JSON-LD listings are filtered through per-board detail rules', () => {
       'https://www.google.com/about/careers/applications/jobs/results/123456'
     ])
   })
+
+  it('drops web3.career /web3-salaries/ pages at discovery time', () => {
+    const html = `<html><head><title>Web3.career</title></head><body>
+      <a href="/web3-salaries/quantitative-developer">Salary: Quant Dev</a>
+      <a href="/learn-web3/tutorial">Learn Web3</a>
+      <a href="/hire/ai">Hire AI</a>
+      <a href="/binance-software-engineer/152415">Software Engineer</a>
+    </body></html>`
+    const urls = extractJobUrls(html, 'https://web3.career/', 'Web3.career')
+    expect(urls.map((u) => u.url)).toEqual(['https://web3.career/binance-software-engineer/152415'])
+  })
+
+  it('drops hiring.cafe /jobs/<category> listing-index pages at discovery time', () => {
+    const html = `<html><head><title>Hiring Cafe</title></head><body>
+      <a href="/jobs/software-engineer-toronto">Software Engineer jobs in Toronto</a>
+      <a href="/job/software-engineer-toronto-abc123">Software Engineer</a>
+      <a href="/?job_id=abc-123-def">Software Engineer</a>
+    </body></html>`
+    const urls = extractJobUrls(html, 'https://hiring.cafe/', 'Hiring Cafe')
+    expect(urls.map((u) => u.url)).toEqual([
+      'https://hiring.cafe/job/software-engineer-toronto-abc123',
+      'https://hiring.cafe/?job_id=abc-123-def'
+    ])
+  })
 })
 
 describe('rewired Cloudflare-blocked boards (regression: sitemap extractors admit non-job URLs)', () => {
