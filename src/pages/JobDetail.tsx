@@ -1102,11 +1102,15 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
                     <span style={{ color: coverLetter.verification_score >= 70 ? 'var(--success)' : 'var(--warning)', fontWeight: 600 }}>
                       {coverLetter.verification_score}/100 {coverLetter.verification_score >= 70 ? '✓' : '⚠'}
                     </span>
-                    {coverLetter.verification_feedback && (
-                      <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, whiteSpace: 'pre-wrap' }}>
-                        {coverLetter.verification_feedback}
-                      </p>
-                    )}
+                    {coverLetter.verification_feedback && (() => {
+                      const { cleanFeedback } = extractRulesFromFeedback(coverLetter.verification_feedback)
+                      if (!cleanFeedback) return null
+                      return (
+                        <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, whiteSpace: 'pre-wrap' }}>
+                          {cleanFeedback}
+                        </p>
+                      )
+                    })()}
                     <RuleCheckList
                       rules={extractRulesFromFeedback(coverLetter.verification_feedback ?? '').rules}
                     />
