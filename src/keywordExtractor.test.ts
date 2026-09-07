@@ -1218,6 +1218,54 @@ describe('PMI false-negative guards (skills survive the noise filter)', () => {
   })
 })
 
+describe('performance guard (10k+ word postings)', () => {
+  // ~12k-word synthetic posting. Varied filler keeps the bigram
+  // population realistic; the repeated skill block is what extraction
+  // must find quickly. The pipeline is O(n): tokenize + single-pass
+  // unigram/bigram counts + map lookups. The timing bound is generous
+  // (2s) so the guard stays stable on loaded CI machines while still
+  // catching a quadratic regression, which took multiple seconds.
+  it('extracts a 12k-word description well under the 2s bound', () => {
+    const filler =
+      'We partner with commercial teams across the organization and support internal stakeholders through planning cycles, governance reviews, and quarterly planning exercises with measurable outcomes. '
+    const skills = 'Requirements include python and kafka and postgres and kubernetes and terraform and spark and airflow and redis and golang. '
+    const jd = ['Staff Platform Engineer', ''].join('\n') +
+      (filler + skills).repeat(320) // ≈ 11k words
+    expect(jd.split(/\s+/).length).toBeGreaterThan(10000)
+
+    const started = performance.now()
+    const result = extractJobKeywordsStructured(jd)
+    const elapsedMs = performance.now() - started
+
+    expect(elapsedMs, `extraction took ${elapsedMs.toFixed(0)}ms`).toBeLessThan(2000)
+    expect(result.keywords.length).toBeLessThanOrEqual(30)
+    const phrases = result.keywords.map((k) => k.phrase)
+    for (const skill of ['python', 'kafka', 'postgres', 'kubernetes', 'terraform', 'spark', 'airflow', 'redis']) {
+      // In this synthetic posting the skill tokens sit inside longer
+      // PMI pairs ('golang kafka'), so assert the skill SIGNAL
+      // survives: standalone or as a component of a kept phrase.
+      expect(
+        phrases.some((p) => p === skill || p.includes(` ${skill}`) || p.includes(`${skill} `)),
+        `${skill} signal must survive large-posting extraction`
+      ).toBe(true)
+    }
+  })
+
+  it('small postings remain fast (guard against fixed overhead creep)', () => {
+    const jd = [
+      'Backend Engineer',
+      '',
+      'Requirements',
+      '- 5+ years of python and postgres',
+      '- kafka and redis in production'
+    ].join('\n')
+    const started = performance.now()
+    for (let i = 0; i < 50; i++) extractJobKeywordsStructured(jd)
+    const elapsedMs = performance.now() - started
+    expect(elapsedMs, `50 extractions took ${elapsedMs.toFixed(0)}ms`).toBeLessThan(2000)
+  })
+})
+
 describe('JD fixture regression suite', () => {
   for (const f of FIXTURES) {
     it(`buckets and extracts: ${f.name}`, () => {

@@ -388,25 +388,35 @@ function trigrams(tokens: string[]): string[] {
   return out
 }
 
-function pmiFor(phrase: string, tokens: string[]): number {
-  const words = phrase.split(' ')
-  if (words.length < 2) return 0
-  const total = tokens.length
+// Precomputed count index for PMI discovery. Building it once per
+// section keeps the whole pipeline O(n): the naive alternative (rescan
+// the token stream per candidate bigram, rebuilding unigram counts each
+// time) is O(n²) and blows up on 10k+ word postings.
+interface PmiIndex {
+  total: number
+  wordCounts: Map<string, number>
+  bigramCounts: Map<string, number>
+}
+
+function buildPmiIndex(tokens: string[]): PmiIndex {
   const wordCounts = new Map<string, number>()
   for (const t of tokens) wordCounts.set(t, (wordCounts.get(t) ?? 0) + 1)
-  let phraseCount = 0
-  for (let i = 0; i <= tokens.length - words.length; i++) {
-    let match = true
-    for (let j = 0; j < words.length; j++) {
-      if (tokens[i + j] !== words[j]) { match = false; break }
-    }
-    if (match) phraseCount++
+  const bigramCounts = new Map<string, number>()
+  for (let i = 0; i < tokens.length - 1; i++) {
+    const key = `${tokens[i]} ${tokens[i + 1]}`
+    bigramCounts.set(key, (bigramCounts.get(key) ?? 0) + 1)
   }
+  return { total: tokens.length, wordCounts, bigramCounts }
+}
+
+function pmiFromIndex(bigram: string, index: PmiIndex): number {
+  const phraseCount = index.bigramCounts.get(bigram) ?? 0
   if (phraseCount < 2) return 0
-  const phraseProb = phraseCount / Math.max(total - words.length + 1, 1)
+  const words = bigram.split(' ')
+  const phraseProb = phraseCount / Math.max(index.total - words.length + 1, 1)
   let denom = 1
   for (const w of words) {
-    const p = (wordCounts.get(w) ?? 0) / total
+    const p = (index.wordCounts.get(w) ?? 0) / index.total
     if (p === 0) return 0
     denom *= p
   }
@@ -492,13 +502,14 @@ export function extractPhases(section: string, source: KeywordSource): KeywordEn
 
   // 3. PMI n-gram discovery for bigrams not in any list, count >= 2, PMI >= threshold.
   //    Pairs containing a noise word are skipped: high PMI alone does not
-  //    make boilerplate ("years experience") a keyword.
-  for (const bg of bigrams(tokens)) {
+  //    make boilerplate ("years experience") a keyword. Counts come from a
+  //    single-pass index so discovery stays O(n) on huge postings.
+  const pmiIndex = buildPmiIndex(tokens)
+  for (const [bg] of pmiIndex.bigramCounts) {
     if (found.has(bg)) continue
     if (bg.split(' ').some((w) => w.length < 3)) continue
     if (bg.split(' ').some((w) => PMI_NOISE_WORDS.has(w))) continue
-    const pmi = pmiFor(bg, tokens)
-    if (pmi >= PMI_THRESHOLD) {
+    if (pmiFromIndex(bg, pmiIndex) >= PMI_THRESHOLD) {
       add(bg, bg, 'hard')
     }
   }
