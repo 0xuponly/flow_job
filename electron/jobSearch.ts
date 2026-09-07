@@ -1,6 +1,18 @@
 import { createJob, findDuplicateJob, getSeenUrls, getSettings, listJobs, recordBoardResults, recordBoardScanTime, JobBlacklistedError, JobDuplicateError } from './database'
 import { decodeEntities, dedupKey } from './utils'
-import { scrapeJobFromUrl } from './jobScraper'
+import { scrapeJobFromUrl, ScraperClassificationError } from './jobScraper'
+
+function isScraperClassificationError(err: unknown): err is ScraperClassificationError {
+  // Use a duck-type / name check so the real classification path still
+  // works when `./jobScraper` is mocked in unit tests (the mock may not
+  // re-export the class, so `instanceof` would throw a TypeError).
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { name?: string }).name === 'ScraperClassificationError' &&
+    typeof (err as { reason?: string }).reason === 'string'
+  )
+}
 import { createLogger, log as categoryLog } from './logger'
 import { enqueue } from './aiQueue'
 
@@ -456,12 +468,14 @@ export function extractJobUrls(html: string, baseUrl: string, boardName: string)
       // the recurring missing-description errors.
       if (!/^\/jobs\/\d+\/?$/.test(pathname)) continue
     } else if (boardLower.includes('hiring cafe')) {
-      // Hiring Cafe job URLs are /job/{slug} (singular) with full
-      // static JobPosting content. The listing page's filter chips
-      // link to /jobs/{state} and /jobs/{keyword} (plural) — scraping
-      // those shells produced missing-description errors. Require the
-      // singular /job/ prefix.
-      if (!/^\/job\//.test(pathname)) continue
+      // Hiring Cafe real detail URLs are /?job_id={uuid} or /job/{slug}
+      // (singular). The listing page's filter chips link to /jobs/{state}
+      // and /jobs/{keyword} (plural) — those are listing-index shells
+      // with no JobPosting data. Reject the plural index and require a
+      // real detail identifier.
+      if (pathname.toLowerCase().startsWith('/jobs/')) continue
+      const isDetail = /^\/job\//.test(pathname) || new URL(fullUrl).searchParams.has('job_id')
+      if (!isDetail) continue
     } else if (boardLower.includes('crossover')) {
       // Crossover job URLs are /jobs/{numericId}/{slug}/{title}. The
       // listing page also links to /jobs/{single-slug} category pages
@@ -676,6 +690,17 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
   try {
     input = await scrapeJobFromUrl(url)
   } catch (err) {
+    if (isScraperClassificationError(err)) {
+      // Walled / anti-bot blocks still count as errors so the
+      // consecutive-blocked bailout can fire, but with a clean reason
+      // string the UI can surface as "walled". Maintenance, soft-404,
+      // and non-job URLs are skipped so they don't pollute the error
+      // tally or scraper.log.
+      if (err.reason === 'walled' || err.reason === 'empty-shell') {
+        return { action: 'error', reason: `walled: ${err.message}` }
+      }
+      return { action: 'skipped', reason: err.reason }
+    }
     return { action: 'error', reason: `Scrape failed: ${err instanceof Error ? err.message : 'Unknown'}` }
   }
 
@@ -1276,7 +1301,8 @@ export async function scanAllBoards(
           if (!signal?.aborted) {
             blockedBailout = true
             blockedBoards.add(board.name)
-            log.warn(`${board.name}: batch timed out after ${BATCH_TIMEOUT_MS / 60000}min; skipping remaining ${listings.length - processed - batch.length} listings`)
+            br.error = 'walled'
+            log.warn(`${board.name}: walled (batch timed out after ${BATCH_TIMEOUT_MS / 60000}min); skipping remaining ${listings.length - processed - batch.length} listings`)
           }
           break
         }
@@ -1318,7 +1344,8 @@ export async function scanAllBoards(
         if (consecutiveBlocked >= MAX_CONSECUTIVE_BLOCKED) {
           blockedBailout = true
           blockedBoards.add(board.name)
-          log.warn(`${board.name}: ${consecutiveBlocked} consecutive batches blocked by anti-bot protection; skipping remaining ${listings.length - processed} listings`)
+          br.error = 'walled'
+          log.warn(`${board.name}: walled (${consecutiveBlocked} consecutive batches blocked by anti-bot protection); skipping remaining ${listings.length - processed} listings`)
           break
         }
       }
@@ -1332,7 +1359,11 @@ export async function scanAllBoards(
       }
       // No trailing bumpFound — see the comment at br.found above.
     } catch (err) {
-      br.error = err instanceof Error ? err.message : 'Unknown error'
+      if (isScraperClassificationError(err)) {
+        br.error = err.reason
+      } else {
+        br.error = err instanceof Error ? err.message : 'Unknown error'
+      }
       result.errors.push(`${board.name}: ${br.error}`)
       // Board-level error: the per-listing loop threw before
       // categorizing every listing. totalFound was already bumped
