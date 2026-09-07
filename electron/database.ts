@@ -331,6 +331,10 @@ export function loadStore(): Store {
         j.fit_error_toasted = null
         jobsMigrated = true
       }
+      if (j.fit_source === undefined) {
+        j.fit_source = null
+        jobsMigrated = true
+      }
       if (j.match_grade === undefined) {
         j.match_grade = matchGradeFor(j.score ?? null)
         jobsMigrated = true
@@ -635,6 +639,7 @@ export function createJob(
     fit_rationale: input.fit_rationale ?? null,
     fit_breakdown: input.fit_breakdown ?? null,
     fit_score_version: input.fit_score_version ?? null,
+    fit_source: input.fit_source ?? null,
     fit_last_error: input.fit_last_error ?? null,
     fit_error_toasted: null,
     match_grade: matchGradeFor(input.score ?? null),
@@ -724,6 +729,7 @@ export function updateJob(
     fit_rationale: fields.fit_rationale !== undefined ? (fields.fit_rationale ?? null) : existing.fit_rationale,
     fit_breakdown: fields.fit_breakdown !== undefined ? (fields.fit_breakdown ?? null) : existing.fit_breakdown,
     fit_score_version: fields.fit_score_version !== undefined ? (fields.fit_score_version ?? null) : existing.fit_score_version,
+    fit_source: fields.fit_source !== undefined ? (fields.fit_source ?? null) : existing.fit_source,
     fit_last_error: fields.fit_last_error !== undefined ? (fields.fit_last_error ?? null) : existing.fit_last_error,
     fit_error_toasted: fields.fit_error_toasted !== undefined ? (fields.fit_error_toasted ?? null) : existing.fit_error_toasted,
     notes: fields.notes !== undefined ? de(fields.notes ?? null) : existing.notes,

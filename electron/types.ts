@@ -37,6 +37,10 @@ export interface Job {
   fit_rationale: string | null
   fit_breakdown: FitBreakdown | null
   fit_score_version: number | null
+  // Tracks where the persisted fit score came from: 'llm' for a real
+  // LLM score, 'heuristic' for the deterministic fallback, null when
+  // the row has never been scored.
+  fit_source: FitSource
   // Set when the most recent fit-scorer run fell back to a heuristic (no
   // LLM response, parse failure, no models configured, etc.). NULL means
   // the row is either unscored or was scored successfully by the LLM. The
@@ -227,6 +231,8 @@ export interface Settings {
 
 export type MatchGrade = 'S' | 'A' | 'B' | 'C' | 'D' | 'F' | null
 
+export type FitSource = 'llm' | 'heuristic' | null
+
 export type AtsPlatform = 'greenhouse' | 'lever' | 'ashby' | 'workday' | 'smartrecruiters'
 
 export interface AtsBoard {
@@ -263,6 +269,7 @@ export interface CreateJobInput {
   fit_rationale?: string | null
   fit_breakdown?: FitBreakdown | null
   fit_score_version?: number | null
+  fit_source?: FitSource
   notes?: string | null
   date_posted?: string | null
   application_deadline?: string | null

@@ -200,6 +200,7 @@ describe('JobsPage auto-fit-recompute', () => {
         fit_rationale: null,
         fit_breakdown: null,
         fit_score_version: null,
+        fit_source: null,
         fit_last_error: null,
         fit_error_toasted: null,
         match_grade: null,
