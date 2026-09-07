@@ -161,9 +161,14 @@ export function buildPdfHtml(content: string, docType: string, documentId: numbe
     }
 
     if (!headerCollected) {
-      if (isBullet) {
+      // Cover-letter salutations and dates should not be absorbed into the
+      // contact header; cap the header at two lines for cover letters.
+      const looksLikeSalutation = /^dear\b/i.test(cleaned)
+      const looksLikeDate = /^\w+\s+\d{1,2},?\s+\d{4}$/i.test(cleaned)
+      const headerCap = isCoverLetter ? 2 : 3
+      if (isBullet || looksLikeSalutation || looksLikeDate) {
         headerCollected = true
-      } else if (headerLines.length < 3) {
+      } else if (headerLines.length < headerCap) {
         headerLines.push(cleaned)
         continue
       } else {

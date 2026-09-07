@@ -22,8 +22,8 @@ vi.mock('./database', () => ({
   // if the test env supports it. The contract is: writeDocuments returns ids,
   // writeTailorTimingFields is idempotent.
   writeDocuments: vi.fn(async () => ({ cvId: 10, clId: 11 })),
-  writeTailorTimingFields: vi.fn(async () => {}),
-  setJobStatus: vi.fn(async () => {}),
+  writeTailorTimingFields: vi.fn(async () => { /* no-op mock */ }),
+  setJobStatus: vi.fn(async () => { /* no-op mock */ }),
 }))
 vi.mock('./logger', () => ({
   log: { tailor: { error: vi.fn(), warn: vi.fn(), info: vi.fn() } },
@@ -152,5 +152,51 @@ describe('tailorJobDocsForJob', () => {
     expect(mockedTailorDocument).toHaveBeenCalledWith(
       expect.objectContaining({ document_type: 'cover_letter' })
     )
+  })
+
+  it('sanitizes an over-long CV before writing to the store', async () => {
+    const exp = (n: number) => `Company ${n}\tCity, ST\nRole ${n}\tJan 2024 – Present\n- bullet\n`
+    const oversizedCv = `Name\nemail\n\nEXPERIENCE\n${exp(1)}${exp(2)}${exp(3)}${exp(4)}${exp(5)}${exp(6)}\n`
+    mockedTailorDocument.mockImplementation(async (req) => {
+      if (req.document_type === 'cv') return { content: oversizedCv, model_used: 'mock' }
+      return { content: 'mocked cover_letter content', model_used: 'mock' }
+    })
+    await tailorJobDocsForJob(1)
+    const call = mockedWriteDocuments.mock.calls[0][0] as { cvContent: string; clContent: string }
+    expect(call.cvContent).toMatch(/Company 1/)
+    expect(call.cvContent).toMatch(/Company 4/)
+    expect(call.cvContent).not.toMatch(/Company 5/)
+    expect(call.cvContent).not.toMatch(/Company 6/)
+  })
+
+  it('sanitizes an over-long cover letter before writing to the store', async () => {
+    const oversizedCl = 'Para 1.\n\nPara 2.\n\nPara 3.\n\nPara 4.\n\nPara 5.\n\nPara 6.'
+    mockedTailorDocument.mockImplementation(async (req) => {
+      if (req.document_type === 'cover_letter') return { content: oversizedCl, model_used: 'mock' }
+      return { content: 'mocked cv content', model_used: 'mock' }
+    })
+    await tailorJobDocsForJob(1)
+    const call = mockedWriteDocuments.mock.calls[0][0] as { cvContent: string; clContent: string }
+    expect(call.clContent).toMatch(/Para 1/)
+    expect(call.clContent).toMatch(/Para 4/)
+    expect(call.clContent).not.toMatch(/Para 5/)
+    expect(call.clContent).not.toMatch(/Para 6/)
+  })
+
+  it('caps technical skills to 15 before writing to the store', async () => {
+    const tech = Array.from({ length: 20 }, (_, i) => `skill${i}`).join(', ')
+    const cvWithTooManySkills = `Name\nemail\n\nSKILLS & INTERESTS\nTechnical: ${tech}\nLanguage: English\n`
+    mockedTailorDocument.mockImplementation(async (req) => {
+      if (req.document_type === 'cv') return { content: cvWithTooManySkills, model_used: 'mock' }
+      return { content: 'mocked cover_letter content', model_used: 'mock' }
+    })
+    mockedGetJob.mockImplementation((id: number) => ({
+      id, title: 't', company: 'c', description: 'skill0 skill1 skill2', score: 0.8
+    } as ReturnType<typeof getJob> & object))
+    await tailorJobDocsForJob(1)
+    const call = mockedWriteDocuments.mock.calls[0][0] as { cvContent: string; clContent: string }
+    const techLine = call.cvContent.split('\n').find((l) => l.startsWith('Technical:'))!
+    const kept = techLine.replace('Technical:', '').split(',').map((s) => s.trim())
+    expect(kept).toHaveLength(15)
   })
 })
