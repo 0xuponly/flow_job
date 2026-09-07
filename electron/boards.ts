@@ -29,13 +29,26 @@ export interface ScanBoardResult {
 // stalled runs for hours with no fixable cause). Shipped as the default
 // disabled_boards list in 1ca07d9 — but that default only reached fresh
 // installs, because existing stores already had a saved (empty) array.
+//
+// 2026-09-07: expanded with the boards that have failed every scan for
+// weeks (CharityVillage, DailyRemote, NoDesk, Work At A Startup,
+// Crossover, Hiring Cafe). Permanently blocking them is the cheapest
+// bailout — it avoids burning the scan budget on sites where every
+// per-listing page is WAF-challenged.
+//
 // These names must match `BOARDS[].name` exactly.
 export const DEFAULT_DISABLED_BOARDS = [
   'Startup.jobs',
   'Monster',
   'Crypto.jobs',
   'CryptoJobsList',
-  'Contra'
+  'Contra',
+  'CharityVillage',
+  'DailyRemote',
+  'NoDesk',
+  'Work At A Startup',
+  'Crossover',
+  'Hiring Cafe'
 ]
 
 /**
