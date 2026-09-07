@@ -740,6 +740,7 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
       title: input.title,
       description: input.description || null,
       requirements: input.requirements || null,
+      location: input.location || null,
       baseCv
     }, signal), signal)) as Awaited<ReturnType<typeof scoreJobFit>>
     if (process.env.FLOW_JOB_SCAN_TIMING) {

@@ -236,6 +236,7 @@ function registerIpc(): void {
         title: job.title,
         description: job.description,
         requirements: job.requirements,
+        location: job.location,
         baseCv
       })
       if (fit.source === 'heuristic') {

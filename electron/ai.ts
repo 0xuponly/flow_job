@@ -5,7 +5,7 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
 import { log } from './logger'
-import { scoreCompatibility, extractEducationLevel, extractYearsExperience } from './fitHeuristic'
+import { scoreCompatibilityStructured, extractEducationLevel, extractYearsExperience } from './fitHeuristic'
 import { runDocumentRuleChecks } from '../src/documentRules'
 import { extractJobKeywordsStructured, extractJobKeywords, mergeKeywordResults } from '../src/keywordExtractor'
 import { loadKeywordAllowlists } from '../src/keywordAllowlists'
@@ -960,12 +960,19 @@ function heuristicFit(input: {
   title: string
   description: string | null
   requirements: string | null
+  location: string | null
   baseCv: string
   cvEduLevel: number
   cvYears: number
   error?: string
 }): JobFitResult {
-  const score = scoreCompatibility(input.title, input.description || '', input.baseCv)
+  const score = scoreCompatibilityStructured({
+    title: input.title,
+    description: input.description,
+    requirements: input.requirements,
+    location: input.location,
+    baseCv: input.baseCv
+  })
   return {
     score,
     rationale: `Heuristic score based on keyword overlap. CV education level: ${input.cvEduLevel || 'unspecified'}, years experience: ${input.cvYears || 'unspecified'}.`,
@@ -987,6 +994,7 @@ export async function scoreJobFit(input: {
   title: string
   description: string | null
   requirements: string | null
+  location?: string | null
   baseCv: string
 }, signal?: AbortSignal): Promise<JobFitResult> {
   const cvEduLevel = extractEducationLevel(input.baseCv)
