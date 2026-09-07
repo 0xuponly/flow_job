@@ -171,6 +171,9 @@ export interface ApiModelConfig {
   api_key: string
   model: string
   enabled?: boolean
+  // Per-model token budget override. Falls back to FLOW_JOB_MAX_TOKENS env,
+  // then DEFAULT_MAX_TOKENS (2048) in ai.ts.
+  max_tokens?: number
 }
 
 export interface LocationPick {

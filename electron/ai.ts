@@ -121,6 +121,37 @@ interface CallAIResult {
   errors: string[]
 }
 
+const DEFAULT_MAX_TOKENS = 2048
+
+// Slug patterns that identify rerank/embeddings models that do not belong in
+// the chat/completions rotation. OpenRouter returns 400 when these are sent to
+// the chat endpoint.
+const RERANK_MODEL_PATTERNS = [/rerank/i]
+
+function isRerankModel(slug: string): boolean {
+  return RERANK_MODEL_PATTERNS.some((p) => p.test(slug))
+}
+
+function getMaxTokens(model?: ApiModelConfig): number {
+  const env = Number(process.env.FLOW_JOB_MAX_TOKENS)
+  if (Number.isFinite(env) && env > 0) return env
+  if (model?.max_tokens && Number.isFinite(model.max_tokens) && model.max_tokens > 0) {
+    return model.max_tokens
+  }
+  return DEFAULT_MAX_TOKENS
+}
+
+function eligibleModels(): ApiModelConfig[] {
+  const models = listApiModels().filter((m) => m.enabled !== false && !isRerankModel(m.model))
+  if (models.length === 0) {
+    const all = listApiModels().filter((m) => m.enabled !== false)
+    if (all.length > 0) {
+      log.ai.warn('[ai] All enabled models are rerank/embeddings models; chat rotation is empty.')
+    }
+  }
+  return models
+}
+
 /**
  * Try all configured AI models.
  * - Returns content + modelUsed on first success.
@@ -134,7 +165,7 @@ export async function callAI(
   timeoutMs = 20000,
   externalSignal?: AbortSignal
 ): Promise<CallAIResult> {
-  const models: ApiModelConfig[] = listApiModels().filter((m) => m.enabled !== false)
+  const models: ApiModelConfig[] = eligibleModels()
   if (models.length === 0) throw new Error('No enabled AI models configured. Add one in Settings.')
 
   let content: string | null = null
@@ -148,7 +179,7 @@ export async function callAI(
     // when disabled is one string compare per request.
     if (process.env.FLOW_JOB_DEBUG_AI === '1') {
       log.ai.info(
-        `[ai] req name="${model.name}" host=${hostOf(model.base_url)} key=${fingerprintKey(model.api_key)} modelId=${model.model} body=${redactBody('')}`
+        `[ai] req name="${model.name}" host=${hostOf(model.base_url)} key=${fingerprintKey(model.api_key)} modelId=${model.model} max_tokens=${getMaxTokens(model)} body=${redactBody('')}`
       )
     }
     try {
@@ -175,7 +206,8 @@ export async function callAI(
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt }
           ],
-          temperature
+          temperature,
+          max_tokens: getMaxTokens(model)
         })
       })
       clearTimeout(timer)

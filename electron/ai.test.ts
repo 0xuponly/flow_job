@@ -212,6 +212,77 @@ describe('scoreJobFit error passthrough', () => {
   })
 })
 
+describe('callAI model pool hygiene', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    delete process.env.FLOW_JOB_MAX_TOKENS
+  })
+
+  it('skips rerank models and does not call them', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 1, name: 'reranker', enabled: true, base_url: 'https://openrouter.ai', model: 'meta-llama/llama-nemotron-rerank-v1', api_key: 'k' } as any,
+      { id: 2, name: 'chat', enabled: true, base_url: 'https://openrouter.ai', model: 'openai/gpt-4o-mini', api_key: 'k' } as any
+    ])
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: 'ok' } }]
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await callAI('sys', 'user')
+    expect(result.content).toBe('ok')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://openrouter.ai/chat/completions',
+      expect.objectContaining({
+        body: expect.stringContaining('"model":"openai/gpt-4o-mini"')
+      })
+    )
+  })
+
+  it('caps max_tokens to 2048 by default', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 1, name: 'chat', enabled: true, base_url: 'https://openrouter.ai', model: 'openai/gpt-4o-mini', api_key: 'k' } as any
+    ])
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: 'ok' } }]
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await callAI('sys', 'user')
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body.max_tokens).toBe(2048)
+  })
+
+  it('respects FLOW_JOB_MAX_TOKENS env override', async () => {
+    process.env.FLOW_JOB_MAX_TOKENS = '1024'
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 1, name: 'chat', enabled: true, base_url: 'https://openrouter.ai', model: 'openai/gpt-4o-mini', api_key: 'k' } as any
+    ])
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: 'ok' } }]
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await callAI('sys', 'user')
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body.max_tokens).toBe(1024)
+  })
+
+  it('respects per-model max_tokens override', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 1, name: 'chat', enabled: true, base_url: 'https://openrouter.ai', model: 'openai/gpt-4o-mini', api_key: 'k', max_tokens: 512 } as any
+    ])
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: 'ok' } }]
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await callAI('sys', 'user')
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body.max_tokens).toBe(512)
+  })
+})
+
 describe('generateFollowUpMessage', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
