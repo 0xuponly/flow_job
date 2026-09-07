@@ -34,7 +34,7 @@ vi.mock('undici', () => ({
   })
 }))
 
-import { isLinkedInStubDescription, scrapeJobFromUrl, detectSource } from './jobScraper'
+import { isLinkedInStubDescription, scrapeJobFromUrl, detectSource, ScraperClassificationError } from './jobScraper'
 import { fetchHtmlViaBrowser, isChallengePage } from './browserScraper'
 import { request as undiciRequest } from 'undici'
 
@@ -649,6 +649,94 @@ describe('isChallengePage weak signal handling (regression: crypto.jobs/web3.car
   it('returns true for data-turnstile on a shell with no rich content', () => {
     const html = '<html><body><div data-turnstile-sitekey="test"></div></body></html>'
     expect(isChallengePage(html)).toBe(true)
+  })
+})
+
+describe('URL-level classification', () => {
+  const cases: { url: string; reason: string }[] = [
+    {
+      url: 'https://www.jobboom.com/en/job?id=G12345',
+      reason: 'non-job URL'
+    },
+    {
+      url: 'https://www.hiring.cafe/jobs/software-engineer-toronto',
+      reason: 'non-job URL'
+    },
+    {
+      url: 'https://www.crossover.com/jobs/software-engineering/',
+      reason: 'non-job URL'
+    },
+    {
+      url: 'https://www.workbc.ca/Jobs-Careers.aspx',
+      reason: 'maintenance'
+    },
+    {
+      url: 'https://www.web3.career/web3-salaries',
+      reason: 'non-job URL'
+    }
+  ]
+
+  for (const { url, reason } of cases) {
+    it(`classifies ${url} as ${reason}`, async () => {
+      await expect(scrapeJobFromUrl(url)).rejects.toSatisfy((err: unknown) => {
+        if (!(err instanceof ScraperClassificationError)) return false
+        return err.reason === reason
+      })
+    })
+  }
+})
+
+describe('Fetch-level classification', () => {
+  it('classifies maintenance page as maintenance', async () => {
+    const originalFetch = global.fetch
+    const filler = '<p>'.padEnd(300, 'x')
+    const body = `<html><head><title>Site Maintenance</title></head><body><p>We are currently performing scheduled maintenance. Please check back later.</p>${filler}</p></body></html>`
+    global.fetch = vi.fn(async () => new Response(body, { status: 200 })) as unknown as typeof fetch
+
+    try {
+      await expect(scrapeJobFromUrl('https://example.com/job/123')).rejects.toSatisfy(
+        (err: unknown) => err instanceof ScraperClassificationError && err.reason === 'maintenance'
+      )
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+
+  it('classifies 404 page as not-found', async () => {
+    const originalFetch = global.fetch
+    const filler = '<p>'.padEnd(300, 'x')
+    const body = `<html><head><title>404 - Not Found</title></head><body><p>Sorry, the page you were looking for does not exist.</p>${filler}</p></body></html>`
+    global.fetch = vi.fn(async () => new Response(body, { status: 200 })) as unknown as typeof fetch
+
+    try {
+      await expect(scrapeJobFromUrl('https://example.com/job/123')).rejects.toSatisfy(
+        (err: unknown) => err instanceof ScraperClassificationError && err.reason === 'not-found'
+      )
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+
+  it('classifies empty anti-bot shell as walled', async () => {
+    const originalFetch = global.fetch
+    global.fetch = vi.fn(async () =>
+      new Response('<html><head></head><body></body></html>', { status: 200 })
+    ) as unknown as typeof fetch
+
+    try {
+      await expect(scrapeJobFromUrl('https://example.com/job/123')).rejects.toSatisfy(
+        (err: unknown) => err instanceof ScraperClassificationError && err.reason === 'walled'
+      )
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+})
+
+describe('detectSource', () => {
+  it('identifies hiring.cafe', () => {
+    expect(detectSource('hiring.cafe')).toBe('Hiring Cafe')
+    expect(detectSource('www.hiring.cafe')).toBe('Hiring Cafe')
   })
 })
 

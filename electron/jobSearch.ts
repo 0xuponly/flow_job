@@ -1,6 +1,18 @@
 import { createJob, findDuplicateJob, getSeenUrls, getSettings, listJobs, recordBoardResults, recordBoardScanTime, JobBlacklistedError, JobDuplicateError } from './database'
 import { decodeEntities, dedupKey } from './utils'
-import { scrapeJobFromUrl } from './jobScraper'
+import { scrapeJobFromUrl, ScraperClassificationError } from './jobScraper'
+
+function isScraperClassificationError(err: unknown): err is ScraperClassificationError {
+  // Use a duck-type / name check so the real classification path still
+  // works when `./jobScraper` is mocked in unit tests (the mock may not
+  // re-export the class, so `instanceof` would throw a TypeError).
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { name?: string }).name === 'ScraperClassificationError' &&
+    typeof (err as { reason?: string }).reason === 'string'
+  )
+}
 import { createLogger, log as categoryLog } from './logger'
 import { enqueue } from './aiQueue'
 
@@ -339,6 +351,88 @@ const BOARD_NAV_TEXT_PATTERNS: Readonly<Record<string, readonly RegExp[]>> = {
   ]
 }
 
+const knownBoardDomains = /linkedin\.com|indeed\.com|ca\.indeed\.com|monster\.com|ziprecruiter\.com|simplyhired\.com|adzuna\.com|talent\.com|jora\.com|remoteok\.com|weworkremotely\.com|remotive\.com|remote\.co|workingnomads\.com|justremote\.co|jobbank\.gc\.ca|eluta\.ca|workopolis\.com|jobboom\.com|workbc\.ca|careerbeacon\.com|charityvillage\.com|crypto-careers\.com|cryptorecruit\.com|remote3\.co|cryptocurrencyjobs\.co|cryptojobslist\.com|cryptojobs\.com|crypto\.jobs|web3\.career|startup\.jobs|selbyjennings\.com|idealist\.org|builtin\.com|builtintoronto\.com|builtinvancouver\.org|jobs\.vancouver\.ca|google\.com\/about\/careers|careerhound\.io|usebraintrust\.com|hiring\.cafe|sproutjobs\.com|arc\.dev|contra\.com|skipthedrive\.com|jobspresso\.co|dynamitejobs\.com|dailyremote\.com|nodesk\.co|remote100k\.com|rareroles\.com|flexa\.careers|flexjobs\.com|virtualvocations\.com|pangian\.com|powertofly\.com|dice\.com|theladders\.com|workatastartup\.com|careervault\.io|remoterocketship\.com|dribbble\.com|behance\.net|crossover\.com|aijobs\.ai|toptal\.com|upwork\.com|fiverr\.com|gun\.io|freelancer\.com|peopleperhour\.com|hubstaff\.com/
+
+/**
+ * Per-board job-detail URL filter. Shared between JSON-LD listing
+ * extraction and HTML anchor crawling so neither path can admit
+ * navigational / category-index / sponsored-shell URLs that the other
+ * would reject. Returns false for URLs that should not be scraped.
+ */
+function isJobDetailUrl(fullUrl: string, boardName: string): boolean {
+  let pathname: string
+  let hash: string
+  try {
+    const url = new URL(fullUrl)
+    pathname = url.pathname
+    hash = url.hash
+  } catch {
+    return false
+  }
+
+  const boardLower = boardName.toLowerCase()
+
+  if (NAV_PATHS.test(pathname)) return false
+
+  if (boardLower.includes('linkedin')) {
+    if (!pathname.includes('/jobs/view/')) return false
+  } else if (boardLower.includes('indeed')) {
+    if (!pathname.includes('/viewjob') && !pathname.includes('/rc/')) return false
+  } else if (boardLower.includes('web3.career')) {
+    // Salary / learn / hire index pages are never listings.
+    if (/^\/(web3-salaries|learn-web3|hire)\b/i.test(pathname)) return false
+    if (!/^\/[^/]+\/\d+\/?$/.test(pathname)) return false
+  } else if (boardLower.includes('built in')) {
+    if (!/^\/job\/[^/]+\/\d+\/?$/.test(pathname)) return false
+  } else if (boardLower.includes('google')) {
+    if (!/^\/about\/careers\/applications\/jobs\/results\/\d+$/.test(pathname)) return false
+  } else if (boardLower.includes('ziprecruiter')) {
+    const isView = pathname.startsWith('/jobs/view/')
+    const isCk = pathname.startsWith('/c/k/') && pathname.split('/').filter(Boolean).length >= 3
+    if (!isView && !isCk) return false
+  } else if (boardLower.includes('dice')) {
+    if (!pathname.startsWith('/job-detail/')) return false
+  } else if (boardLower.includes('powertofly')) {
+    if (!pathname.startsWith('/jobs/detail/')) return false
+  } else if (boardLower.includes('behance')) {
+    if (!pathname.startsWith('/joblist/')) return false
+  } else if (boardLower.includes('work at a startup')) {
+    if (!/^\/jobs\/\d+\/?$/.test(pathname)) return false
+  } else if (boardLower.includes('hiring cafe')) {
+    if (pathname.toLowerCase().startsWith('/jobs/')) return false
+    const isDetail = /^\/job\//.test(pathname) || new URL(fullUrl).searchParams.has('job_id')
+    if (!isDetail) return false
+  } else if (boardLower.includes('crossover')) {
+    if (!/^\/jobs\/\d+\//.test(pathname)) return false
+  } else if (boardLower.includes('remote rocketship')) {
+    if (!/^\/(job|remote-job)\//.test(pathname)) return false
+  } else if (boardLower.includes('ladders')) {
+    if (!/^\/jobs\/[^/]+\/\d+/.test(pathname)) return false
+  } else if (boardLower.includes('dribbble')) {
+    if (!/^\/jobs\/\d+/.test(pathname)) return false
+  } else if (boardLower.includes('freelancer')) {
+    if (!pathname.startsWith('/projects/')) return false
+  } else if (boardLower.includes('peopleperhour')) {
+    if (!pathname.startsWith('/hire/')) return false
+  } else if (boardLower.includes('eluta')) {
+    if (!pathname.startsWith('/spl/')) return false
+  } else if (boardLower.includes('jobboom')) {
+    if (!pathname.includes('/job-offer/')) return false
+  } else if (boardLower.includes('jobbank') || boardLower.includes('job bank')) {
+    if (!/^\/jobsearch\/jobposting\/\d+/.test(pathname)) return false
+  } else if (boardLower.includes('workbc')) {
+    if (!fullUrl.includes('#/')) return false
+  } else {
+    const pathMatch =
+      /^\/(jobs?|careers?|positions?|opportunities?|postings?|openings?|vacancies?|vacancy|roles?|jobid|job_id|posting|position|opportunity)/i.test(pathname) ||
+      pathname.includes('/job/') ||
+      /^#\/?(job[-_]?details?|job[-_]?posting|jobs?|posting|find[-_]?jobs?\/job|postings?)\b/i.test(hash)
+    if (!pathMatch) return false
+  }
+
+  return true
+}
+
 export function extractJobUrls(html: string, baseUrl: string, boardName: string): { url: string; title?: string; company?: string }[] {
   // JSON-LD and HTML anchors are complementary, not exclusive. Some
   // boards embed a single org-level `JobPosting` block on a listing
@@ -346,7 +440,7 @@ export function extractJobUrls(html: string, baseUrl: string, boardName: string)
   // earlier this short-circuit silently returned just that one
   // bogus posting and dropped every HTML card. Merge both sources
   // and dedup by URL below.
-  const jsonLd = extractJsonLdListings(html, baseUrl)
+  const jsonLd = extractJsonLdListings(html, baseUrl).filter((j) => isJobDetailUrl(j.url, boardName))
 
   const pageTitle = html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]
   if (isNonListingPage(html, pageTitle)) return []
@@ -354,7 +448,6 @@ export function extractJobUrls(html: string, baseUrl: string, boardName: string)
   const results: { url: string; title?: string; company?: string }[] = [...jsonLd]
   const seen = new Set<string>(jsonLd.map((j) => j.url.toLowerCase()))
   const base = new URL(baseUrl)
-  const boardLower = boardName.toLowerCase()
 
   const anchorPattern = /<a[^>]+href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi
   let match: RegExpExecArray | null
@@ -378,195 +471,9 @@ export function extractJobUrls(html: string, baseUrl: string, boardName: string)
     if (seen.has(lowerUrl)) continue
     seen.add(lowerUrl)
 
-    const knownBoardDomains = /linkedin\.com|indeed\.com|ca\.indeed\.com|monster\.com|ziprecruiter\.com|simplyhired\.com|adzuna\.com|talent\.com|jora\.com|remoteok\.com|weworkremotely\.com|remotive\.com|remote\.co|workingnomads\.com|justremote\.co|jobbank\.gc\.ca|eluta\.ca|workopolis\.com|jobboom\.com|workbc\.ca|careerbeacon\.com|charityvillage\.com|crypto-careers\.com|cryptorecruit\.com|remote3\.co|cryptocurrencyjobs\.co|cryptojobslist\.com|cryptojobs\.com|crypto\.jobs|web3\.career|startup\.jobs|selbyjennings\.com|idealist\.org|builtin\.com|builtintoronto\.com|builtinvancouver\.org|jobs\.vancouver\.ca|google\.com\/about\/careers|careerhound\.io|usebraintrust\.com|hiring\.cafe|sproutjobs\.com|arc\.dev|contra\.com|skipthedrive\.com|jobspresso\.co|dynamitejobs\.com|dailyremote\.com|nodesk\.co|remote100k\.com|rareroles\.com|flexa\.careers|flexjobs\.com|virtualvocations\.com|pangian\.com|powertofly\.com|dice\.com|theladders\.com|workatastartup\.com|careervault\.io|remoterocketship\.com|dribbble\.com|behance\.net|crossover\.com|aijobs\.ai|toptal\.com|upwork\.com|fiverr\.com|gun\.io|freelancer\.com|peopleperhour\.com|hubstaff\.com/
     if (!knownBoardDomains.test(lowerUrl)) continue
 
-    const pathname = new URL(fullUrl).pathname
-
-    // Only filter URLs whose path is clearly navigation/non-job
-    if (NAV_PATHS.test(pathname)) continue
-
-    if (boardLower.includes('linkedin')) {
-      // Real LinkedIn job URLs have shape
-      // /jobs/view/{slug}-at-{company}-{numericId}. The category
-      // sub-index pages (e.g. /jobs/engineering-jobs,
-      // /jobs/13,000-finance-jobs-in-north-york) also start with
-      // /jobs/ but are not real jobs. Requiring /jobs/view/ is the
-      // tightest path-level filter that catches both.
-      if (!pathname.includes('/jobs/view/')) continue
-    } else if (boardLower.includes('indeed')) {
-      if (!pathname.includes('/viewjob') && !pathname.includes('/rc/')) continue
-    } else if (boardLower.includes('web3.career')) {
-      // Real web3.career job URLs are /{company-slug}/{numericId}
-      // (e.g. /binance-accelerator-program-marketing-bd-operations-binance/152415).
-      // The homepage's nav links (/crypto-jobs, /web3-salaries/nft,
-      // /learn-web3/tutorial, /hire/ai, /web3-jobs-oceania) are
-      // category/salary pages, not listings — scraping those shells
-      // triggers Cloudflare blocks and produces bogus errors.
-      if (!/^\/[^/]+\/\d+\/?$/.test(pathname)) continue
-    } else if (boardLower.includes('built in')) {
-      // Built In job URLs are /job/{slug}/{numericId} (confirmed on
-      // builtin.com, builtintoronto.com, and builtinvancouver.org).
-      // The listing page's nav and filter links (/jobs?city=...,
-      // /jobs/{category}, /jobs/dev-engineering/search/...) are not
-      // listings — scraping them triggers Cloudflare blocks.
-      if (!/^\/job\/[^/]+\/\d+\/?$/.test(pathname)) continue
-    } else if (boardLower.includes('google')) {
-      // Google Careers job URLs are
-      // /about/careers/applications/jobs/results/{numericJobId}. The
-      // search page's filter chips link to named sub-pages
-      // (results/ai, results/cloud, results/how-we-hire,
-      // applications/eeo) that carry no job data. Require the numeric
-      // id segment.
-      if (!/^\/about\/careers\/applications\/jobs\/results\/\d+$/.test(pathname)) continue
-    } else if (boardLower.includes('ziprecruiter')) {
-      // ZipRecruiter per-listing URLs come in two shapes:
-      //   /jobs/view/{numericId}            (legacy direct view)
-      //   /c/k/{company-slug}/{jobId}       (company directory)
-      // The search results page (`/Jobs/{query}`) and the standard
-      // search (`/jobs?q=...`) both render cards linking to one of
-      // these shapes, so accept either. The /c/k shape needs a minimum
-      // of 3 path segments to avoid matching the company index page
-      // itself (`/c/k/{slug}` with no job id).
-      const isView = pathname.startsWith('/jobs/view/')
-      const isCk = pathname.startsWith('/c/k/') && pathname.split('/').filter(Boolean).length >= 3
-      if (!isView && !isCk) continue
-    } else if (boardLower.includes('dice')) {
-      // Dice per-listing URLs: /job-detail/{uuid}
-      if (!pathname.startsWith('/job-detail/')) continue
-    } else if (boardLower.includes('powertofly')) {
-      // PowerToFly per-job URLs are /jobs/detail/{numericId} (confirmed
-      // from the jobs sitemap at /common/sitemap/jobs/1.xml). The search
-      // page itself lives at /jobs/, so the generic /^\/jobs?/ path match
-      // below would admit every filter/nav link on it
-      // (/jobs/?keywords=..., /jobs/?primary_skills=..., /jobs/saved) as
-      // a "listing" — scraping those shells produced bogus missing-field
-      // errors. Require the /jobs/detail/ prefix.
-      if (!pathname.startsWith('/jobs/detail/')) continue
-    } else if (boardLower.includes('behance')) {
-      // Behance per-listing URLs: /joblist/{id}/{slug}
-      if (!pathname.startsWith('/joblist/')) continue
-    } else if (boardLower.includes('work at a startup')) {
-      // Work At A Startup (YC) renders each job card as
-      // /companies/{companySlug} (the company wrapper) linking to
-      // /jobs/{numericId} — the JobDetailPage route with full
-      // descriptionHtml. Company pages carry no job-level description
-      // (only a company blurb short of the >100-char meta threshold),
-      // so requiring /jobs/{id} both picks the right page and fixes
-      // the recurring missing-description errors.
-      if (!/^\/jobs\/\d+\/?$/.test(pathname)) continue
-    } else if (boardLower.includes('hiring cafe')) {
-      // Hiring Cafe job URLs are /job/{slug} (singular) with full
-      // static JobPosting content. The listing page's filter chips
-      // link to /jobs/{state} and /jobs/{keyword} (plural) — scraping
-      // those shells produced missing-description errors. Require the
-      // singular /job/ prefix.
-      if (!/^\/job\//.test(pathname)) continue
-    } else if (boardLower.includes('crossover')) {
-      // Crossover job URLs are /jobs/{numericId}/{slug}/{title}. The
-      // listing page also links to /jobs/{single-slug} category pages
-      // (e.g. /jobs/ai-engineer, /jobs/finance) that carry no
-      // JobPosting data. Require the numeric id segment.
-      if (!/^\/jobs\/\d+\//.test(pathname)) continue
-    } else if (boardLower.includes('remote rocketship')) {
-      // Remote Rocketship job URLs are /job/{slug} or
-      // /remote-job/{slug}. The search page's category links
-      // (/jobs/recruitment/, /jobs/software-engineer/,
-      // /jobs/project-manager/) are index pages, not listings —
-      // scraping them triggered Cloudflare blocks and camoufox
-      // newPage timeouts. Require the singular /job/ or
-      // /remote-job/ prefix.
-      if (!/^\/(job|remote-job)\//.test(pathname)) continue
-    } else if (boardLower.includes('ladders')) {
-      // The Ladders listing cards link to /jobs/{companySlug}/{jobId}.
-      // The rendered page also links /upgrade, /jobs/search-jobs (the
-      // search page itself), /corporate/terms, /corporate/privacy, and
-      // /corporate/editorial-policy — all of which passed the old
-      // single-URL rejection and errored with missing fields. Require
-      // the real per-job shape.
-      if (!/^\/jobs\/[^/]+\/\d+/.test(pathname)) continue
-    } else if (boardLower.includes('dribbble')) {
-      // Dribbble's real per-job URLs are /jobs/{numericId}-{slug}
-      // (e.g. /jobs/183719-Graphic-Designer). The jobs page also links
-      // the homepage ('/'), /session/new, /for-designers, /advertise,
-      // and footer social profiles — notably
-      // https://www.tiktok.com/@dribbble.com, whose handle contains
-      // the substring "dribbble.com" and thus passes the
-      // knownBoardDomains domain gate. Requiring the numeric-id job
-      // path rejects all of those (recurring missing-field errors).
-      if (!/^\/jobs\/\d+/.test(pathname)) continue
-    } else if (boardLower.includes('freelancer')) {
-      // Freelancer per-project URLs: /projects/{slug}
-      if (!pathname.startsWith('/projects/')) continue
-    } else if (boardLower.includes('peopleperhour')) {
-      // PeoplePerHour per-listing URLs: /hire/{slug}
-      if (!pathname.startsWith('/hire/')) continue
-    } else if (boardLower.includes('eluta')) {
-      // Eluta's real per-job URLs are /spl/{slug} (single-job landing
-      // pages, server-rendered with JobPosting JSON-LD). The search
-      // page also links /jobs-at-{company}?imo=N employer index pages
-      // (via onclick navigation and employer-listing sidebars) that
-      // have no description — scraping them produced recurring
-      // missing-field errors. Require the /spl/ prefix.
-      if (!pathname.startsWith('/spl/')) continue
-    } else if (boardLower.includes('jobboom')) {
-      // Jobboom per-job URLs are /en/job-offer/{slug}_p{numericId}.
-      // The search page carries a sponsored banner anchored to
-      // /en/job/?id=GXXXX (id="searchResults_commandites_banner") plus
-      // facet/category links carrying the same id as a query param
-      // (/en/permanent-job/_t1?id=..., /en/jobs-part-time/_s1?id=...).
-      // All of those render "Job search by employer" shells —
-      // scraping them produced the same missing-field errors on every
-      // scan. Require the /en/job-offer/ path (some pages prefix the
-      // locale segment).
-      if (!pathname.includes('/job-offer/')) continue
-    } else if (boardLower.includes('jobbank') || boardLower.includes('job bank')) {
-      // Job Bank (GC) real per-job URLs are /jobsearch/jobposting/{id}
-      // (optionally with ;jsessionid and ?source=searchresults). The
-      // search page also links the RSS feed
-      // (/jobsearch/feed/jobSearchRSSfeed;jsessionid=...), favourite
-      // popups (#favourite-popup-N), in-page anchors (#wb-cont,
-      // #searchString), /career-planning, and RSS-aggregator CTAs —
-      // all of which passed the generic path regex and errored with
-      // missing fields (the feed URL recurs on every scan).
-      if (!/^\/jobsearch\/jobposting\/\d+/.test(pathname)) continue
-    } else if (boardLower.includes('workbc')) {
-      // WorkBC (browser board) is a hash-routed SPA: real job cards live
-      // in the fragment (`#/job-details/{id}`). The rendered page also
-      // carries legacy .aspx links (e.g. /Jobs-Careers.aspx) whose
-      // pathname slips past the generic ^\/jobs? prefix match because
-      // there's no boundary after "Jobs" — scraping that path yields a
-      // maintenance shell with no description (recurring error on every
-      // scan). Require a hash fragment.
-      if (!fullUrl.includes('#/')) continue
-    } else {
-      // Generic branch: require the URL path itself to look like a job
-      // (the previous version also accepted links whose visible text
-      // mentioned "job"/"career" — too loose, let in nav and category
-      // links like Monster's "Browse Jobs" or Remote OK's "💼 Executive
-      // jobs"). Per-board BOARD_NAV_TEXT_PATTERNS (looked up below by
-      // the canonical board name) catches the cases the path can't.
-      //
-      // We also accept hash-routed job fragments (e.g. WorkBC's
-      // `#/job-details/49898249` or similar `#/job/...`, `#/posting/...`).
-      // Hash-routed SPAs keep the listing-page pathname but carry the
-      // job id in the fragment, so the path-only regex would drop every
-      // real card and only keep links that happen to be real paths.
-      const hash = new URL(fullUrl).hash
-      // Generic path match. The list was widened from a strict
-      // /jobs?|careers? subset to cover the real-world URL patterns
-      // used by niche boards: /posting/ (Built In), /position/
-      // (Workday), /vacancy|vacancies/ (EU government boards),
-      // /role/ (Ashby-style), /opportunity/ (Idealist), /jobid/
-      // (some legacy boards). Tighter "exactly /jobs" matches were
-      // silently dropping real listings that the user could see by
-      // browsing manually.
-      const pathMatch =
-        /^\/(jobs?|careers?|positions?|opportunities?|postings?|openings?|vacancies?|vacancy|roles?|jobid|job_id|posting|position|opportunity)/i.test(pathname) ||
-        pathname.includes('/job/') ||
-        /^#\/?(job[-_]?details?|job[-_]?posting|jobs?|posting|find[-_]?jobs?\/job|postings?)\b/i.test(hash)
-      if (!pathMatch) continue
-    }
+    if (!isJobDetailUrl(fullUrl, boardName)) continue
 
     // Per-board nav-text denylist: drop links whose visible text is
     // known header / nav / footer / category-index / search-suggestion
@@ -676,6 +583,17 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
   try {
     input = await scrapeJobFromUrl(url)
   } catch (err) {
+    if (isScraperClassificationError(err)) {
+      // Walled / anti-bot blocks still count as errors so the
+      // consecutive-blocked bailout can fire, but with a clean reason
+      // string the UI can surface as "walled". Maintenance, soft-404,
+      // and non-job URLs are skipped so they don't pollute the error
+      // tally or scraper.log.
+      if (err.reason === 'walled' || err.reason === 'empty-shell') {
+        return { action: 'error', reason: `walled: ${err.message}` }
+      }
+      return { action: 'skipped', reason: err.reason }
+    }
     return { action: 'error', reason: `Scrape failed: ${err instanceof Error ? err.message : 'Unknown'}` }
   }
 
@@ -824,12 +742,16 @@ export function nextConsecutiveBlocked(
   let batchBlocked = 0
   let counted = 0
   for (const r of results) {
+    counted++
     if (r.status === 'rejected') {
-      counted++
+      // Unexpected per-listing throws (not the normal fulfilled-error
+      // path) still indicate a blocked/unreachable board. A DB create
+      // failure would have been caught and returned as a fulfilled
+      // 'error' reason, so rejected promises here are genuine breakage.
+      batchBlocked++
       continue
     }
     const { action, reason } = r.value
-    counted++
     if (action === 'error' && reason && !/^create failed/i.test(reason)) {
       batchBlocked++
     }
@@ -1276,7 +1198,8 @@ export async function scanAllBoards(
           if (!signal?.aborted) {
             blockedBailout = true
             blockedBoards.add(board.name)
-            log.warn(`${board.name}: batch timed out after ${BATCH_TIMEOUT_MS / 60000}min; skipping remaining ${listings.length - processed - batch.length} listings`)
+            br.error = 'walled'
+            log.warn(`${board.name}: walled (batch timed out after ${BATCH_TIMEOUT_MS / 60000}min); skipping remaining ${listings.length - processed - batch.length} listings`)
           }
           break
         }
@@ -1318,7 +1241,8 @@ export async function scanAllBoards(
         if (consecutiveBlocked >= MAX_CONSECUTIVE_BLOCKED) {
           blockedBailout = true
           blockedBoards.add(board.name)
-          log.warn(`${board.name}: ${consecutiveBlocked} consecutive batches blocked by anti-bot protection; skipping remaining ${listings.length - processed} listings`)
+          br.error = 'walled'
+          log.warn(`${board.name}: walled (${consecutiveBlocked} consecutive batches blocked by anti-bot protection); skipping remaining ${listings.length - processed} listings`)
           break
         }
       }
@@ -1332,7 +1256,11 @@ export async function scanAllBoards(
       }
       // No trailing bumpFound — see the comment at br.found above.
     } catch (err) {
-      br.error = err instanceof Error ? err.message : 'Unknown error'
+      if (isScraperClassificationError(err)) {
+        br.error = err.reason
+      } else {
+        br.error = err instanceof Error ? err.message : 'Unknown error'
+      }
       result.errors.push(`${board.name}: ${br.error}`)
       // Board-level error: the per-listing loop threw before
       // categorizing every listing. totalFound was already bumped

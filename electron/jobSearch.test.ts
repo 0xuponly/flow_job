@@ -297,4 +297,13 @@ describe('nextConsecutiveBlocked', () => {
     counter = nextConsecutiveBlocked(batch, counter)
     expect(counter).toBe(3)
   })
+
+  it('counts rejected per-listing promises toward the blocked counter', () => {
+    // If fetchAndScore throws unexpectedly instead of returning a
+    // fulfilled error, the batch still counts as blocked.
+    const rejected = { status: 'rejected' as const, reason: new Error('Unexpected throw') }
+    const batch = [rejected, rejected]
+    expect(nextConsecutiveBlocked(batch, 0)).toBe(1)
+    expect(nextConsecutiveBlocked(batch, 2)).toBe(3)
+  })
 })

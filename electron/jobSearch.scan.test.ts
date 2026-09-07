@@ -110,8 +110,27 @@ describe('run-level blocked-board bailout', () => {
     expect(cv).toHaveLength(1)
     expect(cv[0].found).toBe(40)
     expect(cv[0].errors).toBe(40)
+    expect(cv[0].error).toBe('walled')
     expect(result.totalFound).toBe(40)
     expect(result.totalErrors).toBe(40)
+  })
+
+  it('bails an HTTP board after 3 consecutive blocked batches without extra fetches', async () => {
+    const result = await scanAllBoards({
+      keywords: 'data',
+      boards: ['CharityVillage'],
+      locations: [{ display: 'Vancouver' }]
+    })
+
+    const cv = result.boards.find((b) => b.board === 'CharityVillage')
+    expect(cv).toBeDefined()
+    // 40 listings, concurrency 6 -> 7 batches. Bail after 3 batches
+    // (18 listings processed), so the remaining 22 are never fetched.
+    expect(cv!.found).toBe(40)
+    expect(cv!.errors).toBe(40)
+    expect(cv!.added).toBe(0)
+    expect(cv!.skipped).toBe(0)
+    expect(cv!.error).toBe('walled')
   })
 })
 
@@ -526,6 +545,69 @@ describe('href entity unescaping (regression: Indeed /rc/clk params lost to &amp
     const urls = extractJobUrls(grid, 'https://www.indeed.com/jobs?q=developer', 'Indeed')
     expect(urls.map((u) => u.url)).toEqual([
       'https://www.indeed.com/rc/clk?jk=92b8166c200420cf&bb=MXBXYYhpaoJQ&vjs=3'
+    ])
+  })
+})
+
+describe('JSON-LD listings are filtered through per-board detail rules', () => {
+  function jsonLdBlock(url: string) {
+    return `<script type="application/ld+json">{"@type":"JobPosting","title":"Test","url":"${url}"}</script>`
+  }
+
+  it('drops Jobboom sponsored /en/job/?id=GXXXX shell URLs', () => {
+    const html = `<html><head><title>Jobboom</title></head><body>
+      ${jsonLdBlock('https://www.jobboom.com/en/job/?id=G12345')}
+      ${jsonLdBlock('https://www.jobboom.com/en/job-offer/cook_hotel-test_p1234567')}
+    </body></html>`
+    const urls = extractJobUrls(html, 'https://www.jobboom.com/en/jobs?q=developer', 'Jobboom')
+    expect(urls.map((u) => u.url)).toEqual([
+      'https://www.jobboom.com/en/job-offer/cook_hotel-test_p1234567'
+    ])
+  })
+
+  it('drops Eluta /jobs-at-{company} employer index URLs from JSON-LD', () => {
+    const html = `<html><head><title>Eluta</title></head><body>
+      ${jsonLdBlock('https://www.eluta.ca/jobs-at-mcdonalds?imo=12')}
+      ${jsonLdBlock('https://www.eluta.ca/spl/software-developer-test-co-abc123?imo=12')}
+    </body></html>`
+    const urls = extractJobUrls(html, 'https://www.eluta.ca/search?q=developer', 'Eluta.ca')
+    expect(urls.map((u) => u.url)).toEqual([
+      'https://www.eluta.ca/spl/software-developer-test-co-abc123?imo=12'
+    ])
+  })
+
+  it('drops Google Careers named filter pages from JSON-LD', () => {
+    const html = `<html><head><title>Google Careers</title></head><body>
+      ${jsonLdBlock('https://www.google.com/about/careers/applications/jobs/results/how-we-hire?q=&location=Vancouver&hl=en-GB')}
+      ${jsonLdBlock('https://www.google.com/about/careers/applications/jobs/results/123456')}
+    </body></html>`
+    const urls = extractJobUrls(html, 'https://www.google.com/about/careers/applications/jobs/results?q=developer', 'Google Careers')
+    expect(urls.map((u) => u.url)).toEqual([
+      'https://www.google.com/about/careers/applications/jobs/results/123456'
+    ])
+  })
+
+  it('drops web3.career /web3-salaries/ pages at discovery time', () => {
+    const html = `<html><head><title>Web3.career</title></head><body>
+      <a href="/web3-salaries/quantitative-developer">Salary: Quant Dev</a>
+      <a href="/learn-web3/tutorial">Learn Web3</a>
+      <a href="/hire/ai">Hire AI</a>
+      <a href="/binance-software-engineer/152415">Software Engineer</a>
+    </body></html>`
+    const urls = extractJobUrls(html, 'https://web3.career/', 'Web3.career')
+    expect(urls.map((u) => u.url)).toEqual(['https://web3.career/binance-software-engineer/152415'])
+  })
+
+  it('drops hiring.cafe /jobs/<category> listing-index pages at discovery time', () => {
+    const html = `<html><head><title>Hiring Cafe</title></head><body>
+      <a href="/jobs/software-engineer-toronto">Software Engineer jobs in Toronto</a>
+      <a href="/job/software-engineer-toronto-abc123">Software Engineer</a>
+      <a href="/?job_id=abc-123-def">Software Engineer</a>
+    </body></html>`
+    const urls = extractJobUrls(html, 'https://hiring.cafe/', 'Hiring Cafe')
+    expect(urls.map((u) => u.url)).toEqual([
+      'https://hiring.cafe/job/software-engineer-toronto-abc123',
+      'https://hiring.cafe/?job_id=abc-123-def'
     ])
   })
 })

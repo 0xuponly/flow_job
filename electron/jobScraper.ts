@@ -37,47 +37,195 @@ interface ScrapedJob {
   application_deadline?: string
 }
 
+export type ScraperFailureReason = 'walled' | 'maintenance' | 'non-job URL' | 'not-found' | 'empty-shell'
+
+/**
+ * Classified scrape failure. Carries a machine-readable `reason` so the
+ * scan pipeline can decide whether to count the listing as skipped
+ * (soft-404, maintenance, non-job URL) or as a real error (walled).
+ */
+export class ScraperClassificationError extends Error {
+  reason: ScraperFailureReason
+  constructor(message: string, reason: ScraperFailureReason) {
+    super(message)
+    this.name = 'ScraperClassificationError'
+    this.reason = reason
+  }
+}
+
+/**
+ * Classify a URL before paying for a fetch. This catches non-job /
+ * maintenance URLs that slip through listing extraction (add-by-link,
+ * stale sitemaps, direct URL imports) so they skip the browser round
+ * trip and don't pollute scraper.log with missing-field errors.
+ */
+function classifyUrl(url: string, hostname: string): ScraperFailureReason | null {
+  try {
+    const pathname = new URL(url).pathname
+
+    // WorkBC legacy maintenance page (still linked by search-result sidebars).
+    if (hostname.includes('workbc.ca') && /jobs-careers\.aspx/i.test(pathname)) {
+      return 'maintenance'
+    }
+
+    // Jobboom non-job pages: /en/job/?id=GXXXX sponsored/facet shells.
+    if (
+      hostname.includes('jobboom.com') &&
+      pathname.toLowerCase().includes('/job') &&
+      !pathname.includes('/job-offer/')
+    ) {
+      return 'non-job URL'
+    }
+
+    // Hiring Cafe listing-index pages (/jobs/{keyword|state}) carry no
+    // per-job data. Real detail URLs are /?job_id={uuid}.
+    if (hostname.includes('hiring.cafe') && pathname.toLowerCase().startsWith('/jobs/')) {
+      return 'non-job URL'
+    }
+
+    // Crossover category pages (/jobs/{category}) are prerender shells.
+    // Real job URLs are /jobs/{numericId}/{slug}/{title}.
+    if (
+      hostname.includes('crossover.com') &&
+      pathname.toLowerCase().startsWith('/jobs/') &&
+      !/^\/jobs\/\d+\//.test(pathname)
+    ) {
+      return 'non-job URL'
+    }
+
+    // Web3.career non-job navigational pages (salaries, category indexes).
+    if (
+      hostname.includes('web3.career') &&
+      /^\/(?:web3-salaries|learn-web3|hire)\b/i.test(pathname)
+    ) {
+      return 'non-job URL'
+    }
+
+    // Job Bank RSS / feed URLs are not job detail pages.
+    if (hostname.includes('jobbank.gc.ca') && pathname.includes('/feed/')) {
+      return 'non-job URL'
+    }
+
+    return null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Classify the fetched HTML before extraction. Catches maintenance pages,
+ * soft-404s, and empty anti-bot shells so they don't become missing-field
+ * errors in scraper.log.
+ */
+function classifyFetchFailure(html: string): ScraperFailureReason | null {
+  const lower = html.toLowerCase()
+  const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i)
+  const title = titleMatch ? titleMatch[1].toLowerCase() : ''
+
+  // Maintenance / service outage pages
+  if (
+    title.includes('maintenance') ||
+    title.includes('service temporarily unavailable') ||
+    title.includes('service unavailable') ||
+    lower.includes('site maintenance') ||
+    lower.includes('service temporarily unavailable')
+  ) {
+    return 'maintenance'
+  }
+
+  // 404 / soft-404 / job-not-found pages
+  if (
+    title.includes('404') ||
+    title.includes('not found') ||
+    title.includes("doesn't exist") ||
+    title.includes('does not exist') ||
+    /\b404\b/.test(title) ||
+    lower.includes('page you were looking for') ||
+    lower.includes('the job you are looking for') ||
+    lower.includes('job not found')
+  ) {
+    return 'not-found'
+  }
+
+  // Empty anti-bot shell. Anything under 200 bytes with no content
+  // wrappers is almost certainly a WAF empty response.
+  if (html.length < 200) {
+    return 'empty-shell'
+  }
+
+  return null
+}
+
+function isWalledErrorMessage(message: string): boolean {
+  return /blocked automated access|anti-bot protection|empty shell|cloudflare|challenge|blocked by/i.test(message)
+}
+
 export async function scrapeJobFromUrl(rawUrl: string, signal?: AbortSignal): Promise<CreateJobInput> {
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
   const url = normalizeUrl(rawUrl)
   const hostname = new URL(url).hostname.replace(/^www\./, '')
   const source = detectSource(hostname)
 
-  // WorkBC's public site is an Angular 12 SPA whose <app-root> only
-  // hydrates client-side, and the per-job URL is a hash fragment on
-  // the search page (`/find-job/search-jobs#/job-details/{id}`). The
-  // actual job data lives in a JSON API we can hit directly — much
-  // faster and more reliable than driving the SPA router.
-  if (hostname === 'www.workbc.ca' || hostname === 'workbc.ca') {
-    const detailMatch = new URL(url).hash.match(/^#?\/?job-details\/(\d+)/)
-    if (detailMatch) {
-      const job = await tryWorkBcApi(detailMatch[1], signal)
-      if (job) return job
-      // Fall through to the HTML path if the API call fails (e.g. the
-      // job was removed or the endpoint is down).
+  // Classify known non-job / maintenance URLs before paying for a fetch.
+  // This avoids burning a browser round trip on URLs that are guaranteed
+  // to have no extractable job data.
+  const urlReason = classifyUrl(url, hostname)
+  if (urlReason) {
+    throw new ScraperClassificationError(`URL classified as ${urlReason}`, urlReason)
+  }
+
+  try {
+    // WorkBC's public site is an Angular 12 SPA whose <app-root> only
+    // hydrates client-side, and the per-job URL is a hash fragment on
+    // the search page (`/find-job/search-jobs#/job-details/{id}`). The
+    // actual job data lives in a JSON API we can hit directly — much
+    // faster and more reliable than driving the SPA router.
+    if (hostname === 'www.workbc.ca' || hostname === 'workbc.ca') {
+      const detailMatch = new URL(url).hash.match(/^#?\/?job-details\/(\d+)/)
+      if (detailMatch) {
+        const job = await tryWorkBcApi(detailMatch[1], signal)
+        if (job) return job
+        // Fall through to the HTML path if the API call fails (e.g. the
+        // job was removed or the endpoint is down).
+      }
     }
-  }
 
-  // Workday (e.g. `ubc.wd10.myworkdayjobs.com/.../Job_Title_JR12345`) ships
-  // the full job data in the static HTML as a `JobPosting` JSON-LD block.
-  // The page is a React SPA shell that hydrates client-side, but we don't
-  // need the rendered DOM — the server-side JSON-LD has title, company,
-  // location, datePosted, employmentType, and the full description. The
-  // generic `isChallengePage` heuristic false-positives on Workday's
-  // `/cdn-cgi/challenge-platform/...` script-src boilerplate, so for these
-  // hosts we skip the challenge-detection fallback and trust the static
-  // HTML directly. The hostname match is intentionally broad to cover the
-  // whole `*.myworkdayjobs.com` / `*.workday.com` family (UBC, Amazon,
-  // Atlassian, etc. all use the same platform).
-  if (hostname.endsWith('.myworkdayjobs.com') || hostname === 'myworkdayjobs.com' || hostname.endsWith('.workday.com') || hostname === 'workday.com') {
-    const html = await fetchPageHtml(url, hostname, signal, { skipChallengeCheck: true })
+    // Workday (e.g. `ubc.wd10.myworkdayjobs.com/.../Job_Title_JR12345`) ships
+    // the full job data in the static HTML as a `JobPosting` JSON-LD block.
+    // The page is a React SPA shell that hydrates client-side, but we don't
+    // need the rendered DOM — the server-side JSON-LD has title, company,
+    // location, datePosted, employmentType, and the full description. The
+    // generic `isChallengePage` heuristic false-positives on Workday's
+    // `/cdn-cgi/challenge-platform/...` script-src boilerplate, so for these
+    // hosts we skip the challenge-detection fallback and trust the static
+    // HTML directly. The hostname match is intentionally broad to cover the
+    // whole `*.myworkdayjobs.com` / `*.workday.com` family (UBC, Amazon,
+    // Atlassian, etc. all use the same platform).
+    if (hostname.endsWith('.myworkdayjobs.com') || hostname === 'myworkdayjobs.com' || hostname.endsWith('.workday.com') || hostname === 'workday.com') {
+      const html = await fetchPageHtml(url, hostname, signal, { skipChallengeCheck: true })
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+      return finalizeWithDiagnostics(html, hostname, url, source, () => extractFromHtml(html, hostname, url, source))
+    }
+
+    const html = await fetchPageHtml(url, hostname, signal)
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-    return finalizeWithDiagnostics(html, hostname, url, source, () => extractFromHtml(html, hostname, url, source))
-  }
 
-  const html = await fetchPageHtml(url, hostname, signal)
-  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-  return finalizeWithDiagnostics(html, hostname, url, source, () => extractFromHtml(html, hostname, url, source))
+    // Classify maintenance / 404 / empty-shell pages before extraction so
+    // they don't become missing-field errors in scraper.log.
+    const fetchReason = classifyFetchFailure(html)
+    if (fetchReason) {
+      throw new ScraperClassificationError(`Fetched page classified as ${fetchReason}`, fetchReason)
+    }
+
+    return finalizeWithDiagnostics(html, hostname, url, source, () => extractFromHtml(html, hostname, url, source))
+  } catch (err) {
+    if (err instanceof ScraperClassificationError) throw err
+    const message = err instanceof Error ? err.message : String(err)
+    if (isWalledErrorMessage(message)) {
+      throw new ScraperClassificationError(message, 'walled')
+    }
+    throw err
+  }
 }
 
 /**
@@ -230,6 +378,7 @@ export function detectSource(hostname: string): string | undefined {
   if (hostname.includes('idealist.org')) return 'Idealist'
   if (hostname.includes('builtin.com')) return 'Built In'
   if (hostname.includes('careerhound.io')) return 'CareerHound'
+  if (hostname.includes('hiring.cafe')) return 'Hiring Cafe'
   if (hostname.includes('ultipro.com') || hostname.includes('ultipro.ca')) return 'UltiPro'
   if (hostname.includes('brainhunter.com')) return 'Brainhunter'
   if (hostname.includes('catsone.com')) return 'CATS One'
@@ -343,11 +492,12 @@ async function fetchPageHtml(
     : timeoutSignal
 
   // Retry on transient HTTP errors (429, 5xx) up to 2 times with
-  // 1s/3s exponential backoff. Honors Retry-After if the host
-  // sent one. The existing 30s AbortSignal.timeout is the hard
-  // upper bound — we won't retry past it. 501 (Not Implemented)
-  // is excluded because no host is going to start implementing
-  // it during our retry window.
+  // jittered exponential backoff. Jitter spreads concurrent retries
+  // so a batch of blocked listings doesn't hammer the host in a
+  // single window. Honors Retry-After if the host sent one.
+  // The existing 30s AbortSignal.timeout is the hard upper bound —
+  // we won't retry past it. 501 (Not Implemented) is excluded because
+  // no host is going to start implementing it during our retry window.
   const MAX_RETRIES = 2
   const RETRY_DELAYS_MS = [1000, 3000]
   let response: Response
@@ -387,6 +537,8 @@ async function fetchPageHtml(
     if (!transient || attempt >= MAX_RETRIES) break
     // Consume & discard the body so the connection can be reused,
     // then back off. Honor Retry-After if present (seconds or HTTP date).
+    // Add jitter to avoid a thundering herd when a batch hits the
+    // same rate-limit / WAF window.
     response.body?.cancel().catch(() => { /* ignore */ })
     let delayMs = RETRY_DELAYS_MS[attempt]
     const retryAfter = response.headers.get('retry-after')
@@ -396,6 +548,7 @@ async function fetchPageHtml(
         delayMs = Math.max(delayMs, seconds * 1000)
       }
     }
+    delayMs += Math.floor(Math.random() * 500)
     if (timeoutSignal.aborted) break
     await new Promise((r) => setTimeout(r, delayMs))
   }
@@ -410,7 +563,7 @@ async function fetchPageHtml(
     }
     if (!opts.skipChallengeCheck && isChallengePage(html)) {
       if (CF_BLOCKED_HOSTS.has(hostname)) {
-        throw new Error('This site blocked automated access (Cloudflare). Open the job in your browser and try again later.')
+        throw new ScraperClassificationError('This site blocked automated access (Cloudflare). Open the job in your browser and try again later.', 'walled')
       }
       return viaBrowser()
     }
@@ -432,7 +585,7 @@ async function fetchPageHtml(
     if (html.length < 200) {
       const browserHtml = await viaBrowser()
       if (browserHtml.length < 200) {
-        throw new Error('Blocked by anti-bot protection (empty shell)')
+        throw new ScraperClassificationError('Blocked by anti-bot protection (empty shell)', 'walled')
       }
       return browserHtml
     }
@@ -447,7 +600,7 @@ async function fetchPageHtml(
     const body = await response.text().catch(() => '')
     if (isChallengePage(body)) {
       if (CF_BLOCKED_HOSTS.has(hostname)) {
-        throw new Error('This site blocked automated access (Cloudflare). Open the job in your browser and try again later.')
+        throw new ScraperClassificationError('This site blocked automated access (Cloudflare). Open the job in your browser and try again later.', 'walled')
       }
       return viaBrowser()
     }
