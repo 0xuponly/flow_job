@@ -772,3 +772,72 @@ describe('extractMeta apostrophe handling (regression: Freelancer description)',
     }
   })
 })
+
+// Regression: the Crypto Careers board was removed from the scan
+// pipeline (5d86d64), but pasting a crypto-careers.com job URL into
+// "Add job by URL" must still work — URL import is board-independent.
+// The page has no site-specific extractor anymore, so it flows through
+// the generic JSON-LD / og-meta path. source comes back undefined and
+// createJob stores it as null, which is a legal value.
+const CRYPTO_CAREERS_JOB_HTML = `<!doctype html>
+<html>
+<head>
+  <meta property="og:title" content="Senior Backend Engineer at Blockforge">
+  <meta property="og:site_name" content="Blockforge">
+  <meta property="og:description" content="We are seeking a senior backend engineer to design and ship high-throughput trading APIs. Required: TypeScript, Node.js, PostgreSQL, Kubernetes. Nice to have: Rust, Kafka.">
+</head>
+<body>
+  <h1>Senior Backend Engineer</h1>
+  <p>Blockforge — Remote</p>
+  <section class="job-description">
+    <p>We are seeking a senior backend engineer to design and ship high-throughput trading APIs. Required: TypeScript, Node.js, PostgreSQL, Kubernetes. Nice to have: Rust, Kafka.</p>
+  </section>
+</body>
+</html>`
+
+// Sites without og:site_name/author meta fall back to the hostname
+// heuristic for company — that is the generic-path contract shared by
+// every board without a dedicated extractor.
+const CRYPTO_CAREERS_NO_META_HTML = CRYPTO_CAREERS_JOB_HTML.replace(
+  /<meta property="og:site_name"[^>]*>\n/,
+  ''
+)
+
+describe('Crypto Careers URL import after board removal', () => {
+  it('detectSource no longer maps crypto-careers.com to a board', () => {
+    expect(detectSource('crypto-careers.com')).toBeUndefined()
+    expect(detectSource('www.crypto-careers.com')).toBeUndefined()
+  })
+
+  it('does not classify a crypto-careers.com job URL as non-job/maintenance', async () => {
+    const originalFetch = global.fetch
+    global.fetch = vi.fn(async () => new Response(CRYPTO_CAREERS_JOB_HTML, { status: 200 })) as unknown as typeof fetch
+    try {
+      const result = await scrapeJobFromUrl('https://www.crypto-careers.com/job/senior-backend-engineer/')
+      expect(result.title).toBe('Senior Backend Engineer')
+      expect(result.company).toBe('Blockforge')
+      expect(result.description).toContain('trading APIs')
+      // Board removed -> no site-specific source label; URL import still
+      // succeeds and the field stores as null downstream.
+      expect(result.source).toBeUndefined()
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+
+  it('falls back to the hostname-derived company when the page has no og:site_name', async () => {
+    const originalFetch = global.fetch
+    global.fetch = vi.fn(async () => new Response(CRYPTO_CAREERS_NO_META_HTML, { status: 200 })) as unknown as typeof fetch
+    try {
+      const result = await scrapeJobFromUrl('https://www.crypto-careers.com/job/senior-backend-engineer/')
+      expect(result.title).toBe('Senior Backend Engineer')
+      // Generic extractor contract: no meta -> company comes from the
+      // hostname slug ('crypto-careers' -> 'Crypto-careers'). Same
+      // behavior as any other non-special-cased board's postings.
+      expect(result.company).toBe('Crypto-careers')
+      expect(result.description).toContain('trading APIs')
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+})
