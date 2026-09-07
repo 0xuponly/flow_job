@@ -37,6 +37,7 @@ export interface Job {
   fit_rationale: string | null
   fit_breakdown: FitBreakdown | null
   fit_score_version: number | null
+  fit_source: FitSource
   fit_last_error: string | null
   fit_error_toasted: string | null
   match_grade: MatchGrade
@@ -157,6 +158,8 @@ export interface Settings {
 
 export type MatchGrade = 'S' | 'A' | 'B' | 'C' | 'D' | 'F' | null
 
+export type FitSource = 'llm' | 'heuristic' | null
+
 export type AtsPlatform = 'greenhouse' | 'lever' | 'ashby' | 'workday' | 'smartrecruiters'
 
 export interface AtsBoard {
@@ -190,6 +193,7 @@ export interface CreateJobInput {
   work_mode?: string | null
   source?: string | null
   score?: number | null
+  fit_source?: FitSource
   notes?: string | null
   date_posted?: string | null
   application_deadline?: string | null

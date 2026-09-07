@@ -174,16 +174,33 @@ describe('runDocumentRuleChecks', () => {
     expect(kc.passed).toBe(false)
     expect(kc.detail).toMatch(/missing/i)
   })
-  it('marks one_page as estimated (not a hard pass) for both doc types', () => {
+  it('marks one_page passed when document fits the ceilings', () => {
     const doc = 'Name\nemail\n\nEXPERIENCE\nRole A\n'
     const cvRules = runDocumentRuleChecks({ document: doc, jobDescription: 'job', docType: 'cv' })
-    const clRules = runDocumentRuleChecks({ document: doc, jobDescription: 'job', docType: 'cover_letter' })
+    const clRules = runDocumentRuleChecks({ document: 'A.\n\nB.\n\nC.\n\nD.', jobDescription: 'job', docType: 'cover_letter' })
     const cvOne = cvRules.find(r => r.rule === 'one_page')!
     const clOne = clRules.find(r => r.rule === 'one_page')!
-    expect(cvOne.detail).toMatch(/estimated/i)
-    expect(clOne.detail).toMatch(/estimated/i)
+    expect(cvOne.detail).toMatch(/fits/i)
+    expect(clOne.detail).toMatch(/fits/i)
     expect(cvOne.passed).toBe(true)
     expect(clOne.passed).toBe(true)
+  })
+
+  it('marks one_page failed when CV exceeds one-page ceilings', () => {
+    const exp = (n: number) => `Role ${n}\tCity, ST\nTitle ${n}\tJan 2024 – Present\n- b1\n- b2\n- b3\n- b4\n- b5\n`
+    const md = `Name\nemail\n\nEXPERIENCE\n${exp(1)}${exp(2)}${exp(3)}${exp(4)}${exp(5)}\n`
+    const rules = runDocumentRuleChecks({ document: md, jobDescription: 'job', docType: 'cv' })
+    const onePage = rules.find(r => r.rule === 'one_page')!
+    expect(onePage.passed).toBe(false)
+    expect(onePage.detail).toMatch(/exceeds/i)
+  })
+
+  it('marks one_page failed when cover letter exceeds 4 paragraphs', () => {
+    const doc = 'A.\n\nB.\n\nC.\n\nD.\n\nE.'
+    const rules = runDocumentRuleChecks({ document: doc, jobDescription: 'job', docType: 'cover_letter' })
+    const onePage = rules.find(r => r.rule === 'one_page')!
+    expect(onePage.passed).toBe(false)
+    expect(onePage.detail).toMatch(/exceeds/i)
   })
 })
 
@@ -390,10 +407,10 @@ describe('leadership_one_line rule', () => {
 
   it('passes for 3 one-line entries', () => {
     const doc =
-      header + '\n' +
-      '**President**, UBC Coding Club\t2023 – 2024\n' +
-      '**Volunteer**, Code for America\t2022 – Present\n' +
-      '**Mentor**, Stem Fellowship\t2021 – 2022\n'
+      `${header  }\n` +
+      `**President**, UBC Coding Club\t2023 – 2024\n` +
+      `**Volunteer**, Code for America\t2022 – Present\n` +
+      `**Mentor**, Stem Fellowship\t2021 – 2022\n`
     const rules = runDocumentRuleChecks({ document: doc, jobDescription: 'job', docType: 'cv' })
     const r = rules.find((x) => x.rule === 'leadership_one_line')!
     expect(r.passed).toBe(true)
@@ -401,7 +418,7 @@ describe('leadership_one_line rule', () => {
   })
 
   it('passes for 1 one-line entry (under cap is fine)', () => {
-    const doc = header + '\n**President**, UBC\t2024\n'
+    const doc = `${header  }\n**President**, UBC\t2024\n`
     const rules = runDocumentRuleChecks({ document: doc, jobDescription: 'job', docType: 'cv' })
     const r = rules.find((x) => x.rule === 'leadership_one_line')!
     expect(r.passed).toBe(true)
@@ -409,9 +426,9 @@ describe('leadership_one_line rule', () => {
 
   it('fails when an entry has a sub-bullet', () => {
     const doc =
-      header + '\n' +
-      '**President**, UBC\t2024\n' +
-      '- A bullet\n'
+      `${header  }\n` +
+      `**President**, UBC\t2024\n` +
+      `- A bullet\n`
     const rules = runDocumentRuleChecks({ document: doc, jobDescription: 'job', docType: 'cv' })
     const r = rules.find((x) => x.rule === 'leadership_one_line')!
     expect(r.passed).toBe(false)
@@ -420,9 +437,9 @@ describe('leadership_one_line rule', () => {
 
   it('fails when an entry wraps to a second line', () => {
     const doc =
-      header + '\n' +
-      '**President**, UBC\t2024\n' +
-      'A continuation that wrapped to a new line.\n'
+      `${header  }\n` +
+      `**President**, UBC\t2024\n` +
+      `A continuation that wrapped to a new line.\n`
     const rules = runDocumentRuleChecks({ document: doc, jobDescription: 'job', docType: 'cv' })
     const r = rules.find((x) => x.rule === 'leadership_one_line')!
     expect(r.passed).toBe(false)
@@ -430,11 +447,11 @@ describe('leadership_one_line rule', () => {
 
   it('fails when there are more than 3 entries (cap)', () => {
     const doc =
-      header + '\n' +
-      '**A**, OrgA\t2024\n' +
-      '**B**, OrgB\t2023\n' +
-      '**C**, OrgC\t2022\n' +
-      '**D**, OrgD\t2021\n'
+      `${header  }\n` +
+      `**A**, OrgA\t2024\n` +
+      `**B**, OrgB\t2023\n` +
+      `**C**, OrgC\t2022\n` +
+      `**D**, OrgD\t2021\n`
     const rules = runDocumentRuleChecks({ document: doc, jobDescription: 'job', docType: 'cv' })
     const r = rules.find((x) => x.rule === 'leadership_one_line')!
     expect(r.passed).toBe(false)
@@ -463,10 +480,10 @@ describe('leadershipEntries / leadershipHasContinuationLines', () => {
 
   it('leadershipEntries counts one-line title lines under the L&A header', () => {
     const doc =
-      header + '\n' +
-      '**A**, Org\t2024\n' +
-      '**B**, Org\t2023\n' +
-      '**C**, Org\t2022\n'
+      `${header  }\n` +
+      `**A**, Org\t2024\n` +
+      `**B**, Org\t2023\n` +
+      `**C**, Org\t2022\n`
     expect(leadershipEntries(doc)).toBe(3)
   })
 
@@ -477,17 +494,17 @@ describe('leadershipEntries / leadershipHasContinuationLines', () => {
 
   it('leadershipHasContinuationLines is true when an entry has a sub-bullet', () => {
     const doc =
-      header + '\n' +
-      '**A**, Org\t2024\n' +
-      '- bullet\n'
+      `${header  }\n` +
+      `**A**, Org\t2024\n` +
+      `- bullet\n`
     expect(leadershipHasContinuationLines(doc)).toBe(true)
   })
 
   it('leadershipHasContinuationLines is false for clean one-line entries', () => {
     const doc =
-      header + '\n' +
-      '**A**, Org\t2024\n' +
-      '**B**, Org\t2023\n'
+      `${header  }\n` +
+      `**A**, Org\t2024\n` +
+      `**B**, Org\t2023\n`
     expect(leadershipHasContinuationLines(doc)).toBe(false)
   })
 })

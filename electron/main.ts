@@ -219,7 +219,8 @@ function registerIpc(): void {
           score: 0.31,
           fit_rationale: 'No base CV configured.',
           fit_breakdown: { matched_skills: [], missing_skills: [], experience_years_match: null },
-          fit_score_version: currentVersion
+          fit_score_version: currentVersion,
+          fit_source: 'heuristic'
         })
         emitJobScoreUpdated(jobId)
         return updated
@@ -236,12 +237,16 @@ function registerIpc(): void {
         title: job.title,
         description: job.description,
         requirements: job.requirements,
+        location: job.location,
         baseCv
       })
       if (fit.source === 'heuristic') {
         // Don't pretend a heuristic fallback is a real fit score.
         try {
-          const updated = db.updateJob(jobId, { fit_last_error: fit.error || 'LLM scorer fell back to heuristic.' })
+          const updated = db.updateJob(jobId, {
+            fit_last_error: fit.error || 'LLM scorer fell back to heuristic.',
+            fit_source: 'heuristic'
+          })
           emitJobScoreUpdated(jobId)
           return updated
         } catch (err) {
@@ -258,6 +263,7 @@ function registerIpc(): void {
           fit_rationale: fit.rationale,
           fit_breakdown: fit.breakdown,
           fit_score_version: currentVersion,
+          fit_source: 'llm',
           fit_last_error: null
         })
         emitJobScoreUpdated(jobId)

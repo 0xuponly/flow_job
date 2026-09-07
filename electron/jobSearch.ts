@@ -634,6 +634,7 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
         fit_rationale: 'Pre-filtered by heuristic (low keyword overlap)',
         fit_breakdown: null,
         fit_score_version: null,
+        fit_source: 'heuristic',
         fit_last_error: null
       })
       seenUrlsSet.add(dk)
@@ -658,6 +659,7 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
       title: input.title,
       description: input.description || null,
       requirements: input.requirements || null,
+      location: input.location || null,
       baseCv
     }, signal), signal)) as Awaited<ReturnType<typeof scoreJobFit>>
     if (process.env.FLOW_JOB_SCAN_TIMING) {
@@ -701,13 +703,15 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
             score: null,
             fit_rationale: null,
             fit_breakdown: null,
-            fit_score_version: null
+            fit_score_version: null,
+            fit_source: 'heuristic' as const
           }
         : {
             score: fit.score,
             fit_rationale: fit.rationale,
             fit_breakdown: fit.breakdown,
-            fit_score_version: getSettings().cv_version ?? 0
+            fit_score_version: getSettings().cv_version ?? 0,
+            fit_source: 'llm' as const
           }),
       fit_last_error: isHeuristic ? (fit.error || 'LLM scorer fell back to heuristic.') : null
     })
@@ -1012,8 +1016,8 @@ export async function scanAllBoards(
             const { job } = createJob({
               ...input,
               ...(baseCv && heuristicScore < HEURISTIC_FLOOR
-                ? { score: null, fit_rationale: 'Pre-filtered by heuristic (low keyword overlap)', fit_breakdown: null, fit_score_version: null, fit_last_error: null }
-                : { score: null, fit_rationale: null, fit_breakdown: null, fit_score_version: null, fit_last_error: null })
+                ? { score: null, fit_rationale: 'Pre-filtered by heuristic (low keyword overlap)', fit_breakdown: null, fit_score_version: null, fit_source: 'heuristic' as const, fit_last_error: null }
+                : { score: null, fit_rationale: null, fit_breakdown: null, fit_score_version: null, fit_source: null as const, fit_last_error: null })
             })
             if (dk) { seenUrls.add(dk); scanSeenUrls.add(dk) }
             added++

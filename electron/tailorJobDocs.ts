@@ -1,5 +1,11 @@
 import { tailorDocument } from './ai'
 import {
+  enforceAllCvCeilings,
+  enforceParagraphCeilings,
+  runDocumentRuleChecks,
+  type RuleCheck
+} from '../src/documentRules'
+import {
   getJob,
   writeDocuments,
   writeTailorTimingFields,
@@ -12,6 +18,46 @@ export interface TailorJobDocsResult {
   clId: number
   ms_cv: number
   ms_cl: number
+}
+
+function noopLog() {
+  // intentionally empty — logging is opt-in via FLOW_JOB_VERBOSE
+}
+
+
+function pickErrorMessage(
+  cvFailed: boolean,
+  cvError: string | undefined,
+  clFailed: boolean,
+  clError: string | undefined
+): string | null {
+  if (cvFailed) return cvError ?? 'cv_failed'
+  if (clFailed) return clError ?? 'cl_failed'
+  return null
+}
+
+function sanitizeDocument(
+  content: string,
+  docType: 'cv' | 'cover_letter',
+  jobDescription: string
+): { content: string; rules: RuleCheck[] } {
+  const verboseLog = process.env.FLOW_JOB_VERBOSE ? console.info : noopLog
+  const sanitized = docType === 'cover_letter'
+    ? enforceParagraphCeilings(content, { max: 4, log: verboseLog })
+    : enforceAllCvCeilings(content, { jobDescription, log: verboseLog })
+
+  const rules = runDocumentRuleChecks({
+    document: sanitized,
+    jobDescription,
+    docType
+  })
+  const failed = rules.filter((r) => !r.passed)
+  if (failed.length > 0) {
+    verboseLog(
+      `[tailor] ${docType} failed rule checks after sanitization: ${failed.map((r) => r.rule).join(', ')}`
+    )
+  }
+  return { content: sanitized, rules }
 }
 
 export async function tailorJobDocsForJob(jobId: number): Promise<TailorJobDocsResult> {
@@ -33,14 +79,22 @@ export async function tailorJobDocsForJob(jobId: number): Promise<TailorJobDocsR
     log.tailor.error(cvFailed ? 'cv_failed' : 'cl_failed', { jobId })
   }
 
+  const jobDescription = job.description ?? ''
+  const cvContent = cv.result
+    ? sanitizeDocument(cv.result.content, 'cv', jobDescription).content
+    : null
+  const clContent = cl.result
+    ? sanitizeDocument(cl.result.content, 'cover_letter', jobDescription).content
+    : null
+
   // Atomic: write whatever docs succeeded + the timing fields + status.
   // If both failed, write neither doc and only the error fields.
   const ids = cvFailed && clFailed
     ? { cvId: 0, clId: 0 }
     : await writeDocuments({
         jobId,
-        cvContent: cv.result?.content ?? null,
-        clContent: cl.result?.content ?? null
+        cvContent,
+        clContent
       })
 
   await writeTailorTimingFields({
@@ -48,11 +102,7 @@ export async function tailorJobDocsForJob(jobId: number): Promise<TailorJobDocsR
     ms_cv: cv.ms,
     ms_cl: cl.ms,
     generatedAt: !cvFailed && !clFailed ? Date.now() : null,
-    lastError: cvFailed
-      ? (cv.error ?? 'cv_failed')
-      : clFailed
-        ? (cl.error ?? 'cl_failed')
-        : null
+    lastError: pickErrorMessage(cvFailed, cv.error, clFailed, cl.error)
   })
 
   if (!cvFailed && !clFailed) {

@@ -46,8 +46,8 @@ function queueItem(overrides: Partial<AIQueueItem>): AIQueueItem {
 function scoredJob(overrides: Partial<Job>): Job {
   return {
     id: 42, title: 'Engineer', company: 'Acme', status: 'sourced', score: null,
-    fit_breakdown: null, fit_score_version: null, fit_last_error: null,
-    fit_error_toasted: null, notes: null, date_posted: null,
+    fit_breakdown: null, fit_score_version: null, fit_source: null,
+    fit_last_error: null, fit_error_toasted: null, notes: null, date_posted: null,
     application_deadline: null, last_updated: null, created_at: '',
     updated_at: '', match_grade: null, tailor_ms_cv: null, tailor_ms_cl: null,
     tailor_generated_at: null, tailor_last_error: null, tailor_error_toasted: null,

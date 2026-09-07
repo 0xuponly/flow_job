@@ -5,7 +5,7 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
 import { log } from './logger'
-import { scoreCompatibility, extractEducationLevel, extractYearsExperience } from './fitHeuristic'
+import { scoreCompatibilityStructured, extractEducationLevel, extractYearsExperience } from './fitHeuristic'
 import { runDocumentRuleChecks } from '../src/documentRules'
 import { extractJobKeywordsStructured, extractJobKeywords, mergeKeywordResults } from '../src/keywordExtractor'
 import { loadKeywordAllowlists } from '../src/keywordAllowlists'
@@ -121,22 +121,127 @@ interface CallAIResult {
   errors: string[]
 }
 
-/**
- * Try all configured AI models.
- * - Returns content + modelUsed on first success.
- * - If all fail and at least one returned 429, throws RateLimitError.
- * - If all fail for other reasons, throws Error with collected error messages.
- */
-export async function callAI(
+const DEFAULT_MAX_TOKENS = 2048
+
+// Slug patterns that identify rerank/embeddings models that do not belong in
+// the chat/completions rotation. OpenRouter returns 400 when these are sent to
+// the chat endpoint.
+const RERANK_MODEL_PATTERNS = [/rerank/i]
+
+function isRerankModel(slug: string): boolean {
+  return RERANK_MODEL_PATTERNS.some((p) => p.test(slug))
+}
+
+function getMaxTokens(model?: ApiModelConfig): number {
+  const env = Number(process.env.FLOW_JOB_MAX_TOKENS)
+  if (Number.isFinite(env) && env > 0) return env
+  if (model?.max_tokens && Number.isFinite(model.max_tokens) && model.max_tokens > 0) {
+    return model.max_tokens
+  }
+  return DEFAULT_MAX_TOKENS
+}
+
+function eligibleModels(): ApiModelConfig[] {
+  const models = listApiModels().filter((m) => m.enabled !== false && !isRerankModel(m.model))
+  if (models.length === 0) {
+    const all = listApiModels().filter((m) => m.enabled !== false)
+    if (all.length > 0) {
+      log.ai.warn('[ai] All enabled models are rerank/embeddings models; chat rotation is empty.')
+    }
+  }
+  return models
+}
+
+// Per-model health: cooldown after 429 and circuit-breaker after persistent
+// client errors (401/402/404). Exported reset is for tests only.
+interface ModelHealth {
+  nextAvailableAt: number
+  consecutiveFailures: number
+  circuitOpenUntil: number
+}
+
+const modelHealth = new Map<string, ModelHealth>()
+
+export function resetModelHealth(): void {
+  modelHealth.clear()
+}
+
+function modelKey(model: ApiModelConfig): string {
+  return model.id || `${model.base_url}::${model.model}`
+}
+
+function getHealth(model: ApiModelConfig): ModelHealth {
+  return modelHealth.get(modelKey(model)) ?? {
+    nextAvailableAt: 0,
+    consecutiveFailures: 0,
+    circuitOpenUntil: 0
+  }
+}
+
+function isModelAvailable(model: ApiModelConfig): boolean {
+  const now = Date.now()
+  const health = getHealth(model)
+  return now >= health.circuitOpenUntil && now >= health.nextAvailableAt
+}
+
+function availableModels(): ApiModelConfig[] {
+  return eligibleModels().filter(isModelAvailable)
+}
+
+function recordModelSuccess(model: ApiModelConfig): void {
+  modelHealth.delete(modelKey(model))
+}
+
+const MAX_429_BACKOFF_MS = 10 * 60 * 1000
+const CIRCUIT_BREAKER_MS = 60 * 60 * 1000
+const NETWORK_ERROR_BACKOFF_MS = 5000
+const SERVER_ERROR_BACKOFF_MS = 15000
+
+function recordModelFailure(model: ApiModelConfig, statusCode: number | null, isTimeout: boolean): void {
+  const key = modelKey(model)
+  const health = getHealth(model)
+  health.consecutiveFailures++
+
+  if (statusCode === 429) {
+    const backoff = Math.min(15000 * 2 ** (health.consecutiveFailures - 1), MAX_429_BACKOFF_MS)
+    health.nextAvailableAt = Date.now() + backoff
+  } else if (statusCode === 401 || statusCode === 402 || statusCode === 404) {
+    // Persistent client errors: open circuit breaker for 1 hour so we don't
+    // burn seconds on every request retrying a dead/payment-required model.
+    health.circuitOpenUntil = Date.now() + CIRCUIT_BREAKER_MS
+    health.nextAvailableAt = health.circuitOpenUntil
+  } else if (isTimeout) {
+    health.nextAvailableAt = Date.now() + NETWORK_ERROR_BACKOFF_MS
+  } else {
+    // 5xx and other transient errors.
+    health.nextAvailableAt = Date.now() + SERVER_ERROR_BACKOFF_MS
+  }
+
+  modelHealth.set(key, health)
+}
+
+function hashString(s: string): string {
+  let h = 5381
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) + h + s.charCodeAt(i)) >>> 0
+  }
+  return h.toString(36)
+}
+
+function coalesceKey(systemPrompt: string, userPrompt: string, temperature: number, maxTokens: number): string {
+  return `${hashString(systemPrompt)}:${hashString(userPrompt)}:${temperature}:${maxTokens}`
+}
+
+const inFlightRequests = new Map<string, Promise<CallAIResult>>()
+
+async function tryModels(
+  models: ApiModelConfig[],
   systemPrompt: string,
   userPrompt: string,
-  temperature = 0.7,
-  timeoutMs = 20000,
+  temperature: number,
+  timeoutMs: number,
   externalSignal?: AbortSignal
 ): Promise<CallAIResult> {
-  const models: ApiModelConfig[] = listApiModels().filter((m) => m.enabled !== false)
-  if (models.length === 0) throw new Error('No enabled AI models configured. Add one in Settings.')
-
   let content: string | null = null
   let modelUsed: string | null = null
   let rateLimited = false
@@ -148,7 +253,7 @@ export async function callAI(
     // when disabled is one string compare per request.
     if (process.env.FLOW_JOB_DEBUG_AI === '1') {
       log.ai.info(
-        `[ai] req name="${model.name}" host=${hostOf(model.base_url)} key=${fingerprintKey(model.api_key)} modelId=${model.model} body=${redactBody('')}`
+        `[ai] req name="${model.name}" host=${hostOf(model.base_url)} key=${fingerprintKey(model.api_key)} modelId=${model.model} max_tokens=${getMaxTokens(model)} body=${redactBody('')}`
       )
     }
     try {
@@ -175,7 +280,8 @@ export async function callAI(
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt }
           ],
-          temperature
+          temperature,
+          max_tokens: getMaxTokens(model)
         })
       })
       clearTimeout(timer)
@@ -185,12 +291,15 @@ export async function callAI(
         content = data.choices[0]?.message?.content ?? null
         if (content) {
           modelUsed = model.name || model.model
+          recordModelSuccess(model)
           break
         }
         errors.push(`${model.name}: empty response`)
+        recordModelFailure(model, null, false)
       } else if (response.status === 429) {
         rateLimited = true
         errors.push(`${model.name}: rate limited (429)`)
+        recordModelFailure(model, 429, false)
       } else if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 425) {
         // Persistent client error — auth, payment required, not found, etc.
         // These won't fix themselves on retry, so record the failure with
@@ -206,14 +315,18 @@ export async function callAI(
         // blow up the toast with megabytes of HTML.
         const trimmed = errText.replace(/\s+/g, ' ').trim().slice(0, 200)
         errors.push(trimmed ? `${model.name}: ${label} — ${trimmed}` : `${model.name}: ${label}`)
+        recordModelFailure(model, response.status, false)
       } else {
         // 5xx, 408 (request timeout), 425 (too early) — transient, worth
         // continuing to the next model.
         errors.push(`${model.name}: HTTP ${response.status}`)
+        recordModelFailure(model, response.status, false)
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error'
-      errors.push(`${model.name}: ${msg.includes('aborted') ? 'timeout' : msg}`)
+      const isTimeout = msg.includes('aborted')
+      errors.push(`${model.name}: ${isTimeout ? 'timeout' : msg}`)
+      recordModelFailure(model, null, isTimeout)
     }
   }
 
@@ -225,6 +338,54 @@ export async function callAI(
   }
 
   return { content, modelUsed, rateLimited: false, errors: [] }
+}
+
+/**
+ * Try all configured AI models.
+ * - Returns content + modelUsed on first success.
+ * - If all fail and at least one returned 429, throws RateLimitError.
+ * - If all fail for other reasons, throws Error with collected error messages.
+ *
+ * Implements per-model 429 cooldown (exponential backoff), circuit breaker for
+ * persistent client errors (401/402/404), and request coalescing so duplicate
+ * concurrent calls share a single in-flight request.
+ */
+export async function callAI(
+  systemPrompt: string,
+  userPrompt: string,
+  temperature = 0.7,
+  timeoutMs = 20000,
+  externalSignal?: AbortSignal
+): Promise<CallAIResult> {
+  const models = availableModels()
+  const allEligible = eligibleModels()
+
+  if (allEligible.length === 0) {
+    throw new Error('No enabled AI models configured. Add one in Settings.')
+  }
+
+  if (models.length === 0) {
+    // Every eligible model is on cooldown or circuit-broken.
+    throw new RateLimitError('All configured AI models are cooling down after rate limits or persistent errors — try again shortly.')
+  }
+
+  const maxTokens = getMaxTokens()
+  const key = coalesceKey(systemPrompt, userPrompt, temperature, maxTokens)
+  const existing = inFlightRequests.get(key)
+  if (existing) {
+    if (process.env.FLOW_JOB_DEBUG_AI === '1') {
+      log.ai.info('[ai] coalescing duplicate request')
+    }
+    return existing
+  }
+
+  const promise = tryModels(models, systemPrompt, userPrompt, temperature, timeoutMs, externalSignal)
+  inFlightRequests.set(key, promise)
+  promise.then(
+    () => inFlightRequests.delete(key),
+    () => inFlightRequests.delete(key)
+  )
+  return promise
 }
 
 const EXTRACTION_SYSTEM_PROMPT = `You extract keywords from a job description for ATS and recruiter screening.
@@ -799,12 +960,19 @@ function heuristicFit(input: {
   title: string
   description: string | null
   requirements: string | null
+  location: string | null
   baseCv: string
   cvEduLevel: number
   cvYears: number
   error?: string
 }): JobFitResult {
-  const score = scoreCompatibility(input.title, input.description || '', input.baseCv)
+  const score = scoreCompatibilityStructured({
+    title: input.title,
+    description: input.description,
+    requirements: input.requirements,
+    location: input.location,
+    baseCv: input.baseCv
+  })
   return {
     score,
     rationale: `Heuristic score based on keyword overlap. CV education level: ${input.cvEduLevel || 'unspecified'}, years experience: ${input.cvYears || 'unspecified'}.`,
@@ -826,6 +994,7 @@ export async function scoreJobFit(input: {
   title: string
   description: string | null
   requirements: string | null
+  location?: string | null
   baseCv: string
 }, signal?: AbortSignal): Promise<JobFitResult> {
   const cvEduLevel = extractEducationLevel(input.baseCv)

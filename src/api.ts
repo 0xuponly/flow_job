@@ -5,6 +5,7 @@ import type {
   CreateJobInput,
   DashboardStats,
   Document,
+  FitSource,
   FollowUp,
   Interview,
   Job,
@@ -26,7 +27,7 @@ export interface Api {
   listJobs: (status?: JobStatus) => Promise<Job[]>
   getJob: (id: number) => Promise<Job | undefined>
   createJob: (input: CreateJobInput) => Promise<{ job: Job; wasBlacklisted: boolean }>
-  updateJob: (id: number, fields: Partial<CreateJobInput & { status: JobStatus; fit_last_error: string | null; fit_error_toasted: string | null }>) => Promise<Job>
+  updateJob: (id: number, fields: Partial<CreateJobInput & { status: JobStatus; fit_source: FitSource; fit_last_error: string | null; fit_error_toasted: string | null }>) => Promise<Job>
   deleteJob: (id: number) => Promise<void>
   deleteJobs: (ids: number[]) => Promise<{ requested: number; deleted: number; missingFromStore: number[]; stillPresentAfterFilter: number[] }>
   dedupeJobs: () => Promise<{ removedIds: number[]; remaining: number }>
