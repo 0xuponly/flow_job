@@ -7,7 +7,8 @@ import {
   mergeKeywordResults,
   keywordMatchPattern,
   coverageForKeywords,
-  missingForKeywords
+  missingForKeywords,
+  PMI_NOISE_WORDS
 } from './keywordExtractor'
 import { loadKeywordAllowlists, matchKey, KEYWORD_ALIASES, PHRASE_ALIASES } from './keywordAllowlists'
 import type { KeywordEntry, KeywordResult } from './types'
@@ -1116,6 +1117,104 @@ describe('round-2 allowlist + alias expansion', () => {
       // entry per list; >2 distinct keys is suspicious duplication
       expect(count, phrase).toBeLessThanOrEqual(3)
     }
+  })
+})
+
+describe('PMI false-negative guards (skills survive the noise filter)', () => {
+  const lists = loadKeywordAllowlists()
+
+  // Strongest guard: every allowlist phrase (hard/soft/cert/seniority/
+  // phrase_boost) whose tokens intersect PMI_NOISE_WORDS must still
+  // surface from a sentence mentioning it. Allowlisted phrases bypass
+  // the noise filter entirely — the found-check short-circuits first.
+  it('every allowlisted phrase containing a noise word still surfaces', () => {
+    const guarded = new Set<string>()
+    for (const entry of lists.byKey.values()) {
+      const words = matchKey(entry.phrase).split(' ')
+      if (words.length >= 2 && words.some((w) => PMI_NOISE_WORDS.has(w))) {
+        guarded.add(entry.phrase)
+      }
+    }
+    for (const entry of lists.phraseBoostByKey.values()) {
+      const words = matchKey(entry.phrase).split(' ')
+      if (words.length >= 2 && words.some((w) => PMI_NOISE_WORDS.has(w))) {
+        guarded.add(entry.phrase)
+      }
+    }
+    expect(guarded.size, 'expected real allowlist coverage of noise-word phrases').toBeGreaterThan(0)
+
+    for (const phrase of guarded) {
+      const jd = `${phrase} is required. We value ${phrase} in this role.`
+      const phrases = extractPhases(jd, 'required').map((k) => k.phrase)
+      expect(phrases, `allowlisted phrase "${phrase}" must survive the noise filter`).toContain(phrase)
+    }
+  })
+
+  it('allowlisted skills embedded in boilerplate prose still surface', () => {
+    const out = extractPhases(
+      '5+ years of experience required. You need Kafka experience. Experience with Kafka is essential.',
+      'required'
+    )
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('kafka')
+    // the noise filter itself is still active
+    expect(phrases).not.toContain('years experience')
+    expect(phrases).not.toContain('kafka experience')
+  })
+
+  it('allowlisted phrases containing noise words are never suppressed', () => {
+    // "team" (noise) + "building", "deep" (noise) + "learning",
+    // "time" (noise) + "management", "full" (noise) + "stack":
+    // the found-check short-circuits before the noise filter.
+    const out = extractPhases(
+      'We invest in team building and deep learning. Real time systems and time management matter. Full stack ownership expected. Team building weekly. Deep learning models. Real time pipelines.',
+      'required'
+    )
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('team building')
+    expect(phrases).toContain('deep learning')
+    expect(phrases).toContain('time management')
+    expect(phrases).toContain('full stack')
+    expect(phrases).toContain('real time')
+  })
+
+  it('noise filter may drop a PAIR, never the SKILL itself', () => {
+    // "kubernetes experience" is noise-suppressed, but "kubernetes"
+    // is an allowlisted skill and must survive — a missed skill means
+    // the CV omits it for ATS.
+    const out = extractPhases(
+      'Kubernetes experience required. Experience with kubernetes preferred.',
+      'required'
+    )
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('kubernetes')
+    expect(phrases).not.toContain('kubernetes experience')
+  })
+
+  it('repeated genuine devops skills without noise words still surface', () => {
+    const out = extractPhases(
+      'Incident response ownership. We practice incident response weekly. Incident response drills are monthly.',
+      'required'
+    )
+    expect(out.map((k) => k.phrase)).toContain('incident response')
+  })
+
+  it('repeated genuine finance skills without noise words still surface', () => {
+    const out = extractPhases(
+      'We build risk models. Risk models drive our decisions. The risk models improve quarterly.',
+      'required'
+    )
+    expect(out.map((k) => k.phrase)).toContain('risk models')
+  })
+
+  it('alias-canonicalized skills near boilerplate survive', () => {
+    const out = extractPhases(
+      'K8s experience is a must. Experience with k8s required. Years of k8s experience.',
+      'required'
+    )
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('kubernetes')
+    expect(phrases).not.toContain('kubernetes experience')
   })
 })
 

@@ -422,7 +422,12 @@ const PMI_THRESHOLD = 2.0
 // listed here, so they never surface as keywords — which also keeps
 // them out of coverage checks, where they could never realistically be
 // matched in a tailored CV or cover letter.
-const PMI_NOISE_WORDS = new Set([
+//
+// Exported for tests: the false-negative guard asserts that no genuine
+// allowlisted skill containing one of these words can be suppressed
+// (allowlisted phrases bypass the filter entirely — the found-check
+// short-circuits before the noise check).
+export const PMI_NOISE_WORDS: ReadonlySet<string> = new Set([
   // function words (≥3 chars — shorter tokens are already skipped)
   'the', 'and', 'with', 'for', 'you', 'your', 'our', 'are', 'will', 'that',
   'this', 'from', 'have', 'has', 'had', 'not', 'but', 'all', 'any', 'can',
