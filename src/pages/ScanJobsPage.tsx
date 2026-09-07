@@ -4,7 +4,7 @@ import { LocationPicker } from '../components/LocationPicker'
 import { parseLocationPicks } from '../utils'
 import type { LocationPick } from '../locations'
 import type { ScanResult, WorkType } from '../types'
-import { BOARD_TYPES, groupOf, groupSelection, expandFailingToGroups } from '../boardTypes'
+import { BOARD_TYPES, groupOf, groupSelection, expandFailingToGroups, isFrequentErrorBoard } from '../boardTypes'
 import { usePersistedState } from '../persistedState'
 import { applyProgressBatch, applyProgressMessage } from './scanProgress'
 
@@ -43,8 +43,8 @@ function formatEstimate(ms: number): string {
   return `est. ${hours} hour${hours === 1 ? '' : 's'}${mins > 0 ? ` ${mins} mins` : ''}`
 }
 
-// A board is a "Frequent Error" if its last 3+ health entries are all
-// `<= 0` (i.e. it consistently returns no jobs or errors). Used both
+// A board is a "Frequent Error" if it ERRORED on its last 2+
+// consecutive scans (see isFrequentErrorBoard). Used both
 // to (a) deselect these boards by default in the picker, and
 // (b) render the "+/- Frequent Errors" toggle button.
 function findFrequentErrorBoards(
@@ -52,10 +52,7 @@ function findFrequentErrorBoards(
   boardHealth: Record<string, number[]>
 ): string[] {
   return boards
-    .filter((b) => {
-      const history = boardHealth[b.name] || []
-      return history.length >= 3 && history.every((h) => h <= 0)
-    })
+    .filter((b) => isFrequentErrorBoard(boardHealth[b.name] || []))
     .map((b) => b.name)
 }
 
@@ -308,8 +305,8 @@ export default function ScanJobsPage() {
         setAllBoards(boards)
         setBoardHealth(health)
         // Default: all selected EXCEPT boards flagged as "Frequent
-        // Errors" (3+ recent runs with no jobs found). Auto-scanning
-        // boards that consistently return 0 listings burns time and
+        // Errors" (2+ consecutive errored scans). Auto-scanning
+        // boards that consistently error burns time and
         // adds noise to the result; let the user opt back in via the
         // "Select Frequent Errors" button if they want to retry.
         // Only apply the default if no selection has been persisted
@@ -808,13 +805,11 @@ export default function ScanJobsPage() {
               }}>
                 {Array.from(membersByGroup.entries()).map(([group, members]) => {
                   const checked = members.every((m) => selectedBoards.has(m.name))
-                  // Red if any member's last 3 results were all
-                  // zero/errored — the group label flags the board
-                  // even when only one variant is failing.
-                  const allBad = members.some((m) => {
-                    const history = boardHealth[m.name] || []
-                    return history.length >= 3 && history.every((h) => h <= 0)
-                  })
+                  // Red if any member ERRORED on its last 2+ consecutive
+                  // scans (see isFrequentErrorBoard) — the group label
+                  // flags the board even when only one variant is failing.
+                  const allBad = members.some((m) =>
+                    isFrequentErrorBoard(boardHealth[m.name] || []))
                   return (
                     <label
                       key={group}

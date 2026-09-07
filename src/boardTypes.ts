@@ -20,6 +20,19 @@ export function groupOf(name: string): string {
   return BOARD_GROUP_OF[name] ?? name
 }
 
+// Red "frequent error" flag: a board is failing when its last 2 or
+// more CONSECUTIVE health entries are all strictly negative (i.e. the
+// board ERRORED on 2+ scans in a row). A zero-find, no-error scan
+// records 0, which breaks the streak — legitimately finding no jobs is
+// not an error, and such boards must not go red. History is oldest-
+// first (recordBoardResults pushes), so the newest entries are at the
+// end of the array.
+export function isFrequentErrorBoard(history: number[]): boolean {
+  let streak = 0
+  for (let i = history.length - 1; i >= 0 && history[i] < 0; i--) streak++
+  return streak >= 2
+}
+
 // Expand failing board names to the full member list of their picker
 // group. The red "frequent errors" flag is group-level (the checkbox
 // goes red when ANY member is failing), so the "+/- Errors" bulk

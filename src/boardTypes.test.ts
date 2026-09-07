@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { groupOf, groupSelection, expandFailingToGroups } from './boardTypes'
+import { groupOf, groupSelection, expandFailingToGroups, isFrequentErrorBoard } from './boardTypes'
 
 describe('groupOf', () => {
   it('maps variants to their canonical group', () => {
@@ -84,5 +84,36 @@ describe('expandFailingToGroups', () => {
 
   it('returns empty for empty input', () => {
     expect(expandFailingToGroups([], boards)).toEqual([])
+  })
+})
+
+describe('isFrequentErrorBoard (red flag = 2+ consecutive errored scans)', () => {
+  // Red means "errored on the last 2 or more consecutive scans" —
+  // strictly negative entries, newest at the END of the array
+  // (recordBoardResults pushes). A 0 entry (scan ran fine, found no
+  // jobs) breaks the streak and must NOT keep the board red
+  // (regression 2026-09-06: zero-find boards stayed red forever under
+  // the old "last 3 all <= 0" rule).
+  it('red after 2 consecutive errored scans (newest last)', () => {
+    expect(isFrequentErrorBoard([-1, -1])).toBe(true)
+    expect(isFrequentErrorBoard([-1, 5, -1, -1])).toBe(true)
+    expect(isFrequentErrorBoard([-1, -1, 4, -1, -1])).toBe(true)
+  })
+
+  it('not red for 0 or 1 errored scan', () => {
+    expect(isFrequentErrorBoard([])).toBe(false)
+    expect(isFrequentErrorBoard([-1])).toBe(false)
+  })
+
+  it('zero-find scan breaks the streak (finding no jobs is not an error)', () => {
+    // oldest → newest: errored, errored, then a clean zero-find scan
+    expect(isFrequentErrorBoard([-1, -1, 0])).toBe(false)
+    expect(isFrequentErrorBoard([-1, -1, 0, -1, -1])).toBe(true)
+    expect(isFrequentErrorBoard([0, -1, -1])).toBe(true)
+  })
+
+  it('positive entry breaks the streak', () => {
+    expect(isFrequentErrorBoard([-1, -1, 3])).toBe(false)
+    expect(isFrequentErrorBoard([-1, 3, -1])).toBe(false)
   })
 })
