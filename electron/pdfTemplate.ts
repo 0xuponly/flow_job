@@ -14,12 +14,16 @@ const sectionHeaders = new Set([
 ])
 
 function stripMarkdown(s: string): string {
-  return s.replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1').replace(/__(.+?)__/g, '$1').replace(/_(.+?)_/g, '$1')
+  return s
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/__(.+?)__/g, '$1')
+    .replace(/_(.+?)_/g, '$1')
 }
 
 function isHeader(s: string): boolean {
   const cleaned = stripMarkdown(s).toLowerCase().trim()
-  return sectionHeaders.has(cleaned) || /^[a-z\s&]+$/.test(cleaned) && sectionHeaders.has(cleaned.replace(/[^a-z\s&]/g, '').trim())
+  return sectionHeaders.has(cleaned) || (/^[a-z\s&]+$/.test(cleaned) && sectionHeaders.has(cleaned.replace(/[^a-z\s&]/g, '').trim()))
 }
 
 function esc(s: string) {
@@ -45,19 +49,44 @@ const dateRangeAnyRe = /\b([A-Z][a-z]+\.?\s+\d{4}\s*[–\-—]+\s*(?:[A-Z][a-z]+
 // Loose location suffix on an org line (single space ok): "Org City, ST" / "Org City, Country"
 const orgLocationLooseRe = /,\s*(?:[A-Z]{2}|[A-Z][a-z]+)(?:\s+\d{5})?$/
 
+function noopLog() {
+  // intentionally empty — silences culling trace logs during PDF export
+}
+
 // Cover letters are plain text with a paragraph cap; CVs use the
 // Harvard-format ceiling helper. Both run before the markdown parser.
 //
 // The culling helpers' trace lines default to console.info and would
 // print to the terminal during every PDF export. Silence them by
 // default; FLOW_JOB_VERBOSE=1 restores the original console output.
-const NOOP_LOG = () => {}
 function applyDocumentRules(raw: string, kind: string, jobDesc: string): string {
-  const log = process.env.FLOW_JOB_VERBOSE ? undefined : NOOP_LOG
+  const log = process.env.FLOW_JOB_VERBOSE ? undefined : noopLog
   if (kind === 'cover_letter') {
     return enforceParagraphCeilings(raw, { max: 4, log })
   }
   return enforceAllCvCeilings(raw, { jobDescription: jobDesc, log })
+}
+
+function splitLineHtml(left: string, right: string): string {
+  // Flexbox keeps the DOM reading order left-to-right while visually
+  // pushing the right side to the margin. This is safer for ATS text
+  // extraction than float:right, which can reverse the perceived order.
+  return `<div class="split-line"><span class="left">${esc(left)}</span><span class="right">${esc(right)}</span></div>\n`
+}
+
+function bulletHtml(text: string): string {
+  // Embed the bullet character directly so the text layer is intact even
+  // if a CSS parser strips the ::before pseudo-element.
+  return `<div class="bullet"><span class="bullet-marker">• </span>${esc(text)}</div>\n`
+}
+
+function sectionHeaderHtml(text: string): string {
+  // Semantic heading improves ATS parseability and accessibility.
+  return `<h2 class="section-header">${esc(text)}</h2>\n`
+}
+
+function bodyLineHtml(text: string): string {
+  return `<div class="body-line">${esc(text)}</div>\n`
 }
 
 export function buildPdfHtml(content: string, docType: string, documentId: number | null, scale: number): string {
@@ -70,23 +99,45 @@ export function buildPdfHtml(content: string, docType: string, documentId: numbe
     }
   }
 
+  const isCoverLetter = docType === 'cover_letter'
   const culled = applyDocumentRules(content, docType ?? 'cv', jobDescription)
   const lines = culled.split('\n')
   let htmlBody = ''
   let headerCollected = false
   const headerLines: string[] = []
   let noBulletSection = false
+  let inParagraph = false
+
+  function closeParagraph() {
+    if (inParagraph) {
+      htmlBody += '</p>\n'
+      inParagraph = false
+    }
+  }
+
+  function openParagraph() {
+    if (!inParagraph) {
+      htmlBody += '<p class="body-paragraph">'
+      inParagraph = true
+    } else {
+      htmlBody += ' '
+    }
+  }
 
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i]
     const trimmed = raw.trim()
     const cleaned = stripMarkdown(trimmed).trim()
-    if (!cleaned) { htmlBody += '<div class="spacer"></div>\n'; continue }
+    if (!cleaned) {
+      closeParagraph()
+      htmlBody += '<div class="spacer"></div>\n'
+      continue
+    }
 
     const sect = isHeader(trimmed)
     const hasTab = cleaned.includes('\t')
     const hasMultiSpace = dateRangeRe.test(cleaned) || locationSuffixRe.test(cleaned)
-    const isBullet = /^[•\-*\d+.)\]\s]/.test(cleaned) || bulletVerbs.test(cleaned)
+    const isBullet = /^([•-]|\*\s|\d+[.)])/.test(cleaned) || bulletVerbs.test(cleaned)
 
     // Look-ahead: next non-empty line looks like a date range? Then current is an org line.
     let nextClean = ''
@@ -97,63 +148,85 @@ export function buildPdfHtml(content: string, docType: string, documentId: numbe
       break
     }
     const nextIsDateLine = nextClean && (dateRangeRe.test(nextClean) || dateRangeAnyRe.test(nextClean))
-    const looksLikeOrgLine = !hasTab && !hasMultiSpace && !isBullet && !!nextIsDateLine && orgLocationLooseRe.test(cleaned)
+    const looksLikeOrgLine = !hasTab && !hasMultiSpace && !isBullet && Boolean(nextIsDateLine) && orgLocationLooseRe.test(cleaned)
     const looksLikeTitleLine = !hasTab && !hasMultiSpace && !isBullet && dateRangeAnyRe.test(cleaned) && cleaned !== nextClean
 
     if (sect) {
+      closeParagraph()
       const lower = stripMarkdown(trimmed).toLowerCase().trim()
       noBulletSection = noBulletSections.has(lower)
       if (!headerCollected) headerCollected = true
-      htmlBody += `<div class="section-header">${esc(cleaned)}</div>\n`
+      htmlBody += sectionHeaderHtml(cleaned)
       continue
     }
 
     if (!headerCollected) {
       if (isBullet) {
         headerCollected = true
-      } else if (headerLines.length < 3) { headerLines.push(cleaned); continue }
-        else { headerCollected = true }
+      } else if (headerLines.length < 3) {
+        headerLines.push(cleaned)
+        continue
+      } else {
+        headerCollected = true
+      }
     }
 
-    if (isBullet) { htmlBody += `<div class="bullet">${esc(cleaned.replace(/^[•\-\*\d+.)\]\s]+/, ''))}</div>\n`; continue }
+    if (isBullet) {
+      closeParagraph()
+      const text = cleaned.replace(/^[•\-*\d.()\]\s]+/, '')
+      htmlBody += bulletHtml(text)
+      continue
+    }
 
     if (hasTab) {
+      closeParagraph()
       const parts = cleaned.split('\t')
       const [label, rest] = splitTab(parts[0], parts.slice(1).join(' '))
-      htmlBody += `<div class="split-line"><span class="left">${esc(label)}</span><span class="right">${esc(rest)}</span></div>\n`
+      htmlBody += splitLineHtml(label, rest)
     } else if (hasMultiSpace) {
+      closeParagraph()
       const m = cleaned.match(dateRangeRe) || cleaned.match(locationSuffixRe)!
       const label = cleaned.slice(0, m.index).replace(/^\*+|\*+$/g, '').trim()
       const rest = cleaned.slice(m.index).replace(/^\s+/, '').trim()
-      htmlBody += `<div class="split-line"><span class="left">${esc(label)}</span><span class="right">${esc(rest)}</span></div>\n`
+      htmlBody += splitLineHtml(label, rest)
     } else if (looksLikeOrgLine) {
+      closeParagraph()
       // Split off location suffix (last ", XX" chunk) as the right-aligned side.
       const m = cleaned.match(orgLocationLooseRe)!
       const label = cleaned.slice(0, m.index).replace(/,\s*$/, '').trim()
       const rest = cleaned.slice(m.index).replace(/^,\s*/, '').trim()
-      htmlBody += `<div class="split-line"><span class="left">${esc(label)}</span><span class="right">${esc(rest)}</span></div>\n`
+      htmlBody += splitLineHtml(label, rest)
     } else if (looksLikeTitleLine) {
+      closeParagraph()
       // Title line with embedded date range (no wide gap, no tab). Split at date start.
       const m = cleaned.match(dateRangeAnyRe)!
       const label = cleaned.slice(0, m.index).replace(/,\s*$/, '').trim()
       const rest = cleaned.slice(m.index).trim()
-      htmlBody += `<div class="split-line"><span class="left">${esc(label)}</span><span class="right">${esc(rest)}</span></div>\n`
+      htmlBody += splitLineHtml(label, rest)
     } else if (cleaned.includes('|') && cleaned.length < 120) {
+      closeParagraph()
       const parts = cleaned.split('|').map(s => s.replace(/^\*+|\*+$/g, '').trim())
-      htmlBody += `<div class="split-line"><span class="left">${esc(parts[0])}</span><span class="right">${esc(parts.slice(1).join(' | '))}</span></div>\n`
+      htmlBody += splitLineHtml(parts[0], parts.slice(1).join(' | '))
     } else if (noBulletSection) {
-      htmlBody += `<div class="body-line">${esc(cleaned)}</div>\n`
+      closeParagraph()
+      htmlBody += bodyLineHtml(cleaned)
+    } else if (isCoverLetter) {
+      openParagraph()
+      htmlBody += esc(cleaned)
     } else {
-      htmlBody += `<div class="bullet">${esc(cleaned)}</div>\n`
+      closeParagraph()
+      htmlBody += bulletHtml(cleaned)
     }
   }
 
+  closeParagraph()
+
   const headerHtml = headerLines.length > 0
-    ? `<div class="header">${headerLines.map((l, j) => j === 0 ? `<div class="name">${esc(l)}</div>` : `<div class="contact">${esc(l)}</div>`).join('\n')}</div>`
+    ? `<header class="header">${headerLines.map((l, j) => j === 0 ? `<h1 class="name">${esc(l)}</h1>` : `<div class="contact">${esc(l)}</div>`).join('\n')}</header>`
     : ''
 
   return `<!DOCTYPE html>
-<html>
+<html lang="en">
 <head><meta charset="utf-8"><style>
   @page { margin: 0.6in 0.7in; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -162,12 +235,13 @@ export function buildPdfHtml(content: string, docType: string, documentId: numbe
   .name { font-size: 12pt; font-weight: bold; }
   .contact { font-size: 10pt; color: #222; }
   .section-header { text-align: center; font-weight: bold; font-size: 11pt; margin-top: 12px; margin-bottom: 3px; }
-  .split-line { margin-bottom: 1px; }
+  .split-line { display: flex; justify-content: space-between; margin-bottom: 1px; }
   .split-line .left { font-weight: bold; }
-  .split-line .right { float: right; }
-  .bullet { margin-bottom: 1px; padding-left: 20px; text-indent: -10px; }
-  .bullet::before { content: "• "; }
+  .split-line .right { text-align: right; }
+  .bullet { display: flex; margin-bottom: 1px; padding-left: 10px; }
+  .bullet-marker { flex-shrink: 0; width: 10px; }
   .body-line { margin-bottom: 1px; }
+  .body-paragraph { margin-bottom: 6px; }
   .spacer { height: 6px; }
   .scale-wrapper { transform: scale(${scale}); transform-origin: top left; width: ${(100 / scale).toFixed(4)}%; }
 </style></head>

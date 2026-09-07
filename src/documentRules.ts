@@ -115,7 +115,7 @@ export function leadershipEntries(markdown: string): number {
     if (sawTitle) continue
     // A `*` is a bullet only when followed by whitespace, not another
     // `*` (which would be the start of a `**bold**` title line).
-    const isBullet = /^([•\-]|\*\s|\d+[.)])/.test(t)
+    const isBullet = /^([•-]|\*\s|\d+[.)])/.test(t)
     if (isBullet) continue
     count++
     sawTitle = true
@@ -149,7 +149,7 @@ export function leadershipHasContinuationLines(markdown: string): boolean {
     }
     // A `*` is a bullet only when followed by whitespace, not another
     // `*` (which would be the start of a `**bold**` title line).
-    const isBullet = /^([•\-]|\*\s|\d+[.)])/.test(t)
+    const isBullet = /^([•-]|\*\s|\d+[.)])/.test(t)
     if (!isBullet) sawTitle = true
   }
   return false
@@ -193,6 +193,38 @@ const KEYWORD_THRESHOLDS: Record<'cv' | 'cover_letter', number> = {
   cover_letter: 0.72
 }
 
+const NOOP_LOG = () => {
+  // intentionally empty — used by the verifier to compare against enforced output
+}
+
+function checkOnePage(args: {
+  document: string
+  jobDescription: string
+  docType: 'cv' | 'cover_letter'
+}): RuleCheck {
+  const { document, jobDescription, docType } = args
+  if (docType === 'cover_letter') {
+    const enforced = enforceParagraphCeilings(document, { max: 4, log: NOOP_LOG })
+    const passed = enforced === document
+    return {
+      rule: 'one_page',
+      passed,
+      detail: passed
+        ? 'cover letter fits 4-paragraph ceiling'
+        : 'cover letter exceeds 4-paragraph one-page ceiling'
+    }
+  }
+  const enforced = enforceAllCvCeilings(document, { jobDescription, log: NOOP_LOG })
+  const passed = enforced === document
+  return {
+    rule: 'one_page',
+    passed,
+    detail: passed
+      ? 'CV fits one-page ceilings'
+      : 'CV exceeds one-page ceilings (experience/leadership/skills/education)'
+  }
+}
+
 export function runDocumentRuleChecks(args: {
   document: string
   jobDescription: string
@@ -228,11 +260,7 @@ export function runDocumentRuleChecks(args: {
       }
     : { rule: 'skills_count', passed: true, detail: 'n/a (cover letter)' }
 
-  const onePageCheck: RuleCheck = {
-    rule: 'one_page',
-    passed: true,
-    detail: 'estimated from text length (no PDF available in verifier)'
-  }
+  const onePageCheck = checkOnePage(args)
 
   let leadershipCheck: RuleCheck
   if (docType === 'cv') {
@@ -344,8 +372,7 @@ export function enforceSkillsCeilings(
   let technicalKeptCount = 0
   let droppedOtherLabels = 0
 
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i]
+  for (const raw of lines) {
     const t = raw.trim()
     if (isHeaderLine(t)) {
       if (isSkillsHeader(t)) {

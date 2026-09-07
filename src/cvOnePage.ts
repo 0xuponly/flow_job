@@ -80,8 +80,7 @@ export function enforceOnePageCeilings(markdown: string, opts: CullOptions = {})
 
   const isBulletStart = (s: string) => /^[•\-*\d+.)\]]/.test(s)
 
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i]
+  for (const raw of lines) {
     const trimmed = raw.trim()
     if (isHeader(trimmed)) {
       // Count any in-flight dropped entry as a final dropped entry when
@@ -251,8 +250,7 @@ export function enforceLeadershipOneLine(
   let droppedContinuation = 0
   let droppedEntries = 0
 
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i]
+  for (const raw of lines) {
     const trimmed = raw.trim()
     if (isHeader(trimmed)) {
       // If we were dropping an over-cap entry, count it now.
@@ -287,7 +285,7 @@ export function enforceLeadershipOneLine(
     // A `*` is a bullet only when followed by whitespace, not another
     // `*` (which would be the start of a `**bold**` title line). This
     // matches the L&A title format: `**Title**, Org<tab>Year`.
-    const isBullet = /^([•\-]|\*\s|\d+[.)])/.test(trimmed)
+    const isBullet = /^([•-]|\*\s|\d+[.)])/.test(trimmed)
 
     if (!titleLineSeen) {
       // We're at the start of a new entry. Title line is the first
