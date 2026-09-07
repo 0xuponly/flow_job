@@ -104,6 +104,159 @@ describe('parseSections', () => {
     expect(s.required).toMatch(/rust/)
     expect(s.preferred).toMatch(/haskell/)
   })
+
+  it('buckets "Preferred Qualifications" into preferred, not required', () => {
+    const jd = [
+      'Engineer',
+      '',
+      'Minimum qualifications',
+      '- python',
+      '',
+      'Preferred qualifications',
+      '- kubernetes'
+    ].join('\n')
+    const s = parseSections(jd)
+    expect(s.required).toMatch(/python/)
+    expect(s.required).not.toMatch(/kubernetes/)
+    expect(s.preferred).toMatch(/kubernetes/)
+  })
+
+  it('classifies markdown-dressed headings (##, **bold**, trailing colon)', () => {
+    const jd = [
+      'Engineer',
+      '',
+      '## Requirements',
+      '- python',
+      '',
+      '**Nice to have**',
+      '- rust',
+      '',
+      'Preferred:',
+      '- golang'
+    ].join('\n')
+    const s = parseSections(jd)
+    expect(s.required).toMatch(/python/)
+    expect(s.preferred).toMatch(/rust/)
+    expect(s.preferred).toMatch(/golang/)
+  })
+
+  it('strips markdown dressing from the title', () => {
+    expect(parseSections('# Senior Engineer\n\nBody').title).toBe('Senior Engineer')
+    expect(parseSections('**Staff Engineer**\n\nBody').title).toBe('Staff Engineer')
+    expect(parseSections('Backend Engineer:\n\nBody').title).toBe('Backend Engineer')
+  })
+
+  it('does not flip buckets on prose lines that merely contain header words', () => {
+    const jd = [
+      'Engineer',
+      '',
+      'Requirements',
+      '- python',
+      'Python is a plus for this role',
+      'We would love SQL experience',
+      'The ideal candidate will include Terraform in their toolkit',
+      '',
+      'About',
+      'Small team'
+    ].join('\n')
+    const s = parseSections(jd)
+    // All the prose lines stay in the required bucket — no preferred/reset flips.
+    expect(s.required).toMatch(/python is a plus/i)
+    expect(s.required).toMatch(/we would love sql/i)
+    expect(s.required).toMatch(/terraform/i)
+    expect(s.preferred).toBe('')
+    expect(s.body).toMatch(/small team/i)
+  })
+
+  it('treats "What we\'re looking for" and "Who you are" as required headings', () => {
+    const jd = [
+      'Engineer',
+      '',
+      "What we're looking for",
+      '- python',
+      '',
+      'Who you are',
+      '- pragmatic'
+    ].join('\n')
+    const s = parseSections(jd)
+    expect(s.required).toMatch(/python/)
+    expect(s.required).toMatch(/pragmatic/)
+  })
+
+  it('classifies more required/preferred heading variants', () => {
+    const jd = [
+      'Engineer',
+      '',
+      'Must-haves',
+      '- python',
+      '',
+      'Basic Qualifications',
+      '- sql',
+      '',
+      'Good to have',
+      '- rust',
+      '',
+      'Bonus points',
+      '- k8s'
+    ].join('\n')
+    const s = parseSections(jd)
+    expect(s.required).toMatch(/python/)
+    expect(s.required).toMatch(/sql/)
+    expect(s.preferred).toMatch(/rust/)
+    expect(s.preferred).toMatch(/k8s/)
+  })
+
+  it('resets to body on more trailing-section headings', () => {
+    const jd = [
+      'Engineer',
+      '',
+      'Requirements',
+      '- python',
+      '',
+      'How to apply',
+      'Send us your resume',
+      '',
+      'Our benefits',
+      'Health insurance'
+    ].join('\n')
+    const s = parseSections(jd)
+    expect(s.required).not.toMatch(/resume/)
+    expect(s.body).toMatch(/resume/i)
+    expect(s.body).toMatch(/health insurance/i)
+  })
+
+  it('does not reset on wrapped content lines inside a required section', () => {
+    const jd = [
+      'Engineer',
+      '',
+      'Requirements',
+      '- python',
+      'About the platform you will design scalable services',
+      'Our team, our stack: you own it end to end',
+      '',
+      'About',
+      'Small team'
+    ].join('\n')
+    const s = parseSections(jd)
+    expect(s.required).toMatch(/about the platform/i)
+    expect(s.required).toMatch(/our team, our stack/i)
+    expect(s.body).not.toMatch(/about the platform/i)
+  })
+
+  it('never treats bullet lines as headers, even with section words', () => {
+    const jd = [
+      'Engineer',
+      '',
+      'About the role',
+      '- required: 3 years of Python',
+      '- plus points for Rust'
+    ].join('\n')
+    const s = parseSections(jd)
+    expect(s.body).toMatch(/required: 3 years/i)
+    expect(s.body).toMatch(/plus points for rust/i)
+    expect(s.required).toBe('')
+    expect(s.preferred).toBe('')
+  })
 })
 
 describe('extractPhases', () => {

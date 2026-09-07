@@ -7,26 +7,69 @@ import type { KeywordAllowlists } from './keywordAllowlists'
 import type { KeywordCategory, KeywordSource, KeywordEntry, KeywordResult } from './types'
 export type { KeywordCategory, KeywordSource, KeywordEntry, KeywordResult }
 
-const REQUIRED_RE = /required|must have|requirements|qualifications|what you(?:'| wi)ll need|minimum qualifications|essential/i
-const PREFERRED_RE = /preferred|nice to have|bonus|plus|would be great|desired/i
+const REQUIRED_RE = /\b(requirements?|required|must[- ]?haves?|basic qualifications|minimum qualifications|qualifications|essential|what you(?:'|’)ll need|what you will need|what we(?:'|’)re looking for|what we are looking for|who you are|what you bring)\b/i
+// Tested before REQUIRED_RE so a heading like "Preferred Qualifications"
+// (which contains both words) lands in the preferred bucket.
+const PREFERRED_RE = /\b(preferred|nice[- ]?to[- ]?haves?|bonus|plus(?:es)?|good to have|desired|extras?|differentiators?)\b/i
 // Section-noun phrases that signal "we are now back in body" — these are
 // the typical headings that follow a required/preferred block.
-const RESET_RE = /^(about|overview|company|role|benefits|perks|equal opportunity|what we offer|what we|who we|why|how we|mission|vision|summary|responsibilities|what you'll do|what you will do|compensation|salary)\b/i
+const RESET_RE = /^(about|overview|company|role|responsibilities|duties|benefits|perks|equal opportunity|what we|who we|why|how we|how to apply|apply now|join|our team|mission|vision|summary|what you'll do|what you will do|compensation|salary|interview process|working at|life at)\b/i
+
+// Lines that start like prose, not like a heading. Guards every header
+// classification so body/bullet text never flips the section bucket.
+const HEADING_START_BLOCK_RE = /^(we|our|ours|you|your|you're|youre|this|that|these|those|it|its|there|they|their|the|i|me|my)\b/i
+const HEADING_MODAL_RE = /\b(is|are|was|were|be|been|being|will|would|can|could|should|shall|do|does|did|include|includes|including)\b/i
+const A_PLUS_RE = /\b(?:a|an)\s+plus\b/i
+
+function looksLikeHeading(t: string): boolean {
+  if (t.split(/\s+/).length > 8) return false
+  if (/[,:;]/.test(t)) return false
+  if (HEADING_START_BLOCK_RE.test(t)) return false
+  if (HEADING_MODAL_RE.test(t)) return false
+  if (A_PLUS_RE.test(t)) return false
+  return true
+}
+
+// Strips markdown dressing (ATX hashes, full-line bold, trailing
+// emphasis/colon) so "## Requirements", "**Nice to have**" and
+// "Requirements:" classify like their plain forms.
+function normalizeHeaderCandidate(raw: string): string {
+  let t = raw.trim()
+  t = t.replace(/^#{1,6}\s*/, '')
+  t = t.replace(/^\*\*(.+?)\*\*\s*$/, '$1')
+  t = t.replace(/^__(.+?)__\s*$/, '$1')
+  t = t.replace(/\s*[*_`~]+$/, '')
+  t = t.replace(/\s*:\s*$/, '')
+  return t.trim()
+}
 
 function isHeaderLine(line: string): { required: true } | { preferred: true } | { reset: true } | null {
-  const t = line.trim()
+  const t = normalizeHeaderCandidate(line)
   if (t === '') return null
-  // Headers are short, title-cased or all-caps lines without terminal punctuation.
+  // Headers are short lines without terminal sentence punctuation.
   if (t.length > 60) return null
   if (/[.!?]$/.test(t)) return null
-  if (REQUIRED_RE.test(t)) return { required: true }
-  if (PREFERRED_RE.test(t)) return { preferred: true }
-  // List-item lines (starting with -, *, •, or a digit) are not headers.
+  // List-item lines (starting with -, *, •, or a digit) are content,
+  // never headers — even when they contain a section word.
   if (/^[-*•\d]/.test(t)) return null
-  // A line starting with a known section-noun phrase (About, Overview,
-  // Company, Benefits, etc.) resets the bucket back to body.
-  if (RESET_RE.test(t)) return { reset: true }
+  if (PREFERRED_RE.test(t) && looksLikeHeading(t)) return { preferred: true }
+  if (REQUIRED_RE.test(t) && looksLikeHeading(t)) return { required: true }
+  // Reset headings are gated the same way, so a wrapped content line
+  // like "About the platform you will design..." inside a required
+  // section does not falsely reset the bucket to body.
+  if (RESET_RE.test(t) && looksLikeHeading(t)) return { reset: true }
   return null
+}
+
+// Cosmetics for the extracted title: drop markdown dressing and any
+// trailing colon ("# Senior Engineer:" → "Senior Engineer").
+function normalizeTitle(raw: string): string {
+  let t = raw.trim()
+  t = t.replace(/^#{1,6}\s*/, '')
+  t = t.replace(/^\*\*(.+?)\*\*\s*$/, '$1')
+  t = t.replace(/^__(.+?)__\s*$/, '$1')
+  t = t.replace(/\s*:\s*$/, '')
+  return t.trim()
 }
 
 export function parseSections(description: string): {
@@ -48,7 +91,7 @@ export function parseSections(description: string): {
     // The first non-empty line is always the title; never treat it as a header.
     if (!titleSeen) {
       if (t === '') continue
-      title = t
+      title = normalizeTitle(t)
       titleSeen = true
       continue
     }
