@@ -9,7 +9,7 @@ import {
   coverageForKeywords,
   missingForKeywords
 } from './keywordExtractor'
-import { loadKeywordAllowlists, matchKey, KEYWORD_ALIASES } from './keywordAllowlists'
+import { loadKeywordAllowlists, matchKey, KEYWORD_ALIASES, PHRASE_ALIASES } from './keywordAllowlists'
 import type { KeywordEntry, KeywordResult } from './types'
 
 // ---------------------------------------------------------------------------
@@ -128,7 +128,7 @@ const FIXTURES: Fixture[] = [
     requiredHas: ['financial modeling and valuation', 'advanced excel skills'],
     preferredHas: ['cfa charterholder', 'power bi experience'],
     bodyHas: ['M&A transactions'],
-    keywordsContain: ['communication', 'cfa']
+    keywordsContain: ['financial modeling', 'excel', 'communication', 'cfa', 'power bi']
   },
   {
     name: 'low-latency trading engineer posting',
@@ -150,7 +150,7 @@ const FIXTURES: Fixture[] = [
     requiredHas: ['modern c++', 'linux performance tuning', 'fix protocol'],
     preferredHas: ['kdb+/q time-series'],
     bodyHas: ['A proprietary trading firm'],
-    keywordsContain: ['c++', 'linux']
+    keywordsContain: ['c++', 'linux', 'fix protocol', 'kdb+', 'low latency']
   },
   {
     name: 'posting with no required/preferred sections at all',
@@ -164,7 +164,7 @@ const FIXTURES: Fixture[] = [
     requiredHas: [],
     preferredHas: [],
     bodyHas: ['owns campaigns end to end', 'report on SEO performance', 'Looker and Snowflake'],
-    keywordsContain: ['a/b testing', 'snowflake']
+    keywordsContain: ['a/b testing', 'looker', 'snowflake']
   },
   {
     name: 'cloud/devops posting with bonus section',
@@ -231,7 +231,7 @@ const FIXTURES: Fixture[] = [
     title: 'Product Manager',
     requiredHas: ['product management', 'sql and analytics'],
     preferredHas: ['competitive salary expectations', 'health insurance familiarity'],
-    keywordsContain: ['product management'],
+    keywordsContain: ['product management', 'sql'],
     keywordsNotContain: ['equal opportunity', 'years experience']
   },
   {
@@ -250,7 +250,7 @@ const FIXTURES: Fixture[] = [
     title: 'Full Stack Engineer',
     requiredHas: ['k8s in production', 'js and node.js', 'ci/cd ownership'],
     preferredHas: ['postgres tuning'],
-    keywordsContain: ['kubernetes', 'javascript', 'node', 'ci/cd', 'postgres']
+    keywordsContain: ['kubernetes', 'javascript', 'node', 'ci/cd', 'postgres', 'full stack']
   },
   {
     name: 'prose bullets without terminal punctuation and wrapped lines',
@@ -1024,6 +1024,98 @@ describe('coverage-safe keyword matching (additive helpers)', () => {
     const keywords = extractJobKeywords(jd)
     expect(keywords).toContain('c++')
     expect(coverageForKeywords('I write C++ and C# daily', keywords)).toBeGreaterThan(0)
+  })
+})
+
+describe('round-2 allowlist + alias expansion', () => {
+  const lists = loadKeywordAllowlists()
+
+  it('resolves spelled-out vendor names to canonical cloud phrases', () => {
+    const out = extractPhases('Experience with Amazon Web Services and Google Cloud.', 'required')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('aws')
+    expect(phrases).toContain('gcp')
+    expect(out.find((k) => k.phrase === 'aws')!.category).toBe('hard')
+  })
+
+  it('resolves "Google Cloud Platform" and "Microsoft Azure" too', () => {
+    const out = extractPhases('GCP / Google Cloud Platform / Microsoft Azure exposure.', 'body')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases.filter((p) => p === 'gcp')).toHaveLength(1)
+    expect(phrases).toContain('azure')
+  })
+
+  it('maps py/tf shorthand where unambiguous', () => {
+    const out = extractPhases('Solid py and tf foundations.', 'required')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('python')
+    expect(phrases).toContain('terraform')
+  })
+
+  it('maps PowerBI spelling to the "power bi" entry', () => {
+    expect(KEYWORD_ALIASES['powerbi']).toBe('power bi')
+    const out = extractPhases('Dashboards in PowerBI.', 'required')
+    expect(out.map((k) => k.phrase)).toContain('power bi')
+  })
+
+  it('PHRASE_ALIASES keys are match-key forms', () => {
+    expect(PHRASE_ALIASES['amazon web services']).toBe('aws')
+    expect(matchKey('Amazon Web Services')).toBe('amazon web services')
+  })
+
+  it('expanded data/devops terms are extracted', () => {
+    const out = extractPhases('Databricks, Trino, Jenkins and Ansible in production.', 'required')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('databricks')
+    expect(phrases).toContain('trino')
+    expect(phrases).toContain('jenkins')
+    expect(phrases).toContain('ansible')
+  })
+
+  it('expanded finance/fintech terms are extracted', () => {
+    const out = extractPhases(
+      'Backtesting, P&L attribution, GAAP reporting and Bloomberg terminal skills.',
+      'required'
+    )
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('backtesting')
+    expect(phrases).toContain('p&l')
+    expect(phrases).toContain('gaap')
+    expect(phrases).toContain('bloomberg')
+  })
+
+  it('expanded finance certs land in the cert category', () => {
+    const out = extractPhases('CFA Level II charterholder; passed Series 7 and Series 63.', 'preferred')
+    for (const entry of out) {
+      if (['cfa level ii', 'series 7', 'series 63'].includes(entry.phrase)) {
+        expect(entry.category, entry.phrase).toBe('cert')
+      }
+    }
+    expect(out.map((k) => k.phrase)).toContain('cfa level ii')
+    expect(out.map((k) => k.phrase)).toContain('series 7')
+  })
+
+  it('does not emit bare "fix"; only "fix protocol" counts', () => {
+    const out = extractPhases('Ability to fix bugs quickly. FIX protocol knowledge required.', 'required')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('fix protocol')
+    expect(phrases).not.toContain('fix')
+  })
+
+  it('extras do not duplicate JSON entries', () => {
+    const before = new Set(['python', 'aws', 'kubernetes'])
+    for (const p of before) expect(lists.hard.has(p)).toBe(true)
+    // count uniqueness via byKey: one entry per phrase
+    const seen = new Map<string, number>()
+    for (const e of lists.byKey.values()) {
+      seen.set(e.phrase, (seen.get(e.phrase) ?? 0) + 1)
+    }
+    for (const [phrase, count] of seen) {
+      // a phrase may legitimately appear under several match keys
+      // (raw + canonical + phrase aliases) but should resolve to one
+      // entry per list; >2 distinct keys is suspicious duplication
+      expect(count, phrase).toBeLessThanOrEqual(3)
+    }
   })
 })
 
