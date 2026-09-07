@@ -341,6 +341,36 @@ function pmiFor(phrase: string, tokens: string[]): number {
 
 const PMI_THRESHOLD = 2.0
 
+// Boilerplate/generic words whose tight co-occurrence carries no skill
+// signal ("years experience", "equal opportunity", "competitive
+// salary"). A PMI-discovered bigram is discarded when either word is
+// listed here, so they never surface as keywords — which also keeps
+// them out of coverage checks, where they could never realistically be
+// matched in a tailored CV or cover letter.
+const PMI_NOISE_WORDS = new Set([
+  // function words (≥3 chars — shorter tokens are already skipped)
+  'the', 'and', 'with', 'for', 'you', 'your', 'our', 'are', 'will', 'that',
+  'this', 'from', 'have', 'has', 'had', 'not', 'but', 'all', 'any', 'can',
+  'who', 'what', 'when', 'how', 'why', 'its', 'they', 'them', 'their',
+  'was', 'were', 'been', 'being', 'also', 'more', 'most', 'other', 'others',
+  'new', 'use', 'used', 'using', 'etc', 'include', 'includes', 'including',
+  // recruitment boilerplate
+  'years', 'year', 'experience', 'ability', 'abilities', 'opportunity',
+  'opportunities', 'candidate', 'candidates', 'ideal', 'strong', 'excellent',
+  'exceptional', 'proven', 'demonstrated', 'extensive', 'relevant', 'related',
+  'solid', 'deep', 'good', 'great', 'plus', 'bonus', 'required', 'preferred',
+  'minimum', 'maximum', 'essential', 'qualified', 'skills', 'skill',
+  // benefits/compensation boilerplate
+  'salary', 'insurance', 'benefits', 'benefit', 'vacation', 'pto', 'remote',
+  'hybrid', 'onsite', 'office', 'flexible', 'hours', 'paid', 'compensation',
+  'equity', 'stock', '401k',
+  // generic workplace nouns
+  'team', 'teams', 'company', 'role', 'roles', 'position', 'positions',
+  'job', 'jobs', 'work', 'working', 'workplace', 'environment', 'culture',
+  'full', 'part', 'time', 'day', 'daily', 'week', 'weekly', 'month',
+  'monthly'
+])
+
 // Maps a single token through the alias table ("k8s" → "kubernetes",
 // "js" → "javascript", "golang" → "go"). Multi-token phrases are left
 // alone so emitted keywords stay coverage-matchable word sequences.
@@ -381,9 +411,12 @@ export function extractPhases(section: string, source: KeywordSource): KeywordEn
   }
 
   // 3. PMI n-gram discovery for bigrams not in any list, count >= 2, PMI >= threshold.
+  //    Pairs containing a noise word are skipped: high PMI alone does not
+  //    make boilerplate ("years experience") a keyword.
   for (const bg of bigrams(tokens)) {
     if (found.has(bg)) continue
     if (bg.split(' ').some((w) => w.length < 3)) continue
+    if (bg.split(' ').some((w) => PMI_NOISE_WORDS.has(w))) continue
     const pmi = pmiFor(bg, tokens)
     if (pmi >= PMI_THRESHOLD) {
       add(bg, bg, 'hard')

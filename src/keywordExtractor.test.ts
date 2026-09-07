@@ -308,6 +308,65 @@ describe('extractPhases', () => {
   })
 })
 
+describe('PMI noise control', () => {
+  it('never surfaces "years experience" boilerplate despite high PMI', () => {
+    const out = extractPhases(
+      'Need 5 years experience. We value years experience with systems.',
+      'required'
+    )
+    expect(out.map((k) => k.phrase)).not.toContain('years experience')
+  })
+
+  it('never surfaces "equal opportunity" boilerplate', () => {
+    const out = extractPhases(
+      'We are an equal opportunity employer. Equal opportunity matters to us.',
+      'body'
+    )
+    expect(out.map((k) => k.phrase)).not.toContain('equal opportunity')
+  })
+
+  it('never surfaces benefits/compensation boilerplate pairs', () => {
+    const out = extractPhases(
+      'Competitive salary offered. Salary competitive with benefits. Salary and insurance provided.',
+      'body'
+    )
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).not.toContain('competitive salary')
+    expect(phrases).not.toContain('salary competitive')
+  })
+
+  it('noise words do not block allowlisted phrases (found-check wins)', () => {
+    // "team" is a noise word but "team building" is allowlisted.
+    const out = extractPhases(
+      'We invest in team building. Team building offsites happen quarterly.',
+      'body'
+    )
+    expect(out.map((k) => k.phrase)).toContain('team building')
+  })
+
+  it('still surfaces genuine repeated non-allowlisted bigrams', () => {
+    const out = extractPhases(
+      'Our event mesh routes everything. The event mesh scales horizontally.',
+      'required'
+    )
+    expect(out.map((k) => k.phrase)).toContain('event mesh')
+  })
+
+  it('keeps noise bigrams out of the final structured result', () => {
+    const jd = [
+      'Engineer',
+      '',
+      'Requirements',
+      '- 5 years experience with python',
+      '- years experience required',
+      '- python required'
+    ].join('\n')
+    const phrases = extractJobKeywordsStructured(jd).keywords.map((k) => k.phrase)
+    expect(phrases).not.toContain('years experience')
+    expect(phrases).not.toContain('experience python')
+  })
+})
+
 describe('alias normalization', () => {
   it('maps k8s to the kubernetes allowlist entry', () => {
     const out = extractPhases('Our platform runs on k8s.', 'required')
