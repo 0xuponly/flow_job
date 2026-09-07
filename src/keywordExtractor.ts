@@ -2,31 +2,99 @@
 // imports — safe to import from anywhere, including vitest and the
 // renderer.
 
-import { loadKeywordAllowlists } from './keywordAllowlists'
+import { loadKeywordAllowlists, KEYWORD_ALIASES } from './keywordAllowlists'
 import type { KeywordAllowlists } from './keywordAllowlists'
 import type { KeywordCategory, KeywordSource, KeywordEntry, KeywordResult } from './types'
 export type { KeywordCategory, KeywordSource, KeywordEntry, KeywordResult }
 
-const REQUIRED_RE = /required|must have|requirements|qualifications|what you(?:'| wi)ll need|minimum qualifications|essential/i
-const PREFERRED_RE = /preferred|nice to have|bonus|plus|would be great|desired/i
+const REQUIRED_RE = /\b(requirements?|required|must[- ]?haves?|basic qualifications|minimum qualifications|qualifications|essential|what you(?:'|’)ll need|what you will need|what we(?:'|’)re looking for|what we are looking for|who you are|what you bring)\b/i
+// Tested before REQUIRED_RE so a heading like "Preferred Qualifications"
+// (which contains both words) lands in the preferred bucket.
+const PREFERRED_RE = /\b(preferred|nice[- ]?to[- ]?haves?|bonus|plus(?:es)?|good to have|desired|extras?|differentiators?)\b/i
 // Section-noun phrases that signal "we are now back in body" — these are
 // the typical headings that follow a required/preferred block.
-const RESET_RE = /^(about|overview|company|role|benefits|perks|equal opportunity|what we offer|what we|who we|why|how we|mission|vision|summary|responsibilities|what you'll do|what you will do|compensation|salary)\b/i
+const RESET_RE = /^(about|overview|company|role|responsibilities|duties|benefits|perks|equal opportunity|what we|who we|why|how we|how to apply|apply now|join|our team|mission|vision|summary|what you'll do|what you will do|compensation|salary|interview process|working at|life at)\b/i
+
+// Canonical trailing-section headings, matched exactly (after markdown
+// stripping + lowercasing) before the prose gates apply: phrases like
+// "Who we are" or "What you'll do" contain be/modal verbs ("are", "do")
+// that the prose gate rightly rejects in longer lines, but as exact
+// heading forms they are unambiguous reset points.
+const RESET_EXACT = new Set([
+  'who we are',
+  'who we',
+  'what we do',
+  'what we offer',
+  "what you'll do",
+  'what you will do',
+  'about us',
+  'about the role',
+  'about the team',
+  'about the company',
+  'our story',
+  'why join us',
+  'how to apply',
+  'benefits',
+  'perks'
+])
+
+// Lines that start like prose, not like a heading. Guards every header
+// classification so body/bullet text never flips the section bucket.
+const HEADING_START_BLOCK_RE = /^(we|our|ours|you|your|you're|youre|this|that|these|those|it|its|there|they|their|the|i|me|my)\b/i
+const HEADING_MODAL_RE = /\b(is|are|was|were|be|been|being|will|would|can|could|should|shall|do|does|did|include|includes|including)\b/i
+const A_PLUS_RE = /\b(?:a|an)\s+plus\b/i
+
+function looksLikeHeading(t: string): boolean {
+  if (t.split(/\s+/).length > 8) return false
+  if (/[,:;]/.test(t)) return false
+  if (HEADING_START_BLOCK_RE.test(t)) return false
+  if (HEADING_MODAL_RE.test(t)) return false
+  if (A_PLUS_RE.test(t)) return false
+  return true
+}
+
+// Strips markdown dressing (ATX hashes, full-line bold, trailing
+// emphasis/colon) so "## Requirements", "**Nice to have**" and
+// "Requirements:" classify like their plain forms.
+function normalizeHeaderCandidate(raw: string): string {
+  let t = raw.trim()
+  t = t.replace(/^#{1,6}\s*/, '')
+  t = t.replace(/^\*\*(.+?)\*\*\s*$/, '$1')
+  t = t.replace(/^__(.+?)__\s*$/, '$1')
+  t = t.replace(/\s*[*_`~]+$/, '')
+  t = t.replace(/\s*:\s*$/, '')
+  return t.trim()
+}
 
 function isHeaderLine(line: string): { required: true } | { preferred: true } | { reset: true } | null {
-  const t = line.trim()
+  const t = normalizeHeaderCandidate(line)
   if (t === '') return null
-  // Headers are short, title-cased or all-caps lines without terminal punctuation.
+  // Headers are short lines without terminal sentence punctuation.
   if (t.length > 60) return null
   if (/[.!?]$/.test(t)) return null
-  if (REQUIRED_RE.test(t)) return { required: true }
-  if (PREFERRED_RE.test(t)) return { preferred: true }
-  // List-item lines (starting with -, *, •, or a digit) are not headers.
-  if (/^[-*•\d]/.test(t)) return null
-  // A line starting with a known section-noun phrase (About, Overview,
-  // Company, Benefits, etc.) resets the bucket back to body.
-  if (RESET_RE.test(t)) return { reset: true }
+  // Content lines (bullets, digits, compensation figures) are never
+  // headers — even when they contain a section or preference word
+  // ("$150k–$190k plus equity" must not flip the bucket).
+  if (/^[-*•\d$]/.test(t)) return null
+  if (RESET_EXACT.has(t.toLowerCase())) return { reset: true }
+  if (PREFERRED_RE.test(t) && looksLikeHeading(t)) return { preferred: true }
+  if (REQUIRED_RE.test(t) && looksLikeHeading(t)) return { required: true }
+  // Reset headings are gated the same way, so a wrapped content line
+  // like "About the platform you will design..." inside a required
+  // section does not falsely reset the bucket to body.
+  if (RESET_RE.test(t) && looksLikeHeading(t)) return { reset: true }
   return null
+}
+
+// Cosmetics for the extracted title: drop markdown dressing and any
+// trailing colon ("# Senior Engineer:" → "Senior Engineer").
+function normalizeTitle(raw: string): string {
+  let t = raw.trim()
+  t = t.replace(/^#{1,6}\s*/, '')
+  t = t.replace(/^\*\*(.+?)\*\*\s*$/, '$1')
+  t = t.replace(/^__(.+?)__\s*$/, '$1')
+  t = t.replace(/\s*:\s*$/, '')
+  return t.trim()
 }
 
 export function parseSections(description: string): {
@@ -48,7 +116,7 @@ export function parseSections(description: string): {
     // The first non-empty line is always the title; never treat it as a header.
     if (!titleSeen) {
       if (t === '') continue
-      title = t
+      title = normalizeTitle(t)
       titleSeen = true
       continue
     }
@@ -145,6 +213,16 @@ export function extractJobKeywordsStructured(description: string): KeywordResult
 
 const UNKNOWN_DOWNWEIGHT = 0.8
 
+// Single-token alias canonicalization for merge dedupe: LLM shorthand
+// ("k8s", "js") and rule/allowlist spellings ("kubernetes",
+// "javascript") collapse onto one canonical phrase instead of
+// appearing as two duplicate keywords. Multi-word phrases pass through
+// untouched.
+function canonicalPhrase(s: string): string {
+  const t = s.toLowerCase().trim()
+  return KEYWORD_ALIASES[t] ?? t
+}
+
 function isInAllowlist(phrase: string, lists: KeywordAllowlists): boolean {
   if (lists.hard.has(phrase)) return true
   if (lists.soft.has(phrase)) return true
@@ -161,7 +239,8 @@ function isPhraseSubstring(longer: string, shorter: string): boolean {
 /**
  * Merge LLM-extracted candidates with rule-pipeline candidates.
  *
- * - Phrase in both: LLM wins category+weight; rule wins source.
+ * - Phrase in both (after alias canonicalization): LLM wins
+ *   category+weight; rule wins source.
  * - LLM-only:
  *   - In allowlist: accept as-is.
  *   - Unknown: accept with weight *= 0.8, add to unknownPhrases.
@@ -174,9 +253,8 @@ export function mergeKeywordResults(
   rule: KeywordEntry[],
   lists: KeywordAllowlists
 ): KeywordResult {
-  const norm = (s: string) => s.toLowerCase().trim()
   const ruleByPhrase = new Map<string, KeywordEntry>()
-  for (const e of rule) ruleByPhrase.set(norm(e.phrase), e)
+  for (const e of rule) ruleByPhrase.set(canonicalPhrase(e.phrase), e)
 
   const merged: KeywordEntry[] = []
   const unknownPhrases = new Set<string>()
@@ -184,7 +262,7 @@ export function mergeKeywordResults(
 
   // 1. Process LLM candidates.
   for (const llmEntry of llm) {
-    const phraseNorm = norm(llmEntry.phrase)
+    const phraseNorm = canonicalPhrase(llmEntry.phrase)
     if (!phraseNorm) continue
     if (seen.has(phraseNorm)) continue
     seen.add(phraseNorm)
@@ -216,7 +294,7 @@ export function mergeKeywordResults(
 
   // 2. Append rule-only candidates (safety net).
   for (const ruleEntry of rule) {
-    const phraseNorm = norm(ruleEntry.phrase)
+    const phraseNorm = canonicalPhrase(ruleEntry.phrase)
     if (!phraseNorm) continue
     if (seen.has(phraseNorm)) continue
     seen.add(phraseNorm)
@@ -245,6 +323,46 @@ export function extractJobKeywords(description: string): string[] {
   return extractJobKeywordsStructured(description).keywords.map((k) => k.phrase)
 }
 
+/**
+ * Case-insensitive match pattern for a keyword phrase, with boundaries
+ * that tolerate tech punctuation. `\b` only works against word
+ * characters, so the plain `\\b${kw}\\b` used by simple consumers never
+ * matches phrases whose edge is a non-word char: "c++", "c#", or a
+ * hypothetical ".net" can never be found in a document. Here the
+ * standard boundary is kept for word edges and replaced by a
+ * lookaround over tech-token chars (+/#/.) for punctuation edges.
+ * Additive helper — consumers can adopt it without changing call-site
+ * signatures.
+ */
+export function keywordMatchPattern(phrase: string): RegExp {
+  const esc = phrase.replace(/[.*+?${}()|[\]\\]/g, '\\$&')
+  const left = /^[a-z0-9]/i.test(phrase) ? '\\b' : '(?<![a-z0-9+#])'
+  const right = /[a-z0-9]$/i.test(phrase) ? '\\b' : '(?![a-z0-9+#])'
+  return new RegExp(`${left}${esc}${right}`, 'i')
+}
+
+/**
+ * Coverage over `document` for `keywords`, identical in semantics to
+ * the documentRules helper but with boundary-tolerant matching so tech
+ * tokens like "c++" or "c#" count as present when written in the
+ * document. Additive; no existing signature changes.
+ */
+export function coverageForKeywords(document: string, keywords: string[]): number {
+  if (keywords.length === 0) return 0
+  let present = 0
+  for (const kw of keywords) {
+    if (keywordMatchPattern(kw).test(document)) present++
+  }
+  return present / keywords.length
+}
+
+/**
+ * Missing-keyword list companion to coverageForKeywords.
+ */
+export function missingForKeywords(document: string, keywords: string[]): string[] {
+  return keywords.filter((kw) => !keywordMatchPattern(kw).test(document))
+}
+
 function tokenize(section: string): string[] {
   return section
     .toLowerCase()
@@ -270,25 +388,35 @@ function trigrams(tokens: string[]): string[] {
   return out
 }
 
-function pmiFor(phrase: string, tokens: string[]): number {
-  const words = phrase.split(' ')
-  if (words.length < 2) return 0
-  const total = tokens.length
+// Precomputed count index for PMI discovery. Building it once per
+// section keeps the whole pipeline O(n): the naive alternative (rescan
+// the token stream per candidate bigram, rebuilding unigram counts each
+// time) is O(n²) and blows up on 10k+ word postings.
+interface PmiIndex {
+  total: number
+  wordCounts: Map<string, number>
+  bigramCounts: Map<string, number>
+}
+
+function buildPmiIndex(tokens: string[]): PmiIndex {
   const wordCounts = new Map<string, number>()
   for (const t of tokens) wordCounts.set(t, (wordCounts.get(t) ?? 0) + 1)
-  let phraseCount = 0
-  for (let i = 0; i <= tokens.length - words.length; i++) {
-    let match = true
-    for (let j = 0; j < words.length; j++) {
-      if (tokens[i + j] !== words[j]) { match = false; break }
-    }
-    if (match) phraseCount++
+  const bigramCounts = new Map<string, number>()
+  for (let i = 0; i < tokens.length - 1; i++) {
+    const key = `${tokens[i]} ${tokens[i + 1]}`
+    bigramCounts.set(key, (bigramCounts.get(key) ?? 0) + 1)
   }
+  return { total: tokens.length, wordCounts, bigramCounts }
+}
+
+function pmiFromIndex(bigram: string, index: PmiIndex): number {
+  const phraseCount = index.bigramCounts.get(bigram) ?? 0
   if (phraseCount < 2) return 0
-  const phraseProb = phraseCount / Math.max(total - words.length + 1, 1)
+  const words = bigram.split(' ')
+  const phraseProb = phraseCount / Math.max(index.total - words.length + 1, 1)
   let denom = 1
   for (const w of words) {
-    const p = (wordCounts.get(w) ?? 0) / total
+    const p = (index.wordCounts.get(w) ?? 0) / index.total
     if (p === 0) return 0
     denom *= p
   }
@@ -298,69 +426,104 @@ function pmiFor(phrase: string, tokens: string[]): number {
 
 const PMI_THRESHOLD = 2.0
 
+// Boilerplate/generic words whose tight co-occurrence carries no skill
+// signal ("years experience", "equal opportunity", "competitive
+// salary"). A PMI-discovered bigram is discarded when either word is
+// listed here, so they never surface as keywords — which also keeps
+// them out of coverage checks, where they could never realistically be
+// matched in a tailored CV or cover letter.
+//
+// Exported for tests: the false-negative guard asserts that no genuine
+// allowlisted skill containing one of these words can be suppressed
+// (allowlisted phrases bypass the filter entirely — the found-check
+// short-circuits before the noise check).
+export const PMI_NOISE_WORDS: ReadonlySet<string> = new Set([
+  // function words (≥3 chars — shorter tokens are already skipped)
+  'the', 'and', 'with', 'for', 'you', 'your', 'our', 'are', 'will', 'that',
+  'this', 'from', 'have', 'has', 'had', 'not', 'but', 'all', 'any', 'can',
+  'who', 'what', 'when', 'how', 'why', 'its', 'they', 'them', 'their',
+  'was', 'were', 'been', 'being', 'also', 'more', 'most', 'other', 'others',
+  'new', 'use', 'used', 'using', 'etc', 'include', 'includes', 'including',
+  // recruitment boilerplate
+  'years', 'year', 'experience', 'ability', 'abilities', 'opportunity',
+  'opportunities', 'candidate', 'candidates', 'ideal', 'strong', 'excellent',
+  'exceptional', 'proven', 'demonstrated', 'extensive', 'relevant', 'related',
+  'solid', 'deep', 'good', 'great', 'plus', 'bonus', 'required', 'preferred',
+  'minimum', 'maximum', 'essential', 'qualified', 'skills', 'skill',
+  // benefits/compensation boilerplate
+  'salary', 'insurance', 'benefits', 'benefit', 'vacation', 'pto', 'remote',
+  'hybrid', 'onsite', 'office', 'flexible', 'hours', 'paid', 'compensation',
+  'equity', 'stock', '401k',
+  // generic workplace nouns
+  'team', 'teams', 'company', 'role', 'roles', 'position', 'positions',
+  'job', 'jobs', 'work', 'working', 'workplace', 'environment', 'culture',
+  'full', 'part', 'time', 'day', 'daily', 'week', 'weekly', 'month',
+  'monthly'
+])
+
+// Maps a single token through the alias table ("k8s" → "kubernetes",
+// "js" → "javascript", "golang" → "go"). Multi-token phrases are left
+// alone so emitted keywords stay coverage-matchable word sequences.
+function canonicalToken(t: string): string {
+  return KEYWORD_ALIASES[t] ?? t
+}
+
 export function extractPhases(section: string, source: KeywordSource): KeywordEntry[] {
   const allowlists = loadKeywordAllowlists()
-  const tokens = tokenize(section)
-  const phrases = new Set<string>()
-  const phraseCategory = new Map<string, KeywordCategory>()
-
-  // 1. Unigram allowlist matches (hard, soft, cert, seniority).
-  for (const t of tokens) {
-    if (allowlists.hard.has(t) && !phraseCategory.has(t)) {
-      phrases.add(t); phraseCategory.set(t, 'hard')
-    } else if (allowlists.soft.has(t) && !phraseCategory.has(t)) {
-      phrases.add(t); phraseCategory.set(t, 'soft')
-    } else if (allowlists.cert.has(t) && !phraseCategory.has(t)) {
-      phrases.add(t); phraseCategory.set(t, 'cert')
-    } else if (allowlists.seniority.has(t) && !phraseCategory.has(t)) {
-      phrases.add(t); phraseCategory.set(t, 'seniority')
-    }
+  const tokens = tokenize(section).map(canonicalToken)
+  // matchKey → matched entry. Allowlist entries are indexed by their
+  // match keys, so punctuation-bearing entries ("next.js", "ci/cd",
+  // "scikit-learn") are reachable from the token stream ("next js",
+  // "ci cd") while the emitted phrase stays the allowlist form.
+  const found = new Map<string, { phrase: string; category: KeywordCategory }>()
+  const add = (key: string, phrase: string, category: KeywordCategory) => {
+    if (!found.has(key)) found.set(key, { phrase, category })
   }
 
-  // 2. Bigram + trigram allowlist matches (hard, soft, cert — skip seniority for phrases).
-  for (const bg of [...bigrams(tokens), ...trigrams(tokens)]) {
-    if (allowlists.hard.has(bg) && !phraseCategory.has(bg)) {
-      phrases.add(bg); phraseCategory.set(bg, 'hard')
-    } else if (allowlists.soft.has(bg) && !phraseCategory.has(bg)) {
-      phrases.add(bg); phraseCategory.set(bg, 'soft')
-    } else if (allowlists.cert.has(bg) && !phraseCategory.has(bg)) {
-      phrases.add(bg); phraseCategory.set(bg, 'cert')
-    } else if (allowlists.phraseBoost.has(bg)) {
-      const cat = allowlists.phraseBoostByCategory.get(bg) ?? 'hard'
-      if (!phraseCategory.has(bg)) {
-        phrases.add(bg); phraseCategory.set(bg, cat)
-      }
+  // 1. Unigram allowlist matches (hard, soft, cert, seniority). Aliases
+  //    resolve here: "k8s" matches the "kubernetes" entry.
+  for (const t of tokens) {
+    const hit = allowlists.byKey.get(t)
+    if (hit) add(t, hit.phrase, hit.category)
+  }
+
+  // 2. Bigram + trigram allowlist matches. Seniority phrases ("senior
+  //    manager", "entry level", "head of") and phrase_boost entries
+  //    ("a/b testing") are only reachable as n-grams.
+  for (const gram of [...bigrams(tokens), ...trigrams(tokens)]) {
+    const hit = allowlists.byKey.get(gram)
+    if (hit) {
+      add(gram, hit.phrase, hit.category)
+      continue
     }
+    const boost = allowlists.phraseBoostByKey.get(gram)
+    if (boost) add(gram, boost.phrase, boost.category)
   }
 
   // 3. PMI n-gram discovery for bigrams not in any list, count >= 2, PMI >= threshold.
-  for (const bg of bigrams(tokens)) {
-    if (phrases.has(bg)) continue
+  //    Pairs containing a noise word are skipped: high PMI alone does not
+  //    make boilerplate ("years experience") a keyword. Counts come from a
+  //    single-pass index so discovery stays O(n) on huge postings.
+  const pmiIndex = buildPmiIndex(tokens)
+  for (const [bg] of pmiIndex.bigramCounts) {
+    if (found.has(bg)) continue
     if (bg.split(' ').some((w) => w.length < 3)) continue
-    const pmi = pmiFor(bg, tokens)
-    if (pmi >= PMI_THRESHOLD) {
-      phrases.add(bg); phraseCategory.set(bg, 'hard')
+    if (bg.split(' ').some((w) => PMI_NOISE_WORDS.has(w))) continue
+    if (pmiFromIndex(bg, pmiIndex) >= PMI_THRESHOLD) {
+      add(bg, bg, 'hard')
     }
   }
 
-  // 4. Longer phrase wins over sub-phrase: drop "aws" if "aws solutions architect" exists.
-  const phraseList = [...phrases]
-  phraseList.sort((a, b) => b.length - a.length)
-  const kept: string[] = []
-  for (const p of phraseList) {
-    if (kept.some((k) => k.includes(p) || p.includes(k))) {
-      // longer already kept; skip the shorter
-      const longerFirst = kept.find((k) => k.includes(p))
-      if (longerFirst && longerFirst !== p) continue
-      if (kept.includes(p)) continue
-    }
-    kept.push(p)
+  // 4. Longer phrase wins over sub-phrase: drop "aws" if "aws solutions
+  //    architect" exists. Sort by length desc so the longer phrase is
+  //    always kept first, then drop any phrase contained in (or equal to)
+  //    an already-kept phrase.
+  const entries = [...found.values()]
+  entries.sort((a, b) => b.phrase.length - a.phrase.length || a.phrase.localeCompare(b.phrase))
+  const kept: KeywordEntry[] = []
+  for (const e of entries) {
+    if (kept.some((k) => k.phrase.includes(e.phrase) || e.phrase.includes(k.phrase))) continue
+    kept.push({ phrase: e.phrase, weight: 0, category: e.category, source })
   }
-
-  return kept.map((p) => ({
-    phrase: p,
-    weight: 0,
-    category: phraseCategory.get(p) ?? 'hard',
-    source
-  }))
+  return kept
 }

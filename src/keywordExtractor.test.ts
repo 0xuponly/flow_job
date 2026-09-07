@@ -4,10 +4,317 @@ import {
   extractPhases,
   extractJobKeywordsStructured,
   extractJobKeywords,
-  mergeKeywordResults
+  mergeKeywordResults,
+  keywordMatchPattern,
+  coverageForKeywords,
+  missingForKeywords,
+  PMI_NOISE_WORDS
 } from './keywordExtractor'
-import { loadKeywordAllowlists } from './keywordAllowlists'
-import type { KeywordEntry } from './types'
+import { loadKeywordAllowlists, matchKey, KEYWORD_ALIASES, PHRASE_ALIASES } from './keywordAllowlists'
+import type { KeywordEntry, KeywordResult } from './types'
+
+// ---------------------------------------------------------------------------
+// Fixture corpus: realistic job-description snippets that lock in bucketing
+// and top-keyword behavior. Each fixture asserts section buckets (required /
+// preferred / body) and the keywords that must (or must not) survive
+// extraction. These are regression anchors for future refactors.
+// ---------------------------------------------------------------------------
+
+interface Fixture {
+  name: string
+  jd: string
+  title?: string
+  requiredHas?: string[]
+  requiredNotHas?: string[]
+  preferredHas?: string[]
+  preferredNotHas?: string[]
+  bodyHas?: string[]
+  // Phrases that must appear in the extracted (top-30) keyword list.
+  keywordsContain?: string[]
+  // Phrases that must never appear in the extracted keyword list.
+  keywordsNotContain?: string[]
+  // Phrases that must appear with source 'title'.
+  titleKeywords?: string[]
+}
+
+const FIXTURES: Fixture[] = [
+  {
+    name: "startup posting with 'What you'll need' header",
+    jd: [
+      'Senior Backend Engineer',
+      '',
+      'About the role',
+      'We build payments infrastructure used by millions.',
+      '',
+      "What you'll need",
+      '- 5+ years of Python',
+      '- Experience with PostgreSQL and Redis',
+      '',
+      'Nice to have',
+      '- Kubernetes and Terraform',
+      '',
+      'Benefits',
+      'Competitive salary and equity'
+    ].join('\n'),
+    title: 'Senior Backend Engineer',
+    requiredHas: ['5+ years of python', 'postgresql and redis'],
+    preferredHas: ['kubernetes and terraform'],
+    bodyHas: ['payments infrastructure', 'Competitive salary'],
+    requiredNotHas: ['competitive salary'],
+    keywordsContain: ['python', 'postgres', 'redis', 'kubernetes', 'terraform', 'senior'],
+    keywordsNotContain: ['competitive salary']
+  },
+  {
+    name: 'all-caps Google-style posting',
+    jd: [
+      'Software Engineer, Cloud',
+      '',
+      'MINIMUM QUALIFICATIONS',
+      '- Experience with Java or Go',
+      '- Experience with SQL',
+      '',
+      'PREFERRED QUALIFICATIONS',
+      '- Experience with GCP',
+      '',
+      'ABOUT THE TEAM',
+      'The Cloud team builds developer tooling.'
+    ].join('\n'),
+    title: 'Software Engineer, Cloud',
+    requiredHas: ['java or go', 'experience with sql'],
+    preferredHas: ['experience with gcp'],
+    bodyHas: ['Cloud team builds developer tooling'],
+    requiredNotHas: ['experience with gcp'],
+    keywordsContain: ['java', 'go', 'gcp']
+  },
+  {
+    name: 'markdown-ish posting with ATX and bold headers',
+    jd: [
+      '# Staff Frontend Engineer',
+      '',
+      '## Requirements',
+      '- **Deep React expertise**',
+      '- TypeScript in production',
+      '',
+      '## Nice to have',
+      '- GraphQL experience',
+      '',
+      '## What we offer',
+      'Learning budget and remote-first culture'
+    ].join('\n'),
+    title: 'Staff Frontend Engineer',
+    requiredHas: ['deep react expertise', 'typescript in production'],
+    preferredHas: ['graphql experience'],
+    bodyHas: ['Learning budget'],
+    keywordsContain: ['react', 'typescript', 'graphql', 'staff'],
+    titleKeywords: ['staff']
+  },
+  {
+    name: 'finance analyst posting (no tech stack)',
+    jd: [
+      'Financial Analyst',
+      '',
+      'Qualifications',
+      '- 3+ years in financial modeling and valuation',
+      '- Advanced Excel skills',
+      '- Strong communication',
+      '',
+      'Preferred',
+      '- CFA charterholder or progress towards CFA',
+      '- Power BI experience',
+      '',
+      'About us',
+      'We advise on M&A transactions.'
+    ].join('\n'),
+    title: 'Financial Analyst',
+    requiredHas: ['financial modeling and valuation', 'advanced excel skills'],
+    preferredHas: ['cfa charterholder', 'power bi experience'],
+    bodyHas: ['M&A transactions'],
+    keywordsContain: ['financial modeling', 'excel', 'communication', 'cfa', 'power bi']
+  },
+  {
+    name: 'low-latency trading engineer posting',
+    jd: [
+      'C++ Engineer — Low Latency Trading Systems',
+      '',
+      'Requirements',
+      '- Expert-level modern C++ (C++17/20)',
+      '- Experience with Linux performance tuning',
+      '- Knowledge of FIX protocol and market data feeds',
+      '',
+      'Nice to have',
+      '- kdb+/q time-series experience',
+      '',
+      'Who we are',
+      'A proprietary trading firm.'
+    ].join('\n'),
+    title: 'C++ Engineer — Low Latency Trading Systems',
+    requiredHas: ['modern c++', 'linux performance tuning', 'fix protocol'],
+    preferredHas: ['kdb+/q time-series'],
+    bodyHas: ['A proprietary trading firm'],
+    keywordsContain: ['c++', 'linux', 'fix protocol', 'kdb+', 'low latency']
+  },
+  {
+    name: 'posting with no required/preferred sections at all',
+    jd: [
+      'Growth Marketer',
+      'We are a small team looking for a marketer who owns campaigns end to end.',
+      'You will run A/B testing, own analytics, and report on SEO performance.',
+      'Our stack includes Looker and Snowflake.'
+    ].join('\n'),
+    title: 'Growth Marketer',
+    requiredHas: [],
+    preferredHas: [],
+    bodyHas: ['owns campaigns end to end', 'report on SEO performance', 'Looker and Snowflake'],
+    keywordsContain: ['a/b testing', 'looker', 'snowflake']
+  },
+  {
+    name: 'cloud/devops posting with bonus section',
+    jd: [
+      'Platform Engineer',
+      '',
+      'Requirements',
+      '- AWS (EKS, S3, IAM)',
+      '- Terraform and Helm',
+      '- CI/CD with GitHub Actions',
+      '',
+      'Bonus points',
+      '- Datadog observability',
+      '',
+      'Perks',
+      'Fully remote'
+    ].join('\n'),
+    title: 'Platform Engineer',
+    requiredHas: ['aws (eks, s3, iam)'.replace(',', ','), 'terraform and helm', 'ci/cd with github actions'],
+    preferredHas: ['datadog observability'],
+    bodyHas: ['Fully remote'],
+    keywordsContain: ['aws', 'terraform', 'helm', 'ci/cd', 'datadog']
+  },
+  {
+    name: "data posting with 'What you'll do' before requirements",
+    jd: [
+      'Data Engineer',
+      '',
+      "What you'll do",
+      'Build streaming pipelines powering analytics.',
+      '',
+      "What you'll need",
+      '- Spark and Airflow in production',
+      '- dbt and Snowflake modeling',
+      '',
+      'Nice to have',
+      '- Scala',
+      '',
+      'Compensation',
+      '$150k–$190k plus equity'
+    ].join('\n'),
+    title: 'Data Engineer',
+    requiredHas: ['spark and airflow', 'dbt and snowflake'],
+    preferredHas: ['scala'],
+    bodyHas: ['Build streaming pipelines', '$150k–$190k plus equity'],
+    keywordsContain: ['spark', 'airflow', 'dbt', 'snowflake', 'scala']
+  },
+  {
+    name: 'boilerplate-heavy preferred section stays clean',
+    jd: [
+      'Product Manager',
+      '',
+      'Requirements',
+      '- 5 years of product management',
+      '- Experience with SQL and analytics',
+      '',
+      'Bonus points',
+      '- Competitive salary expectations',
+      '- Health insurance familiarity',
+      '',
+      'Equal Opportunity',
+      'We are an equal opportunity employer.'
+    ].join('\n'),
+    title: 'Product Manager',
+    requiredHas: ['product management', 'sql and analytics'],
+    preferredHas: ['competitive salary expectations', 'health insurance familiarity'],
+    keywordsContain: ['product management', 'sql'],
+    keywordsNotContain: ['equal opportunity', 'years experience']
+  },
+  {
+    name: 'aliased tech spelling in requirements',
+    jd: [
+      'Full Stack Engineer',
+      '',
+      'Requirements',
+      '- k8s in production',
+      '- JS and Node.js',
+      '- CI/CD ownership',
+      '',
+      'Nice to have',
+      '- Postgres tuning'
+    ].join('\n'),
+    title: 'Full Stack Engineer',
+    requiredHas: ['k8s in production', 'js and node.js', 'ci/cd ownership'],
+    preferredHas: ['postgres tuning'],
+    keywordsContain: ['kubernetes', 'javascript', 'node', 'ci/cd', 'postgres', 'full stack']
+  },
+  {
+    name: 'prose bullets without terminal punctuation and wrapped lines',
+    jd: [
+      'Machine Learning Engineer',
+      '',
+      'Overview',
+      'We ship ML features weekly.',
+      '',
+      'Responsibilities',
+      'Own the model lifecycle from prototype to production',
+      'Partner with product on roadmap',
+      '',
+      'Requirements',
+      'PyTorch and scikit-learn expertise across several domains',
+      'About the modeling stack you will own it end to end',
+      '',
+      'About the team',
+      'We are eight people.'
+    ].join('\n'),
+    title: 'Machine Learning Engineer',
+    requiredHas: ['pytorch and scikit-learn expertise', 'about the modeling stack'],
+    bodyHas: ['We ship ML features', 'We are eight people'],
+    keywordsContain: ['machine learning', 'pytorch', 'scikit-learn']
+  }
+]
+
+function checkFixture(f: Fixture) {
+  const sections = parseSections(f.jd)
+  if (f.title !== undefined) {
+    expect(sections.title, `${f.name}: title`).toBe(f.title)
+  }
+  for (const s of f.requiredHas ?? []) {
+    expect(sections.required, `${f.name}: required should contain "${s}"`).toContain(s)
+  }
+  for (const s of f.requiredNotHas ?? []) {
+    expect(sections.required, `${f.name}: required should not contain "${s}"`).not.toContain(s)
+  }
+  for (const s of f.preferredHas ?? []) {
+    expect(sections.preferred, `${f.name}: preferred should contain "${s}"`).toContain(s)
+  }
+  for (const s of f.preferredNotHas ?? []) {
+    expect(sections.preferred, `${f.name}: preferred should not contain "${s}"`).not.toContain(s)
+  }
+  for (const s of f.bodyHas ?? []) {
+    expect(sections.body, `${f.name}: body should contain "${s}"`).toContain(s)
+  }
+
+  const result: KeywordResult = extractJobKeywordsStructured(f.jd)
+  const phrases = result.keywords.map((k) => k.phrase)
+  for (const s of f.keywordsContain ?? []) {
+    expect(phrases, `${f.name}: keywords should contain "${s}"`).toContain(s)
+  }
+  for (const s of f.keywordsNotContain ?? []) {
+    expect(phrases, `${f.name}: keywords should not contain "${s}"`).not.toContain(s)
+  }
+  for (const s of f.titleKeywords ?? []) {
+    expect(
+      result.keywords.some((k) => k.phrase === s && k.source === 'title'),
+      `${f.name}: "${s}" should be a title-sourced keyword`
+    ).toBe(true)
+  }
+}
 
 describe('parseSections', () => {
   it('returns the first non-empty line as title', () => {
@@ -104,6 +411,159 @@ describe('parseSections', () => {
     expect(s.required).toMatch(/rust/)
     expect(s.preferred).toMatch(/haskell/)
   })
+
+  it('buckets "Preferred Qualifications" into preferred, not required', () => {
+    const jd = [
+      'Engineer',
+      '',
+      'Minimum qualifications',
+      '- python',
+      '',
+      'Preferred qualifications',
+      '- kubernetes'
+    ].join('\n')
+    const s = parseSections(jd)
+    expect(s.required).toMatch(/python/)
+    expect(s.required).not.toMatch(/kubernetes/)
+    expect(s.preferred).toMatch(/kubernetes/)
+  })
+
+  it('classifies markdown-dressed headings (##, **bold**, trailing colon)', () => {
+    const jd = [
+      'Engineer',
+      '',
+      '## Requirements',
+      '- python',
+      '',
+      '**Nice to have**',
+      '- rust',
+      '',
+      'Preferred:',
+      '- golang'
+    ].join('\n')
+    const s = parseSections(jd)
+    expect(s.required).toMatch(/python/)
+    expect(s.preferred).toMatch(/rust/)
+    expect(s.preferred).toMatch(/golang/)
+  })
+
+  it('strips markdown dressing from the title', () => {
+    expect(parseSections('# Senior Engineer\n\nBody').title).toBe('Senior Engineer')
+    expect(parseSections('**Staff Engineer**\n\nBody').title).toBe('Staff Engineer')
+    expect(parseSections('Backend Engineer:\n\nBody').title).toBe('Backend Engineer')
+  })
+
+  it('does not flip buckets on prose lines that merely contain header words', () => {
+    const jd = [
+      'Engineer',
+      '',
+      'Requirements',
+      '- python',
+      'Python is a plus for this role',
+      'We would love SQL experience',
+      'The ideal candidate will include Terraform in their toolkit',
+      '',
+      'About',
+      'Small team'
+    ].join('\n')
+    const s = parseSections(jd)
+    // All the prose lines stay in the required bucket — no preferred/reset flips.
+    expect(s.required).toMatch(/python is a plus/i)
+    expect(s.required).toMatch(/we would love sql/i)
+    expect(s.required).toMatch(/terraform/i)
+    expect(s.preferred).toBe('')
+    expect(s.body).toMatch(/small team/i)
+  })
+
+  it('treats "What we\'re looking for" and "Who you are" as required headings', () => {
+    const jd = [
+      'Engineer',
+      '',
+      "What we're looking for",
+      '- python',
+      '',
+      'Who you are',
+      '- pragmatic'
+    ].join('\n')
+    const s = parseSections(jd)
+    expect(s.required).toMatch(/python/)
+    expect(s.required).toMatch(/pragmatic/)
+  })
+
+  it('classifies more required/preferred heading variants', () => {
+    const jd = [
+      'Engineer',
+      '',
+      'Must-haves',
+      '- python',
+      '',
+      'Basic Qualifications',
+      '- sql',
+      '',
+      'Good to have',
+      '- rust',
+      '',
+      'Bonus points',
+      '- k8s'
+    ].join('\n')
+    const s = parseSections(jd)
+    expect(s.required).toMatch(/python/)
+    expect(s.required).toMatch(/sql/)
+    expect(s.preferred).toMatch(/rust/)
+    expect(s.preferred).toMatch(/k8s/)
+  })
+
+  it('resets to body on more trailing-section headings', () => {
+    const jd = [
+      'Engineer',
+      '',
+      'Requirements',
+      '- python',
+      '',
+      'How to apply',
+      'Send us your resume',
+      '',
+      'Our benefits',
+      'Health insurance'
+    ].join('\n')
+    const s = parseSections(jd)
+    expect(s.required).not.toMatch(/resume/)
+    expect(s.body).toMatch(/resume/i)
+    expect(s.body).toMatch(/health insurance/i)
+  })
+
+  it('does not reset on wrapped content lines inside a required section', () => {
+    const jd = [
+      'Engineer',
+      '',
+      'Requirements',
+      '- python',
+      'About the platform you will design scalable services',
+      'Our team, our stack: you own it end to end',
+      '',
+      'About',
+      'Small team'
+    ].join('\n')
+    const s = parseSections(jd)
+    expect(s.required).toMatch(/about the platform/i)
+    expect(s.required).toMatch(/our team, our stack/i)
+    expect(s.body).not.toMatch(/about the platform/i)
+  })
+
+  it('never treats bullet lines as headers, even with section words', () => {
+    const jd = [
+      'Engineer',
+      '',
+      'About the role',
+      '- required: 3 years of Python',
+      '- plus points for Rust'
+    ].join('\n')
+    const s = parseSections(jd)
+    expect(s.body).toMatch(/required: 3 years/i)
+    expect(s.body).toMatch(/plus points for rust/i)
+    expect(s.required).toBe('')
+    expect(s.preferred).toBe('')
+  })
 })
 
 describe('extractPhases', () => {
@@ -152,6 +612,170 @@ describe('extractPhases', () => {
     )
     const phrases = out.map((k) => k.phrase)
     expect(phrases).toContain('foobar pipeline')
+  })
+})
+
+describe('PMI noise control', () => {
+  it('never surfaces "years experience" boilerplate despite high PMI', () => {
+    const out = extractPhases(
+      'Need 5 years experience. We value years experience with systems.',
+      'required'
+    )
+    expect(out.map((k) => k.phrase)).not.toContain('years experience')
+  })
+
+  it('never surfaces "equal opportunity" boilerplate', () => {
+    const out = extractPhases(
+      'We are an equal opportunity employer. Equal opportunity matters to us.',
+      'body'
+    )
+    expect(out.map((k) => k.phrase)).not.toContain('equal opportunity')
+  })
+
+  it('never surfaces benefits/compensation boilerplate pairs', () => {
+    const out = extractPhases(
+      'Competitive salary offered. Salary competitive with benefits. Salary and insurance provided.',
+      'body'
+    )
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).not.toContain('competitive salary')
+    expect(phrases).not.toContain('salary competitive')
+  })
+
+  it('noise words do not block allowlisted phrases (found-check wins)', () => {
+    // "team" is a noise word but "team building" is allowlisted.
+    const out = extractPhases(
+      'We invest in team building. Team building offsites happen quarterly.',
+      'body'
+    )
+    expect(out.map((k) => k.phrase)).toContain('team building')
+  })
+
+  it('still surfaces genuine repeated non-allowlisted bigrams', () => {
+    const out = extractPhases(
+      'Our event mesh routes everything. The event mesh scales horizontally.',
+      'required'
+    )
+    expect(out.map((k) => k.phrase)).toContain('event mesh')
+  })
+
+  it('keeps noise bigrams out of the final structured result', () => {
+    const jd = [
+      'Engineer',
+      '',
+      'Requirements',
+      '- 5 years experience with python',
+      '- years experience required',
+      '- python required'
+    ].join('\n')
+    const phrases = extractJobKeywordsStructured(jd).keywords.map((k) => k.phrase)
+    expect(phrases).not.toContain('years experience')
+    expect(phrases).not.toContain('experience python')
+  })
+})
+
+describe('alias normalization', () => {
+  it('maps k8s to the kubernetes allowlist entry', () => {
+    const out = extractPhases('Our platform runs on k8s.', 'required')
+    expect(out.map((k) => k.phrase)).toContain('kubernetes')
+    expect(out.map((k) => k.phrase)).not.toContain('k8s')
+  })
+
+  it('maps js/ts shorthand to javascript/typescript', () => {
+    const out = extractPhases('Strong JS and TS skills required.', 'required')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('javascript')
+    expect(phrases).toContain('typescript')
+    expect(phrases).not.toContain('js')
+    expect(phrases).not.toContain('ts')
+  })
+
+  it('maps golang and nodejs to go and node', () => {
+    const out = extractPhases('Experience with golang and nodejs.', 'body')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('go')
+    expect(phrases).toContain('node')
+  })
+
+  it('maps Sr./Jr. title tokens to senior/junior', () => {
+    const out = extractPhases('Hiring a Sr. Backend Engineer and a Jr. Analyst.', 'title')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('senior')
+    expect(phrases).toContain('junior')
+  })
+
+  it('does not alias multi-word phrases', () => {
+    // "machine learning" must never be rewritten token-by-token.
+    const out = extractPhases('We do machine learning.', 'required')
+    expect(out.map((k) => k.phrase)).toContain('machine learning')
+  })
+
+  it('KEYWORD_ALIASES maps shorthand to allowlist phrases', () => {
+    expect(KEYWORD_ALIASES['k8s']).toBe('kubernetes')
+    expect(KEYWORD_ALIASES['js']).toBe('javascript')
+    expect(KEYWORD_ALIASES['golang']).toBe('go')
+  })
+})
+
+describe('matchKey', () => {
+  it('tokenizes punctuation-bearing allowlist entries into token joins', () => {
+    expect(matchKey('next.js')).toBe('next js')
+    expect(matchKey('ci/cd')).toBe('ci cd')
+    expect(matchKey('scikit-learn')).toBe('scikit learn')
+    expect(matchKey('a/b testing')).toBe('a b testing')
+    expect(matchKey('mid-level')).toBe('mid level')
+  })
+
+  it('preserves tech tokens with + and #', () => {
+    expect(matchKey('c++')).toBe('c++')
+    expect(matchKey('c#')).toBe('c#')
+  })
+})
+
+describe('tech token extraction', () => {
+  it('finds next.js from "Next.js" text', () => {
+    const out = extractPhases('We build with Next.js and Vercel.', 'required')
+    expect(out.map((k) => k.phrase)).toContain('next.js')
+  })
+
+  it('finds ci/cd from "CI/CD" text', () => {
+    const out = extractPhases('You will own our CI/CD pipelines.', 'required')
+    expect(out.map((k) => k.phrase)).toContain('ci/cd')
+  })
+
+  it('finds scikit-learn from "scikit-learn" text', () => {
+    const out = extractPhases('Experience with scikit-learn is a must.', 'required')
+    expect(out.map((k) => k.phrase)).toContain('scikit-learn')
+  })
+
+  it('still finds c++ and c# tokens', () => {
+    const out = extractPhases('Deep knowledge of C++ and C#.', 'required')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('c++')
+    expect(phrases).toContain('c#')
+  })
+
+  it('finds multi-word seniority phrases as one entry, dropping the bare unigram', () => {
+    const out = extractPhases('You will lead a team as a Senior Manager.', 'required')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('senior manager')
+    expect(phrases).not.toContain('senior')
+  })
+
+  it('finds mid-level from hyphenated text', () => {
+    const out = extractPhases('This is a mid-level position.', 'body')
+    expect(out.map((k) => k.phrase)).toContain('mid-level')
+  })
+
+  it('emitted phrases resolve to real allowlist entries', () => {
+    const lists = loadKeywordAllowlists()
+    const out = extractPhases('Next.js, CI/CD, k8s and Senior Manager experience.', 'required')
+    for (const entry of out) {
+      const key = matchKey(entry.phrase)
+      expect(
+        lists.byKey.has(key) || lists.phraseBoostByKey.has(key)
+      ).toBe(true)
+    }
   })
 })
 
@@ -322,5 +946,342 @@ describe('mergeKeywordResults', () => {
     const r = mergeKeywordResults(llm, [], lists)
     expect(r.unknownPhrases).toHaveLength(50)
     expect(r.keywords).toHaveLength(30)
+  })
+
+  it('canonicalizes aliases so LLM shorthand merges with rule spellings', () => {
+    const llm: KeywordEntry[] = [
+      { phrase: 'k8s', weight: 0.9, category: 'hard', source: 'body' }
+    ]
+    const rule: KeywordEntry[] = [
+      { phrase: 'kubernetes', weight: 0.5, category: 'hard', source: 'required' }
+    ]
+    const r = mergeKeywordResults(llm, rule, lists)
+    expect(r.keywords).toHaveLength(1)
+    expect(r.keywords[0]).toMatchObject({
+      phrase: 'kubernetes',
+      weight: 0.9,
+      source: 'required'
+    })
+  })
+
+  it('canonicalizes js/javascript across LLM and rule candidates', () => {
+    const llm: KeywordEntry[] = [
+      { phrase: 'js', weight: 0.8, category: 'hard', source: 'body' }
+    ]
+    const rule: KeywordEntry[] = [
+      { phrase: 'javascript', weight: 0.5, category: 'hard', source: 'title' }
+    ]
+    const r = mergeKeywordResults(llm, rule, lists)
+    expect(r.keywords).toHaveLength(1)
+    expect(r.keywords[0].phrase).toBe('javascript')
+    expect(r.keywords[0].source).toBe('title')
+  })
+
+  it('canonicalizes LLM-only unknown phrases too', () => {
+    const llm: KeywordEntry[] = [
+      { phrase: 'obscureframework', weight: 1.0, category: 'hard', source: 'body' }
+    ]
+    const r = mergeKeywordResults(llm, [], lists)
+    expect(r.unknownPhrases).toEqual(['obscureframework'])
+  })
+})
+
+describe('coverage-safe keyword matching (additive helpers)', () => {
+  it('matches tech tokens with trailing +/# that \\b can never match', () => {
+    expect(keywordMatchPattern('c++').test('Built high-throughput services in C++')).toBe(true)
+    expect(keywordMatchPattern('c#').test('Professional C# developer')).toBe(true)
+  })
+
+  it('rejects lookalike contexts around tech tokens', () => {
+    expect(keywordMatchPattern('c++').test('We ported the VC++ codebase')).toBe(false)
+    expect(keywordMatchPattern('c#').test('C#2 fragments')).toBe(false)
+    expect(keywordMatchPattern('.net').test('we use asp.net hosting')).toBe(false)
+    expect(keywordMatchPattern('.net').test('we build on .NET')).toBe(true)
+  })
+
+  it('keeps standard word-boundary semantics for plain words', () => {
+    expect(keywordMatchPattern('go').test('we use google cloud')).toBe(false)
+    expect(keywordMatchPattern('react').test('React and TypeScript')).toBe(true)
+  })
+
+  it('coverageForKeywords counts c++ as present where plain \\b coverage cannot', () => {
+    expect(coverageForKeywords('Systems code in C++ and C#', ['c++', 'c#'])).toBe(1)
+    expect(coverageForKeywords('Systems code in C++', ['c++', 'c#'])).toBeCloseTo(0.5)
+    expect(coverageForKeywords('any document', [])).toBe(0)
+  })
+
+  it('coverageForKeywords matches the plain semantics for ordinary phrases', () => {
+    expect(coverageForKeywords('react and typescript', ['react', 'typescript', 'python'])).toBeCloseTo(2 / 3)
+    expect(coverageForKeywords('we use google cloud', ['go'])).toBe(0)
+  })
+
+  it('missingForKeywords returns only unmatched keywords', () => {
+    expect(missingForKeywords('Systems code in C++', ['c++', 'c#'])).toEqual(['c#'])
+    expect(missingForKeywords('Built with C++ and C#', ['c++', 'c#'])).toEqual([])
+  })
+
+  it('coverage helpers work on extractor output end to end', () => {
+    const jd = 'Requirements: deep C++ and C# experience. C++ is core. C# is core.'
+    const keywords = extractJobKeywords(jd)
+    expect(keywords).toContain('c++')
+    expect(coverageForKeywords('I write C++ and C# daily', keywords)).toBeGreaterThan(0)
+  })
+})
+
+describe('round-2 allowlist + alias expansion', () => {
+  const lists = loadKeywordAllowlists()
+
+  it('resolves spelled-out vendor names to canonical cloud phrases', () => {
+    const out = extractPhases('Experience with Amazon Web Services and Google Cloud.', 'required')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('aws')
+    expect(phrases).toContain('gcp')
+    expect(out.find((k) => k.phrase === 'aws')!.category).toBe('hard')
+  })
+
+  it('resolves "Google Cloud Platform" and "Microsoft Azure" too', () => {
+    const out = extractPhases('GCP / Google Cloud Platform / Microsoft Azure exposure.', 'body')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases.filter((p) => p === 'gcp')).toHaveLength(1)
+    expect(phrases).toContain('azure')
+  })
+
+  it('maps py/tf shorthand where unambiguous', () => {
+    const out = extractPhases('Solid py and tf foundations.', 'required')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('python')
+    expect(phrases).toContain('terraform')
+  })
+
+  it('maps PowerBI spelling to the "power bi" entry', () => {
+    expect(KEYWORD_ALIASES['powerbi']).toBe('power bi')
+    const out = extractPhases('Dashboards in PowerBI.', 'required')
+    expect(out.map((k) => k.phrase)).toContain('power bi')
+  })
+
+  it('PHRASE_ALIASES keys are match-key forms', () => {
+    expect(PHRASE_ALIASES['amazon web services']).toBe('aws')
+    expect(matchKey('Amazon Web Services')).toBe('amazon web services')
+  })
+
+  it('expanded data/devops terms are extracted', () => {
+    const out = extractPhases('Databricks, Trino, Jenkins and Ansible in production.', 'required')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('databricks')
+    expect(phrases).toContain('trino')
+    expect(phrases).toContain('jenkins')
+    expect(phrases).toContain('ansible')
+  })
+
+  it('expanded finance/fintech terms are extracted', () => {
+    const out = extractPhases(
+      'Backtesting, P&L attribution, GAAP reporting and Bloomberg terminal skills.',
+      'required'
+    )
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('backtesting')
+    expect(phrases).toContain('p&l')
+    expect(phrases).toContain('gaap')
+    expect(phrases).toContain('bloomberg')
+  })
+
+  it('expanded finance certs land in the cert category', () => {
+    const out = extractPhases('CFA Level II charterholder; passed Series 7 and Series 63.', 'preferred')
+    for (const entry of out) {
+      if (['cfa level ii', 'series 7', 'series 63'].includes(entry.phrase)) {
+        expect(entry.category, entry.phrase).toBe('cert')
+      }
+    }
+    expect(out.map((k) => k.phrase)).toContain('cfa level ii')
+    expect(out.map((k) => k.phrase)).toContain('series 7')
+  })
+
+  it('does not emit bare "fix"; only "fix protocol" counts', () => {
+    const out = extractPhases('Ability to fix bugs quickly. FIX protocol knowledge required.', 'required')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('fix protocol')
+    expect(phrases).not.toContain('fix')
+  })
+
+  it('extras do not duplicate JSON entries', () => {
+    const before = new Set(['python', 'aws', 'kubernetes'])
+    for (const p of before) expect(lists.hard.has(p)).toBe(true)
+    // count uniqueness via byKey: one entry per phrase
+    const seen = new Map<string, number>()
+    for (const e of lists.byKey.values()) {
+      seen.set(e.phrase, (seen.get(e.phrase) ?? 0) + 1)
+    }
+    for (const [phrase, count] of seen) {
+      // a phrase may legitimately appear under several match keys
+      // (raw + canonical + phrase aliases) but should resolve to one
+      // entry per list; >2 distinct keys is suspicious duplication
+      expect(count, phrase).toBeLessThanOrEqual(3)
+    }
+  })
+})
+
+describe('PMI false-negative guards (skills survive the noise filter)', () => {
+  const lists = loadKeywordAllowlists()
+
+  // Strongest guard: every allowlist phrase (hard/soft/cert/seniority/
+  // phrase_boost) whose tokens intersect PMI_NOISE_WORDS must still
+  // surface from a sentence mentioning it. Allowlisted phrases bypass
+  // the noise filter entirely — the found-check short-circuits first.
+  it('every allowlisted phrase containing a noise word still surfaces', () => {
+    const guarded = new Set<string>()
+    for (const entry of lists.byKey.values()) {
+      const words = matchKey(entry.phrase).split(' ')
+      if (words.length >= 2 && words.some((w) => PMI_NOISE_WORDS.has(w))) {
+        guarded.add(entry.phrase)
+      }
+    }
+    for (const entry of lists.phraseBoostByKey.values()) {
+      const words = matchKey(entry.phrase).split(' ')
+      if (words.length >= 2 && words.some((w) => PMI_NOISE_WORDS.has(w))) {
+        guarded.add(entry.phrase)
+      }
+    }
+    expect(guarded.size, 'expected real allowlist coverage of noise-word phrases').toBeGreaterThan(0)
+
+    for (const phrase of guarded) {
+      const jd = `${phrase} is required. We value ${phrase} in this role.`
+      const phrases = extractPhases(jd, 'required').map((k) => k.phrase)
+      expect(phrases, `allowlisted phrase "${phrase}" must survive the noise filter`).toContain(phrase)
+    }
+  })
+
+  it('allowlisted skills embedded in boilerplate prose still surface', () => {
+    const out = extractPhases(
+      '5+ years of experience required. You need Kafka experience. Experience with Kafka is essential.',
+      'required'
+    )
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('kafka')
+    // the noise filter itself is still active
+    expect(phrases).not.toContain('years experience')
+    expect(phrases).not.toContain('kafka experience')
+  })
+
+  it('allowlisted phrases containing noise words are never suppressed', () => {
+    // "team" (noise) + "building", "deep" (noise) + "learning",
+    // "time" (noise) + "management", "full" (noise) + "stack":
+    // the found-check short-circuits before the noise filter.
+    const out = extractPhases(
+      'We invest in team building and deep learning. Real time systems and time management matter. Full stack ownership expected. Team building weekly. Deep learning models. Real time pipelines.',
+      'required'
+    )
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('team building')
+    expect(phrases).toContain('deep learning')
+    expect(phrases).toContain('time management')
+    expect(phrases).toContain('full stack')
+    expect(phrases).toContain('real time')
+  })
+
+  it('noise filter may drop a PAIR, never the SKILL itself', () => {
+    // "kubernetes experience" is noise-suppressed, but "kubernetes"
+    // is an allowlisted skill and must survive — a missed skill means
+    // the CV omits it for ATS.
+    const out = extractPhases(
+      'Kubernetes experience required. Experience with kubernetes preferred.',
+      'required'
+    )
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('kubernetes')
+    expect(phrases).not.toContain('kubernetes experience')
+  })
+
+  it('repeated genuine devops skills without noise words still surface', () => {
+    const out = extractPhases(
+      'Incident response ownership. We practice incident response weekly. Incident response drills are monthly.',
+      'required'
+    )
+    expect(out.map((k) => k.phrase)).toContain('incident response')
+  })
+
+  it('repeated genuine finance skills without noise words still surface', () => {
+    const out = extractPhases(
+      'We build risk models. Risk models drive our decisions. The risk models improve quarterly.',
+      'required'
+    )
+    expect(out.map((k) => k.phrase)).toContain('risk models')
+  })
+
+  it('alias-canonicalized skills near boilerplate survive', () => {
+    const out = extractPhases(
+      'K8s experience is a must. Experience with k8s required. Years of k8s experience.',
+      'required'
+    )
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('kubernetes')
+    expect(phrases).not.toContain('kubernetes experience')
+  })
+})
+
+describe('performance guard (10k+ word postings)', () => {
+  // ~12k-word synthetic posting. Varied filler keeps the bigram
+  // population realistic; the repeated skill block is what extraction
+  // must find quickly. The pipeline is O(n): tokenize + single-pass
+  // unigram/bigram counts + map lookups. The timing bound is generous
+  // (2s) so the guard stays stable on loaded CI machines while still
+  // catching a quadratic regression, which took multiple seconds.
+  it('extracts a 12k-word description well under the 2s bound', () => {
+    const filler =
+      'We partner with commercial teams across the organization and support internal stakeholders through planning cycles, governance reviews, and quarterly planning exercises with measurable outcomes. '
+    const skills = 'Requirements include python and kafka and postgres and kubernetes and terraform and spark and airflow and redis and golang. '
+    const jd = ['Staff Platform Engineer', ''].join('\n') +
+      (filler + skills).repeat(320) // ≈ 11k words
+    expect(jd.split(/\s+/).length).toBeGreaterThan(10000)
+
+    const started = performance.now()
+    const result = extractJobKeywordsStructured(jd)
+    const elapsedMs = performance.now() - started
+
+    expect(elapsedMs, `extraction took ${elapsedMs.toFixed(0)}ms`).toBeLessThan(2000)
+    expect(result.keywords.length).toBeLessThanOrEqual(30)
+    const phrases = result.keywords.map((k) => k.phrase)
+    for (const skill of ['python', 'kafka', 'postgres', 'kubernetes', 'terraform', 'spark', 'airflow', 'redis']) {
+      // In this synthetic posting the skill tokens sit inside longer
+      // PMI pairs ('golang kafka'), so assert the skill SIGNAL
+      // survives: standalone or as a component of a kept phrase.
+      expect(
+        phrases.some((p) => p === skill || p.includes(` ${skill}`) || p.includes(`${skill} `)),
+        `${skill} signal must survive large-posting extraction`
+      ).toBe(true)
+    }
+  })
+
+  it('small postings remain fast (guard against fixed overhead creep)', () => {
+    const jd = [
+      'Backend Engineer',
+      '',
+      'Requirements',
+      '- 5+ years of python and postgres',
+      '- kafka and redis in production'
+    ].join('\n')
+    const started = performance.now()
+    for (let i = 0; i < 50; i++) extractJobKeywordsStructured(jd)
+    const elapsedMs = performance.now() - started
+    expect(elapsedMs, `50 extractions took ${elapsedMs.toFixed(0)}ms`).toBeLessThan(2000)
+  })
+})
+
+describe('JD fixture regression suite', () => {
+  for (const f of FIXTURES) {
+    it(`buckets and extracts: ${f.name}`, () => {
+      checkFixture(f)
+    })
+  }
+
+  it('covers the corpus breadth required by the brief', () => {
+    expect(FIXTURES.length).toBeGreaterThanOrEqual(8)
+    expect(FIXTURES.length).toBeLessThanOrEqual(12)
+  })
+
+  it('every fixture yields a non-empty keyword list', () => {
+    for (const f of FIXTURES) {
+      const phrases = extractJobKeywords(f.jd)
+      expect(phrases.length, f.name).toBeGreaterThan(0)
+    }
   })
 })
