@@ -2,7 +2,7 @@
 // imports — safe to import from anywhere, including vitest and the
 // renderer.
 
-import { loadKeywordAllowlists } from './keywordAllowlists'
+import { loadKeywordAllowlists, KEYWORD_ALIASES } from './keywordAllowlists'
 import type { KeywordAllowlists } from './keywordAllowlists'
 import type { KeywordCategory, KeywordSource, KeywordEntry, KeywordResult } from './types'
 export type { KeywordCategory, KeywordSource, KeywordEntry, KeywordResult }
@@ -298,69 +298,65 @@ function pmiFor(phrase: string, tokens: string[]): number {
 
 const PMI_THRESHOLD = 2.0
 
+// Maps a single token through the alias table ("k8s" → "kubernetes",
+// "js" → "javascript", "golang" → "go"). Multi-token phrases are left
+// alone so emitted keywords stay coverage-matchable word sequences.
+function canonicalToken(t: string): string {
+  return KEYWORD_ALIASES[t] ?? t
+}
+
 export function extractPhases(section: string, source: KeywordSource): KeywordEntry[] {
   const allowlists = loadKeywordAllowlists()
-  const tokens = tokenize(section)
-  const phrases = new Set<string>()
-  const phraseCategory = new Map<string, KeywordCategory>()
-
-  // 1. Unigram allowlist matches (hard, soft, cert, seniority).
-  for (const t of tokens) {
-    if (allowlists.hard.has(t) && !phraseCategory.has(t)) {
-      phrases.add(t); phraseCategory.set(t, 'hard')
-    } else if (allowlists.soft.has(t) && !phraseCategory.has(t)) {
-      phrases.add(t); phraseCategory.set(t, 'soft')
-    } else if (allowlists.cert.has(t) && !phraseCategory.has(t)) {
-      phrases.add(t); phraseCategory.set(t, 'cert')
-    } else if (allowlists.seniority.has(t) && !phraseCategory.has(t)) {
-      phrases.add(t); phraseCategory.set(t, 'seniority')
-    }
+  const tokens = tokenize(section).map(canonicalToken)
+  // matchKey → matched entry. Allowlist entries are indexed by their
+  // match keys, so punctuation-bearing entries ("next.js", "ci/cd",
+  // "scikit-learn") are reachable from the token stream ("next js",
+  // "ci cd") while the emitted phrase stays the allowlist form.
+  const found = new Map<string, { phrase: string; category: KeywordCategory }>()
+  const add = (key: string, phrase: string, category: KeywordCategory) => {
+    if (!found.has(key)) found.set(key, { phrase, category })
   }
 
-  // 2. Bigram + trigram allowlist matches (hard, soft, cert — skip seniority for phrases).
-  for (const bg of [...bigrams(tokens), ...trigrams(tokens)]) {
-    if (allowlists.hard.has(bg) && !phraseCategory.has(bg)) {
-      phrases.add(bg); phraseCategory.set(bg, 'hard')
-    } else if (allowlists.soft.has(bg) && !phraseCategory.has(bg)) {
-      phrases.add(bg); phraseCategory.set(bg, 'soft')
-    } else if (allowlists.cert.has(bg) && !phraseCategory.has(bg)) {
-      phrases.add(bg); phraseCategory.set(bg, 'cert')
-    } else if (allowlists.phraseBoost.has(bg)) {
-      const cat = allowlists.phraseBoostByCategory.get(bg) ?? 'hard'
-      if (!phraseCategory.has(bg)) {
-        phrases.add(bg); phraseCategory.set(bg, cat)
-      }
+  // 1. Unigram allowlist matches (hard, soft, cert, seniority). Aliases
+  //    resolve here: "k8s" matches the "kubernetes" entry.
+  for (const t of tokens) {
+    const hit = allowlists.byKey.get(t)
+    if (hit) add(t, hit.phrase, hit.category)
+  }
+
+  // 2. Bigram + trigram allowlist matches. Seniority phrases ("senior
+  //    manager", "entry level", "head of") and phrase_boost entries
+  //    ("a/b testing") are only reachable as n-grams.
+  for (const gram of [...bigrams(tokens), ...trigrams(tokens)]) {
+    const hit = allowlists.byKey.get(gram)
+    if (hit) {
+      add(gram, hit.phrase, hit.category)
+      continue
     }
+    const boost = allowlists.phraseBoostByKey.get(gram)
+    if (boost) add(gram, boost.phrase, boost.category)
   }
 
   // 3. PMI n-gram discovery for bigrams not in any list, count >= 2, PMI >= threshold.
   for (const bg of bigrams(tokens)) {
-    if (phrases.has(bg)) continue
+    if (found.has(bg)) continue
     if (bg.split(' ').some((w) => w.length < 3)) continue
     const pmi = pmiFor(bg, tokens)
     if (pmi >= PMI_THRESHOLD) {
-      phrases.add(bg); phraseCategory.set(bg, 'hard')
+      add(bg, bg, 'hard')
     }
   }
 
-  // 4. Longer phrase wins over sub-phrase: drop "aws" if "aws solutions architect" exists.
-  const phraseList = [...phrases]
-  phraseList.sort((a, b) => b.length - a.length)
-  const kept: string[] = []
-  for (const p of phraseList) {
-    if (kept.some((k) => k.includes(p) || p.includes(k))) {
-      // longer already kept; skip the shorter
-      const longerFirst = kept.find((k) => k.includes(p))
-      if (longerFirst && longerFirst !== p) continue
-      if (kept.includes(p)) continue
-    }
-    kept.push(p)
+  // 4. Longer phrase wins over sub-phrase: drop "aws" if "aws solutions
+  //    architect" exists. Sort by length desc so the longer phrase is
+  //    always kept first, then drop any phrase contained in (or equal to)
+  //    an already-kept phrase.
+  const entries = [...found.values()]
+  entries.sort((a, b) => b.phrase.length - a.phrase.length || a.phrase.localeCompare(b.phrase))
+  const kept: KeywordEntry[] = []
+  for (const e of entries) {
+    if (kept.some((k) => k.phrase.includes(e.phrase) || e.phrase.includes(k.phrase))) continue
+    kept.push({ phrase: e.phrase, weight: 0, category: e.category, source })
   }
-
-  return kept.map((p) => ({
-    phrase: p,
-    weight: 0,
-    category: phraseCategory.get(p) ?? 'hard',
-    source
-  }))
+  return kept
 }

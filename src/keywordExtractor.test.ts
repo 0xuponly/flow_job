@@ -6,7 +6,7 @@ import {
   extractJobKeywords,
   mergeKeywordResults
 } from './keywordExtractor'
-import { loadKeywordAllowlists } from './keywordAllowlists'
+import { loadKeywordAllowlists, matchKey, KEYWORD_ALIASES } from './keywordAllowlists'
 import type { KeywordEntry } from './types'
 
 describe('parseSections', () => {
@@ -152,6 +152,111 @@ describe('extractPhases', () => {
     )
     const phrases = out.map((k) => k.phrase)
     expect(phrases).toContain('foobar pipeline')
+  })
+})
+
+describe('alias normalization', () => {
+  it('maps k8s to the kubernetes allowlist entry', () => {
+    const out = extractPhases('Our platform runs on k8s.', 'required')
+    expect(out.map((k) => k.phrase)).toContain('kubernetes')
+    expect(out.map((k) => k.phrase)).not.toContain('k8s')
+  })
+
+  it('maps js/ts shorthand to javascript/typescript', () => {
+    const out = extractPhases('Strong JS and TS skills required.', 'required')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('javascript')
+    expect(phrases).toContain('typescript')
+    expect(phrases).not.toContain('js')
+    expect(phrases).not.toContain('ts')
+  })
+
+  it('maps golang and nodejs to go and node', () => {
+    const out = extractPhases('Experience with golang and nodejs.', 'body')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('go')
+    expect(phrases).toContain('node')
+  })
+
+  it('maps Sr./Jr. title tokens to senior/junior', () => {
+    const out = extractPhases('Hiring a Sr. Backend Engineer and a Jr. Analyst.', 'title')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('senior')
+    expect(phrases).toContain('junior')
+  })
+
+  it('does not alias multi-word phrases', () => {
+    // "machine learning" must never be rewritten token-by-token.
+    const out = extractPhases('We do machine learning.', 'required')
+    expect(out.map((k) => k.phrase)).toContain('machine learning')
+  })
+
+  it('KEYWORD_ALIASES maps shorthand to allowlist phrases', () => {
+    expect(KEYWORD_ALIASES['k8s']).toBe('kubernetes')
+    expect(KEYWORD_ALIASES['js']).toBe('javascript')
+    expect(KEYWORD_ALIASES['golang']).toBe('go')
+  })
+})
+
+describe('matchKey', () => {
+  it('tokenizes punctuation-bearing allowlist entries into token joins', () => {
+    expect(matchKey('next.js')).toBe('next js')
+    expect(matchKey('ci/cd')).toBe('ci cd')
+    expect(matchKey('scikit-learn')).toBe('scikit learn')
+    expect(matchKey('a/b testing')).toBe('a b testing')
+    expect(matchKey('mid-level')).toBe('mid level')
+  })
+
+  it('preserves tech tokens with + and #', () => {
+    expect(matchKey('c++')).toBe('c++')
+    expect(matchKey('c#')).toBe('c#')
+  })
+})
+
+describe('tech token extraction', () => {
+  it('finds next.js from "Next.js" text', () => {
+    const out = extractPhases('We build with Next.js and Vercel.', 'required')
+    expect(out.map((k) => k.phrase)).toContain('next.js')
+  })
+
+  it('finds ci/cd from "CI/CD" text', () => {
+    const out = extractPhases('You will own our CI/CD pipelines.', 'required')
+    expect(out.map((k) => k.phrase)).toContain('ci/cd')
+  })
+
+  it('finds scikit-learn from "scikit-learn" text', () => {
+    const out = extractPhases('Experience with scikit-learn is a must.', 'required')
+    expect(out.map((k) => k.phrase)).toContain('scikit-learn')
+  })
+
+  it('still finds c++ and c# tokens', () => {
+    const out = extractPhases('Deep knowledge of C++ and C#.', 'required')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('c++')
+    expect(phrases).toContain('c#')
+  })
+
+  it('finds multi-word seniority phrases as one entry, dropping the bare unigram', () => {
+    const out = extractPhases('You will lead a team as a Senior Manager.', 'required')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('senior manager')
+    expect(phrases).not.toContain('senior')
+  })
+
+  it('finds mid-level from hyphenated text', () => {
+    const out = extractPhases('This is a mid-level position.', 'body')
+    expect(out.map((k) => k.phrase)).toContain('mid-level')
+  })
+
+  it('emitted phrases resolve to real allowlist entries', () => {
+    const lists = loadKeywordAllowlists()
+    const out = extractPhases('Next.js, CI/CD, k8s and Senior Manager experience.', 'required')
+    for (const entry of out) {
+      const key = matchKey(entry.phrase)
+      expect(
+        lists.byKey.has(key) || lists.phraseBoostByKey.has(key)
+      ).toBe(true)
+    }
   })
 })
 
