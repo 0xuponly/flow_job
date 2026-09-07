@@ -51,12 +51,33 @@ export const DEFAULT_DISABLED_BOARDS = [
   'Hiring Cafe'
 ]
 
+// Original 5 boards disabled by 1ca07d9 (migration v1, 2026-09-06).
+// Kept stable so migrateDefaultDisabledBoardsV1 remains idempotent for
+// installs that already ran it.
+export const DEFAULT_DISABLED_BOARDS_V1 = [
+  'Startup.jobs',
+  'Monster',
+  'Crypto.jobs',
+  'CryptoJobsList',
+  'Contra'
+]
+
+// Boards added to the default-disabled list on 2026-09-07. Migration v2
+// unions these into existing installs that have already run v1.
+export const DEFAULT_DISABLED_BOARDS_V2_ADDITIONS = [
+  'CharityVillage',
+  'DailyRemote',
+  'NoDesk',
+  'Work At A Startup',
+  'Crossover',
+  'Hiring Cafe'
+]
+
 /**
- * One-time settings migration (v1, 2026-09-06): union the walled-board
- * defaults into whatever disabled_boards list already exists. Empty
- * lists (every pre-1ca07d9 install) get all 5; lists with user-disabled
- * extras keep them. Idempotent — a list already containing every
- * default is returned unchanged.
+ * One-time settings migration helper: union the walled-board defaults
+ * into whatever disabled_boards list already exists. Empty lists get
+ * all defaults; lists with user-disabled extras keep them. Idempotent —
+ * a list already containing every default is returned unchanged.
  */
 export function unionDisabledBoards(existing: string[], defaults: string[]): string[] {
   const seen = new Set(existing)

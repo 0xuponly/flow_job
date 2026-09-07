@@ -6,7 +6,7 @@ import { getOrCreateDek, encryptJson, decryptJson, deleteDek, encryptionMode } f
 import { formatLocation, canonicalizeCountry, countryNameFromCode, decodeEntities, normalizeTitle, normalizeCompany, normalizeSalary, dedupKey } from './utils'
 import { normalizeEmploymentType, normalizeWorkMode } from './employmentType'
 import { matchGradeFor } from './matchGrade'
-import { DEFAULT_DISABLED_BOARDS, unionDisabledBoards } from './boards'
+import { DEFAULT_DISABLED_BOARDS, DEFAULT_DISABLED_BOARDS_V1, DEFAULT_DISABLED_BOARDS_V2_ADDITIONS, unionDisabledBoards } from './boards'
 import type {
   ApiModelConfig,
   AIQueueItem,
@@ -273,18 +273,11 @@ export function loadStore(): Store {
       // Per-board on/off list, populated by the Settings > Boards tab.
       // Strings are board names matching `BOARDS[].name` in
       // `electron/boards.ts`. New default: the boards that were
-      // Cloudflare-walled in every scan (startup.jobs, Monster,
-      // Crypto.jobs, CryptoJobsList, Contra) ship disabled — their
-      // scraper logic stays intact for add-by-URL imports, but they
-      // no longer stall scans with per-listing 403s. Users can
-      // re-enable any of them in Settings > Boards.
-      store.settings.disabled_boards = [
-        'Startup.jobs',
-        'Monster',
-        'Crypto.jobs',
-        'CryptoJobsList',
-        'Contra'
-      ]
+      // Cloudflare-walled in every scan ship disabled — their scraper
+      // logic stays intact for add-by-URL imports, but they no longer
+      // stall scans with per-listing 403s. Users can re-enable any of
+      // them in Settings > Boards.
+      store.settings.disabled_boards = [...DEFAULT_DISABLED_BOARDS]
     }
     let jobsMigrated = false
     // Build a Set of dedup keys up front so the per-job dedup check is
@@ -1976,8 +1969,8 @@ export function migrateJobSearchLocationsV1(): { updated: boolean; reason: strin
 }
 
 /**
- * One-shot: union the default-disabled walled boards (see
- * DEFAULT_DISABLED_BOARDS in boards.ts) into the saved disabled_boards
+ * One-shot: union the original 5 default-disabled walled boards (see
+ * DEFAULT_DISABLED_BOARDS_V1 in boards.ts) into the saved disabled_boards
  * list. 1ca07d9 shipped the list as a fresh-install default only, so
  * existing installs with a saved empty array kept scanning the 5
  * Cloudflare-walled boards. Flag-gated so it runs once per install and
@@ -1989,9 +1982,30 @@ export function migrateDefaultDisabledBoardsV1(): { updated: boolean } {
   const current = Array.isArray(s.settings.disabled_boards)
     ? s.settings.disabled_boards
     : []
-  const next = unionDisabledBoards(current, DEFAULT_DISABLED_BOARDS)
+  const next = unionDisabledBoards(current, DEFAULT_DISABLED_BOARDS_V1)
   s.settings.disabled_boards = next
   s.settings.disabled_boards_migrated_v1 = '1'
+  persistStore()
+  return { updated: next.length !== current.length }
+}
+
+/**
+ * One-shot: union the 6 additional default-disabled walled boards
+ * (CharityVillage, DailyRemote, NoDesk, Work At A Startup, Crossover,
+ * Hiring Cafe) into the saved disabled_boards list. These were added to
+ * DEFAULT_DISABLED_BOARDS on 2026-09-07; existing installs that already
+ * ran v1 need this follow-up migration to disable them. Flag-gated so
+ * it runs once per install and later user edits survive.
+ */
+export function migrateDefaultDisabledBoardsV2(): { updated: boolean } {
+  const s = loadStore()
+  if (s.settings.disabled_boards_migrated_v2 === '1') return { updated: false }
+  const current = Array.isArray(s.settings.disabled_boards)
+    ? s.settings.disabled_boards
+    : []
+  const next = unionDisabledBoards(current, DEFAULT_DISABLED_BOARDS_V2_ADDITIONS)
+  s.settings.disabled_boards = next
+  s.settings.disabled_boards_migrated_v2 = '1'
   persistStore()
   return { updated: next.length !== current.length }
 }

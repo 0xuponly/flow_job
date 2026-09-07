@@ -1301,10 +1301,19 @@ function runDeferredStoreWork(): void {
   // the saved disabled_boards list (1ca07d9 shipped them as a fresh-
   // install default only). Idempotent, flag-gated.
   try {
-    const boardMig = db.migrateDefaultDisabledBoardsV1()
-    if (boardMig.updated) log.startup.info('Disabled default Cloudflare-walled boards (existing install migration).')
+    const boardMigV1 = db.migrateDefaultDisabledBoardsV1()
+    if (boardMigV1.updated) log.startup.info('Disabled default Cloudflare-walled boards (existing install migration v1).')
   } catch (err) {
-    log.startup.error('Disabled-boards migration failed:', err)
+    log.startup.error('Disabled-boards migration v1 failed:', err)
+  }
+
+  // One-shot: union the additional 6 walled boards added on 2026-09-07
+  // into the saved disabled_boards list. Idempotent, flag-gated.
+  try {
+    const boardMigV2 = db.migrateDefaultDisabledBoardsV2()
+    if (boardMigV2.updated) log.startup.info('Disabled additional Cloudflare-walled boards (existing install migration v2).')
+  } catch (err) {
+    log.startup.error('Disabled-boards migration v2 failed:', err)
   }
 
   // One-shot: annualize legacy salary strings ("$43/hour" → "$86,000",
