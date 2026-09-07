@@ -1,6 +1,17 @@
 import { describe, it, expect, vi } from 'vitest'
 import { buildPdfHtml } from './pdfTemplate'
 
+// Manual PDF text-layer verification (when the Electron printToPDF pipeline
+// is available):
+//   1. Generate a PDF from the HTML returned by buildPdfHtml.
+//   2. Run `pdftotext <pdf> -` and confirm that:
+//      - section headers appear in order (EDUCATION, EXPERIENCE, SKILLS),
+//      - each split line reads as "left text right text" (no reversed order),
+//      - bullets are present as literal • characters, and
+//      - contact info appears near the top as plain text.
+// These HTML-level tests below assert the DOM order and structure that the
+// PDF text layer mirrors.
+
 vi.mock('./database', () => ({
   getDocument: vi.fn(() => null),
   getJob: vi.fn(() => null),
