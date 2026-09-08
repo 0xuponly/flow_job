@@ -9,8 +9,7 @@ describe('QuickAddUrlWindow', () => {
 
   it('submits a non-empty URL on Enter and clears the input on success', async () => {
     const onSubmit = vi.fn().mockResolvedValue({ company: 'Acme', title: 'Engineer' })
-    const onClose = vi.fn()
-    render(<QuickAddUrlWindow onSubmit={onSubmit} onClose={onClose} />)
+    render(<QuickAddUrlWindow onSubmit={onSubmit} />)
 
     const input = screen.getByLabelText('Job URL')
     fireEvent.change(input, { target: { value: 'https://example.com/job' } })
@@ -23,7 +22,7 @@ describe('QuickAddUrlWindow', () => {
 
   it('is a no-op when Enter is pressed with an empty input', () => {
     const onSubmit = vi.fn()
-    render(<QuickAddUrlWindow onSubmit={onSubmit} onClose={vi.fn()} />)
+    render(<QuickAddUrlWindow onSubmit={onSubmit} />)
 
     const input = screen.getByLabelText('Job URL')
     fireEvent.keyDown(input, { key: 'Enter' })
@@ -33,7 +32,7 @@ describe('QuickAddUrlWindow', () => {
 
   it('surfaces duplicate and other errors without clearing the input', async () => {
     const onSubmit = vi.fn().mockRejectedValue(new Error('Job already exists: Acme — Engineer'))
-    render(<QuickAddUrlWindow onSubmit={onSubmit} onClose={vi.fn()} />)
+    render(<QuickAddUrlWindow onSubmit={onSubmit} />)
 
     const input = screen.getByLabelText('Job URL')
     fireEvent.change(input, { target: { value: 'https://example.com/job' } })
@@ -43,11 +42,9 @@ describe('QuickAddUrlWindow', () => {
     expect(input).toHaveValue('https://example.com/job')
   })
 
-  it('calls onClose when the close button is clicked', () => {
-    const onClose = vi.fn()
-    render(<QuickAddUrlWindow onSubmit={() => Promise.resolve({ company: '', title: '' })} onClose={onClose} />)
+  it('does not render an in-UI close button', () => {
+    render(<QuickAddUrlWindow onSubmit={() => Promise.resolve({ company: '', title: '' })} />)
 
-    fireEvent.click(screen.getByRole('button', { name: /close window/i }))
-    expect(onClose).toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: /close/i })).not.toBeInTheDocument()
   })
 })

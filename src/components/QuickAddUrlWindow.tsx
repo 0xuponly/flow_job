@@ -2,12 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 
 interface Props {
   onSubmit: (url: string) => Promise<{ company: string; title: string }>
-  onClose: () => void
 }
 
 type Status = { type: 'idle' } | { type: 'importing' } | { type: 'success'; message: string } | { type: 'error'; message: string }
 
-export default function QuickAddUrlWindow({ onSubmit, onClose }: Props) {
+export default function QuickAddUrlWindow({ onSubmit }: Props) {
   const [url, setUrl] = useState('')
   const [status, setStatus] = useState<Status>({ type: 'idle' })
   const inputRef = useRef<HTMLInputElement>(null)
@@ -53,29 +52,16 @@ export default function QuickAddUrlWindow({ onSubmit, onClose }: Props) {
 
   return (
     <div className="quickadd-window">
-      <div className="quickadd-row">
-        <input
-          ref={inputRef}
-          type="url"
-          className="quickadd-input"
-          placeholder="Paste a job URL…"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          onKeyDown={handleKeyDown}
-          aria-label="Job URL"
-        />
-        <button
-          type="button"
-          className="quickadd-close icon-btn"
-          aria-label="Close window"
-          onClick={onClose}
-          title="Close"
-        >
-          <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M18 6L6 18M6 6l12 12" />
-          </svg>
-        </button>
-      </div>
+      <input
+        ref={inputRef}
+        type="url"
+        className="quickadd-input"
+        placeholder="Paste a job URL…"
+        value={url}
+        onChange={(e) => setUrl(e.target.value)}
+        onKeyDown={handleKeyDown}
+        aria-label="Job URL"
+      />
       <div className={statusClassFor(status)} aria-live="polite">
         {statusTextFor(status)}
       </div>

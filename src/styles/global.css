@@ -1260,38 +1260,9 @@ input[type="checkbox"]:disabled {
   -webkit-app-region: drag;
 }
 
-.quickadd-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  -webkit-app-region: no-drag;
-}
-
 .quickadd-input {
-  flex: 1;
-  min-width: 0;
-}
-
-.quickadd-close {
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  color: var(--text-muted);
-  padding: 0;
-  flex-shrink: 0;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
-}
-
-.quickadd-close:hover {
-  background: var(--bg-hover);
-  color: var(--text);
-  border-color: var(--text-muted);
+  width: 100%;
+  -webkit-app-region: no-drag;
 }
 
 .quickadd-status {
