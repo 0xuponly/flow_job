@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { AIQueueItem, Job } from './types'
 
-// The score_fit case lazy-imports ./main, so mock it before importing
+// The score_fit case lazy-imports ./fitScorer, so mock it before importing
 // the module under test.
-vi.mock('./main', () => ({
+vi.mock('./fitScorer', () => ({
   scoreOneJobInBackground: vi.fn()
 }))
 // aiQueue pulls ./database for queue persistence; stub the surface the
@@ -17,7 +17,7 @@ vi.mock('./database', () => ({
 }))
 
 import { processQueue } from './aiQueue'
-import { scoreOneJobInBackground } from './main'
+import { scoreOneJobInBackground } from './fitScorer'
 import { getAIQueue, updateAIQueueItem, removeAIQueueItem } from './database'
 import { RateLimitError } from './ai'
 

@@ -45,12 +45,17 @@ async function processItem(item: AIQueueItem): Promise<void> {
         break
       }
       case 'score_fit': {
-        // Lazy import breaks the main.ts <-> aiQueue.ts static cycle.
+        // Lazy import of fitScorer keeps aiQueue.ts free of the heavier
+        // main-process module graph (which transitively pulls in
+        // jobSearch.ts, jobScraper.ts, browserScraper.ts, pdfTemplate,
+        // etc.) until the case actually fires. fitScorer also gives the
+        // function a stable home — main.ts's heavy import-time side
+        // effects make it hard to test scoreOneJobInBackground directly.
         // scoreOneJobInBackground returns the updated job, or null when
         // the job was deleted mid-run. score === null means the LLM
         // scorer failed and the heuristic fallback stamped no score —
         // throw so the caller's backoff path retries it later.
-        const { scoreOneJobInBackground } = await import('./main')
+        const { scoreOneJobInBackground } = await import('./fitScorer')
         const updated = await scoreOneJobInBackground(item.jobId)
         if (!updated) {
           removeAIQueueItem(item.id)
