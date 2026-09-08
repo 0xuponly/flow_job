@@ -223,6 +223,35 @@ function canonicalPhrase(s: string): string {
   return KEYWORD_ALIASES[t] ?? t
 }
 
+// P0.2 deny-list: noise terms from the LLM extraction logs (§3.3) that
+// pollute the refined top-30 list and push real skills out of the cap.
+// Applied ONLY to LLM-unknown phrases — when the rule pipeline or
+// allowlist already surfaced a term, it is preserved as the safety net.
+// Matching is by match-key form (lowercase, token-joined) so "M&A" and
+// "m & a" both resolve to the same entry as "m&a".
+export const LLM_DENY_LIST: ReadonlySet<string> = new Set([
+  'canada',
+  'years experience',
+  'university degree',
+  'remote',
+  'full-time',
+  'full time'
+])
+
+function isDeniedUnknownPhrase(phrase: string): boolean {
+  return LLM_DENY_LIST.has(matchKeyForDeny(phrase))
+}
+
+function matchKeyForDeny(phrase: string): string {
+  return phrase
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9+#\s-]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length > 0)
+    .join(' ')
+}
+
 function isInAllowlist(phrase: string, lists: KeywordAllowlists): boolean {
   if (lists.hard.has(phrase)) return true
   if (lists.soft.has(phrase)) return true
@@ -281,6 +310,12 @@ export function mergeKeywordResults(
       if (isKnown) {
         merged.push({ ...llmEntry, phrase: phraseNorm })
       } else {
+        // P0.2 deny-list: drop LLM-unknown noise phrases (locations,
+        // years-of-experience boilerplate, degree mentions, employment
+        // types) before they can push real skills out of the top-30
+        // cap. Only applies to LLM-unknown entries — a phrase the rule
+        // pipeline or allowlist already surfaced is preserved.
+        if (isDeniedUnknownPhrase(phraseNorm)) continue
         merged.push({
           phrase: phraseNorm,
           weight: Math.max(0, Math.min(1, llmEntry.weight * UNKNOWN_DOWNWEIGHT)),
@@ -482,8 +517,14 @@ export function extractPhases(section: string, source: KeywordSource): KeywordEn
 
   // 1. Unigram allowlist matches (hard, soft, cert, seniority). Aliases
   //    resolve here: "k8s" matches the "kubernetes" entry.
+  //
+  //    P0.2: also check phraseBoostByKey so single-token aliasKeys
+  //    (PHRASE_ALIASES targets like "gtm" → "go-to-market",
+  //    "sla" → "service level objectives") are reachable as unigrams
+  //    too. Without this the unigram loop would only find entries
+  //    whose canonical phrase is in hard/soft/cert/seniority.
   for (const t of tokens) {
-    const hit = allowlists.byKey.get(t)
+    const hit = allowlists.byKey.get(t) ?? allowlists.phraseBoostByKey.get(t)
     if (hit) add(t, hit.phrase, hit.category)
   }
 
