@@ -11,7 +11,6 @@ createRoot(document.getElementById('root')!).render(
         const { job } = await api.importJobFromUrl(url)
         return { company: job.company, title: job.title }
       }}
-      onClose={() => window.close()}
     />
   </StrictMode>
 )
