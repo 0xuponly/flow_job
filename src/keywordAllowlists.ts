@@ -61,11 +61,31 @@ export const KEYWORD_ALIASES: Readonly<Record<string, string>> = {
 // allowlist phrase. Keys are match-key (token-join) forms, so they are
 // indexed straight into the same lookup tables ("Amazon Web Services"
 // text yields the trigram "amazon web services" → "aws").
+//
+// P0.2 + P1.2 acronym/expansion table (folded together per the plan):
+// the abbreviation and the spelled-out form both index the same
+// canonical phrase. Single-token abbreviations ("gtm", "sla", "slos")
+// live here so the alias table is the single source of truth for
+// acronym → canonical resolution.
 export const PHRASE_ALIASES: Readonly<Record<string, string>> = {
   'amazon web services': 'aws',
   'google cloud platform': 'gcp',
   'google cloud': 'gcp',
-  'microsoft azure': 'azure'
+  'microsoft azure': 'azure',
+  // M&A: matchKey of "m&a" is "m a" (the tokenizer strips the & into
+  // a space, so the JD text "M&A" yields the bigram "m a").
+  'm a': 'mergers and acquisitions',
+  // IAM expansion: 4 tokens, so the trigram loop can't emit it
+  // directly, but the alias table records the mapping for any
+  // downstream consumer (coverage checks, taxonomy readers).
+  'identity and access management': 'iam',
+  // GTM expansion + abbreviation.
+  'go to market': 'go-to-market',
+  'gtm': 'go-to-market',
+  // SLO expansion + abbreviations.
+  'sla': 'service level objectives',
+  'slos': 'service level objectives',
+  'slas': 'service level objectives'
 }
 
 // Round-2 expansion: cloud/devops/data/finance-fintech terms merged on
@@ -89,7 +109,17 @@ const EXTRA_TERMS: RawBundle = {
     // trading / fintech
     'kdb+', 'bloomberg', 'refinitiv', 'p&l', 'pnl', 'alpha',
     'backtesting', 'derivatives', 'equities', 'quantitative', 'gaap',
-    'ifrs', 'fintech', 'fix protocol', 'low latency', 'valuation'
+    'ifrs', 'fintech', 'fix protocol', 'low latency', 'valuation',
+    // P0.2 single-token fixture-audit misses from §3.2: domain
+    // skills the extractor used to miss because they weren't on any
+    // list. The unigram loop only matches `hard`/`soft`/`cert`/
+    // `seniority` (not phrase_boost, which the bigram/trigram loop
+    // covers), so single-word domains land here.
+    'cloud', 'frontend', 'analytics', 'seo',
+    // P1.2 acronyms with stable meanings. "iam" is the Identity
+    // and Access Management protocol/skill acronym; the expanded
+    // form is recorded in PHRASE_ALIASES.
+    'iam'
   ],
   soft: [],
   cert: ['CFA Level I', 'CFA Level II', 'CFA Level III', 'CAIA', 'CQF', 'Series 7', 'Series 63'],
@@ -98,7 +128,13 @@ const EXTRA_TERMS: RawBundle = {
     'full stack', 'financial modeling', 'financial analysis',
     'portfolio management', 'algorithmic trading', 'high frequency trading',
     'market making', 'market data', 'order management', 'stream processing',
-    'event sourcing', 'delta lake', 'github actions', 'risk analytics'
+    'event sourcing', 'delta lake', 'github actions', 'risk analytics',
+    // P0.2 + P1.2 multi-token fixture-audit misses and acronym
+    // expansions. The bigram/trigram loop scans phraseBoostByKey
+    // after byKey, so multi-word canonicals land here.
+    'mergers and acquisitions', 'go-to-market',
+    'service level objectives', 'search engine optimization',
+    'performance tuning', 'trading systems'
   ]
 }
 

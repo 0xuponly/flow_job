@@ -2,7 +2,7 @@
 // imports — safe to import from anywhere, including vitest and the
 // renderer.
 
-import { loadKeywordAllowlists, KEYWORD_ALIASES } from './keywordAllowlists'
+import { loadKeywordAllowlists, KEYWORD_ALIASES, matchKey } from './keywordAllowlists'
 import type { KeywordAllowlists } from './keywordAllowlists'
 import type { KeywordCategory, KeywordSource, KeywordEntry, KeywordResult } from './types'
 export type { KeywordCategory, KeywordSource, KeywordEntry, KeywordResult }
@@ -223,6 +223,35 @@ function canonicalPhrase(s: string): string {
   return KEYWORD_ALIASES[t] ?? t
 }
 
+// P0.2 deny-list: noise terms from the LLM extraction logs (§3.3) that
+// pollute the refined top-30 list and push real skills out of the cap.
+// Applied ONLY to LLM-unknown phrases — when the rule pipeline or
+// allowlist already surfaced a term, it is preserved as the safety net.
+// Matching is by match-key form (lowercase, token-joined) so "M&A" and
+// "m & a" both resolve to the same entry as "m&a".
+export const LLM_DENY_LIST: ReadonlySet<string> = new Set([
+  'canada',
+  'years experience',
+  'university degree',
+  'remote',
+  'full-time',
+  'full time'
+])
+
+function isDeniedUnknownPhrase(phrase: string): boolean {
+  return LLM_DENY_LIST.has(matchKeyForDeny(phrase))
+}
+
+function matchKeyForDeny(phrase: string): string {
+  return phrase
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9+#\s-]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length > 0)
+    .join(' ')
+}
+
 function isInAllowlist(phrase: string, lists: KeywordAllowlists): boolean {
   if (lists.hard.has(phrase)) return true
   if (lists.soft.has(phrase)) return true
@@ -281,6 +310,12 @@ export function mergeKeywordResults(
       if (isKnown) {
         merged.push({ ...llmEntry, phrase: phraseNorm })
       } else {
+        // P0.2 deny-list: drop LLM-unknown noise phrases (locations,
+        // years-of-experience boilerplate, degree mentions, employment
+        // types) before they can push real skills out of the top-30
+        // cap. Only applies to LLM-unknown entries — a phrase the rule
+        // pipeline or allowlist already surfaced is preserved.
+        if (isDeniedUnknownPhrase(phraseNorm)) continue
         merged.push({
           phrase: phraseNorm,
           weight: Math.max(0, Math.min(1, llmEntry.weight * UNKNOWN_DOWNWEIGHT)),
@@ -482,8 +517,14 @@ export function extractPhases(section: string, source: KeywordSource): KeywordEn
 
   // 1. Unigram allowlist matches (hard, soft, cert, seniority). Aliases
   //    resolve here: "k8s" matches the "kubernetes" entry.
+  //
+  //    P0.2: also check phraseBoostByKey so single-token aliasKeys
+  //    (PHRASE_ALIASES targets like "gtm" → "go-to-market",
+  //    "sla" → "service level objectives") are reachable as unigrams
+  //    too. Without this the unigram loop would only find entries
+  //    whose canonical phrase is in hard/soft/cert/seniority.
   for (const t of tokens) {
-    const hit = allowlists.byKey.get(t)
+    const hit = allowlists.byKey.get(t) ?? allowlists.phraseBoostByKey.get(t)
     if (hit) add(t, hit.phrase, hit.category)
   }
 
@@ -518,6 +559,36 @@ export function extractPhases(section: string, source: KeywordSource): KeywordEn
   //    architect" exists. Sort by length desc so the longer phrase is
   //    always kept first, then drop any phrase contained in (or equal to)
   //    an already-kept phrase.
+  //
+  //    P1.4: phrase-boost head matching for title sections. For each
+  //    multi-token phrase_boost entry, if the first N-1 tokens appear
+  //    consecutively in the title, emit the entry. This lets
+  //    role-titled JDs (e.g. "Platform Engineer") surface their
+  //    phrase_boost skill ("platform engineering") without requiring
+  //    the exact trigram match. Restricted to phrase_boost entries
+  //    — applying this to hard or seniority entries would
+  //    over-generalize (e.g. "manager" → "management").
+  if (source === 'title') {
+    for (const phrase of allowlists.phraseBoost) {
+      const keyTokens = matchKey(phrase).split(' ')
+      if (keyTokens.length < 2) continue
+      const headLen = keyTokens.length - 1
+      const head = keyTokens.slice(0, headLen)
+      let matched = false
+      outer: for (let i = 0; i <= tokens.length - headLen; i++) {
+        for (let j = 0; j < headLen; j++) {
+          if (tokens[i + j] !== head[j]) continue outer
+        }
+        matched = true
+        break
+      }
+      if (matched) {
+        const category = allowlists.phraseBoostByCategory.get(phrase) ?? 'hard'
+        add(phrase, phrase, category)
+      }
+    }
+  }
+
   const entries = [...found.values()]
   entries.sort((a, b) => b.phrase.length - a.phrase.length || a.phrase.localeCompare(b.phrase))
   const kept: KeywordEntry[] = []

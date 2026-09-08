@@ -984,6 +984,69 @@ describe('mergeKeywordResults', () => {
     const r = mergeKeywordResults(llm, [], lists)
     expect(r.unknownPhrases).toEqual(['obscureframework'])
   })
+
+  // P0.2 deny-list: noise terms from §3.3 (canada, years experience,
+  // university degree, remote, full-time) are dropped only when they
+  // come from the LLM as unknowns. They must not reach the refined
+  // top-30 list because they pollute the prompt and push real skills
+  // out of the cap.
+  it('drops LLM-only "canada" as a known noise term', () => {
+    const llm: KeywordEntry[] = [
+      { phrase: 'canada', weight: 1.0, category: 'hard', source: 'body' },
+      { phrase: 'python', weight: 0.9, category: 'hard', source: 'body' }
+    ]
+    const r = mergeKeywordResults(llm, [], lists)
+    expect(r.keywords.map((k) => k.phrase)).not.toContain('canada')
+    expect(r.keywords.map((k) => k.phrase)).toContain('python')
+  })
+
+  it('drops LLM-only "years experience" as a known noise term', () => {
+    const llm: KeywordEntry[] = [
+      { phrase: 'years experience', weight: 1.0, category: 'hard', source: 'body' },
+      { phrase: 'kubernetes', weight: 0.8, category: 'hard', source: 'body' }
+    ]
+    const r = mergeKeywordResults(llm, [], lists)
+    expect(r.keywords.map((k) => k.phrase)).not.toContain('years experience')
+    expect(r.keywords.map((k) => k.phrase)).toContain('kubernetes')
+  })
+
+  it('drops LLM-only "university degree", "remote", and "full-time"', () => {
+    const llm: KeywordEntry[] = [
+      { phrase: 'university degree', weight: 1.0, category: 'hard', source: 'body' },
+      { phrase: 'remote', weight: 1.0, category: 'soft', source: 'body' },
+      { phrase: 'full-time', weight: 1.0, category: 'hard', source: 'body' },
+      { phrase: 'python', weight: 0.9, category: 'hard', source: 'body' }
+    ]
+    const r = mergeKeywordResults(llm, [], lists)
+    const phrases = r.keywords.map((k) => k.phrase)
+    expect(phrases).not.toContain('university degree')
+    expect(phrases).not.toContain('remote')
+    expect(phrases).not.toContain('full-time')
+    expect(phrases).toContain('python')
+  })
+
+  it('does not surface denied phrases in unknownPhrases either', () => {
+    const llm: KeywordEntry[] = [
+      { phrase: 'canada', weight: 1.0, category: 'hard', source: 'body' },
+      { phrase: 'python', weight: 0.9, category: 'hard', source: 'body' }
+    ]
+    const r = mergeKeywordResults(llm, [], lists)
+    expect(r.unknownPhrases).not.toContain('canada')
+  })
+
+  it('keeps deny-list terms when the rule pipeline surfaced them as known skills', () => {
+    // The deny-list hook only applies to LLM-unknown phrases. If the
+    // rule pipeline matched a deny term (e.g. "remote" appears in some
+    // allowlist context), it must still pass through as a safety net.
+    const llm: KeywordEntry[] = [
+      { phrase: 'python', weight: 0.9, category: 'hard', source: 'body' }
+    ]
+    const rule: KeywordEntry[] = [
+      { phrase: 'remote', weight: 0.5, category: 'soft', source: 'body' }
+    ]
+    const r = mergeKeywordResults(llm, rule, lists)
+    expect(r.keywords.map((k) => k.phrase)).toContain('remote')
+  })
 })
 
 describe('coverage-safe keyword matching (additive helpers)', () => {
@@ -1117,6 +1180,157 @@ describe('round-2 allowlist + alias expansion', () => {
       // entry per list; >2 distinct keys is suspicious duplication
       expect(count, phrase).toBeLessThanOrEqual(3)
     }
+  })
+})
+
+describe('P0.2 allowlist + acronym expansion (fixture-audit misses)', () => {
+  const lists = loadKeywordAllowlists()
+
+  // Fixture-audit misses from docs/keyword-detection-improvement-plan.md
+  // §3.2. Each term was a gold keyword the extractor failed to surface;
+  // adding it to the right allowlist list and indexing it under any
+  // PHRASE_ALIASES form must let extractPhases pick it up.
+  //
+  // Single-token domains (cloud/frontend/analytics/seo/iam) live in the
+  // `hard` list because the unigram loop only matches byKey, which is
+  // built from hard/soft/cert/seniority. Multi-token entries go to
+  // `phrase_boost` so the bigram/trigram loop can find them.
+  it('"cloud" is in the hard list (single-token domain)', () => {
+    expect(lists.hard.has('cloud')).toBe(true)
+  })
+
+  it('"frontend" is in the hard list', () => {
+    expect(lists.hard.has('frontend')).toBe(true)
+  })
+
+  it('"analytics" is in the hard list', () => {
+    expect(lists.hard.has('analytics')).toBe(true)
+  })
+
+  it('"seo" is in the hard list', () => {
+    expect(lists.hard.has('seo')).toBe(true)
+  })
+
+  it('"iam" is in the hard list (named protocol/skill)', () => {
+    expect(lists.hard.has('iam')).toBe(true)
+  })
+
+  it('"performance tuning" and "trading systems" are phrase_boost entries', () => {
+    expect(lists.phraseBoost.has('performance tuning')).toBe(true)
+    expect(lists.phraseBoost.has('trading systems')).toBe(true)
+  })
+
+  it('"mergers and acquisitions" is in phrase_boost and reachable via the M&A bigram', () => {
+    expect(lists.phraseBoost.has('mergers and acquisitions')).toBe(true)
+    // "M&A" tokenizes to ["m", "a"]; the bigram "m a" must hit the
+    // alias-keyed entry so an M&A mention counts as the canonical
+    // "mergers and acquisitions" phrase.
+    const out = extractPhases('M&A transaction experience', 'required')
+    expect(out.map((k) => k.phrase)).toContain('mergers and acquisitions')
+  })
+
+  it('extractPhases surfaces cloud, frontend, analytics, seo, iam from prose', () => {
+    const out = extractPhases(
+      'Cloud and frontend work. Analytics and SEO background. IAM policies.',
+      'required'
+    )
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('cloud')
+    expect(phrases).toContain('frontend')
+    expect(phrases).toContain('analytics')
+    expect(phrases).toContain('seo')
+    expect(phrases).toContain('iam')
+  })
+
+  it('extractPhases surfaces performance tuning and trading systems', () => {
+    const out = extractPhases(
+      'Performance tuning of trading systems for low-latency workloads.',
+      'required'
+    )
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('performance tuning')
+    expect(phrases).toContain('trading systems')
+  })
+
+  // P1.2 acronym table folded into P0.2 per the plan: expansions land
+  // in phrase_boost, acronyms alias to their canonical phrase.
+  it('"go-to-market" is phrase_boost; "gtm" and "go to market" both alias to it', () => {
+    expect(lists.phraseBoost.has('go-to-market')).toBe(true)
+    const out1 = extractPhases('Drive GTM strategy with sales.', 'required')
+    const out2 = extractPhases('Drive go to market strategy with sales.', 'required')
+    expect(out1.map((k) => k.phrase)).toContain('go-to-market')
+    expect(out2.map((k) => k.phrase)).toContain('go-to-market')
+  })
+
+  it('"service level objectives" is phrase_boost; SLA and SLOs alias to it', () => {
+    expect(lists.phraseBoost.has('service level objectives')).toBe(true)
+    const out1 = extractPhases('Define SLAs for the platform.', 'required')
+    const out2 = extractPhases('Define SLOs for the platform.', 'required')
+    expect(out1.map((k) => k.phrase)).toContain('service level objectives')
+    expect(out2.map((k) => k.phrase)).toContain('service level objectives')
+  })
+
+  it('"search engine optimization" is phrase_boost', () => {
+    expect(lists.phraseBoost.has('search engine optimization')).toBe(true)
+    const out = extractPhases('SEO and search engine optimization expertise.', 'required')
+    expect(out.map((k) => k.phrase)).toContain('search engine optimization')
+    expect(out.map((k) => k.phrase)).toContain('seo')
+  })
+
+  it('"identity and access management" is indexed as an alias to "iam"', () => {
+    // The expansion is 4 tokens so the trigram loop can't emit it
+    // directly, but the alias table must still record the canonical
+    // mapping for any future consumer (coverage checks, taxonomy
+    // readers).
+    const entry = lists.byKey.get('identity and access management')
+    expect(entry?.phrase).toBe('iam')
+  })
+})
+
+describe('P1.4 phrase-boost head matching (title sections only)', () => {
+  // The plan's example: "Platform Engineer" → "platform engineering"
+  // (the head "platform" is consecutive in the title; the trailing
+  // noun variant "engineer" differs from the canonical "engineering").
+  // Restricted to phrase_boost entries — not hard skills or seniority,
+  // which would over-generalize (manager → management).
+  it('"Platform Engineer" title yields the phrase_boost entry "platform engineering"', () => {
+    const out = extractPhases('Platform Engineer', 'title')
+    expect(out.map((k) => k.phrase)).toContain('platform engineering')
+  })
+
+  it('"Data Engineer" title yields the phrase_boost entry "data engineering"', () => {
+    const out = extractPhases('Data Engineer', 'title')
+    expect(out.map((k) => k.phrase)).toContain('data engineering')
+  })
+
+  it('"Senior Data Engineer" title yields "data engineering" via head match', () => {
+    const out = extractPhases('Senior Data Engineer', 'title')
+    expect(out.map((k) => k.phrase)).toContain('data engineering')
+  })
+
+  it('exact phrase-boost match in the title still works (regression guard)', () => {
+    const out = extractPhases('Platform Engineering Lead', 'title')
+    expect(out.map((k) => k.phrase)).toContain('platform engineering')
+  })
+
+  it('head matching only fires on title sections, not required/preferred/body', () => {
+    // "platform engineer" in the body of a non-platform-engineer role
+    // must not promote to "platform engineering" — the head match is a
+    // title-specific signal that the role itself is the skill.
+    const out = extractPhases('Our platform engineer is awesome.', 'required')
+    expect(out.map((k) => k.phrase)).not.toContain('platform engineering')
+  })
+
+  it('head matching does not pull hard skills or seniority from title tokens', () => {
+    // The manager → management risk: if "management" were a phrase_boost
+    // entry and "manager" were in the seniority list, head matching on
+    // the title "Engineering Manager" could wrongly surface both. We
+    // gate the head match on phrase_boost only, so neither
+    // over-generalization occurs for unrelated titles.
+    const out = extractPhases('Software Engineer', 'title')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).not.toContain('platform engineering')
+    expect(phrases).not.toContain('data engineering')
   })
 })
 

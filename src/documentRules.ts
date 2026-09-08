@@ -3,7 +3,13 @@
 // See .superpowers/specs/2026-07-19-cover-letter-one-page-and-verifier-rules-design.md
 
 import { enforceOnePageCeilings } from './cvOnePage'
-import { extractJobKeywords, extractJobKeywordsStructured } from './keywordExtractor'
+import {
+  extractJobKeywords,
+  extractJobKeywordsStructured,
+  coverageForKeywords,
+  missingForKeywords,
+  keywordMatchPattern
+} from './keywordExtractor'
 export { extractJobKeywords, extractJobKeywordsStructured }
 
 export function paragraphCount(text: string): number {
@@ -31,27 +37,19 @@ export function enforceParagraphCeilings(
   return trimmed
 }
 
-function escapeRe(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
+// Boundary-tolerant coverage/missing helpers. P0.1 wires the verifier
+// through keywordExtractor's helpers so tech tokens (c++, c#, .net,
+// ci/cd) match the way the extractor's own coverage check does. The
+// plain \b regex fails on those keywords because `\b` only fires
+// between word and non-word chars, and `+`, `#`, `.`, `/` are
+// non-word on both sides. Kept as thin delegations so consumers that
+// import coverageFor / missingKeywords don't need to change.
 export function coverageFor(document: string, keywords: string[]): number {
-  if (keywords.length === 0) return 0
-  const lower = document.toLowerCase()
-  let present = 0
-  for (const kw of keywords) {
-    const re = new RegExp(`\\b${escapeRe(kw)}\\b`, 'i')
-    if (re.test(lower)) present++
-  }
-  return present / keywords.length
+  return coverageForKeywords(document, keywords)
 }
 
 export function missingKeywords(document: string, keywords: string[]): string[] {
-  const lower = document.toLowerCase()
-  return keywords.filter((kw) => {
-    const re = new RegExp(`\\b${escapeRe(kw)}\\b`, 'i')
-    return !re.test(lower)
-  })
+  return missingForKeywords(document, keywords)
 }
 
 const SKILLS_HEADERS = new Set([
@@ -314,13 +312,16 @@ export function selectTechnicalSkills(args: SelectSkillsArgs): SelectSkillsResul
   if (deduped.length <= max || deduped.length < min) {
     return { kept: deduped, dropped: [] }
   }
-  // Score: number of keywords that match (case-insensitive word boundary).
+  // Score: number of keywords that match (case-insensitive). P0.1
+  // switched the per-keyword regex from `\b<kw>\b` to
+  // keywordMatchPattern(kw) so tech tokens ending in punctuation
+  // (c++, c#, .net) score correctly against a JD that uses the same
+  // keyword form.
   const score = (v: string): number => {
     const lower = v.toLowerCase()
     let n = 0
     for (const kw of args.keywords) {
-      const re = new RegExp(`\\b${kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
-      if (re.test(lower)) n++
+      if (keywordMatchPattern(kw).test(lower)) n++
     }
     return n
   }
