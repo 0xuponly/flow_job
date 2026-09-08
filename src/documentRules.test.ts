@@ -85,6 +85,22 @@ describe('coverageFor', () => {
     // "go" should not match "google"
     expect(coverageFor('we use google cloud', ['go'])).toBe(0)
   })
+  it('counts c++ as present in prose where \\b coverage cannot match it', () => {
+    // Bug fixed in P0.1: \bc\+\+\b fails because + is a non-word char.
+    // The verifier must use keywordMatchPattern()-style boundaries so a
+    // CV that writes "Built C++ services" counts as covering a JD that
+    // asks for "c++".
+    expect(coverageFor('Built C++ services', ['c++'])).toBe(1)
+  })
+  it('counts c# as present in prose', () => {
+    expect(coverageFor('Professional C# developer', ['c#'])).toBe(1)
+  })
+  it('still rejects lookalike contexts around tech tokens', () => {
+    // \bc\+\+\b would also match "VC++" if it weren't for the lookaround.
+    // Boundary-tolerant matching must keep this guard.
+    expect(coverageFor('We ported the VC++ codebase', ['c++'])).toBe(0)
+    expect(coverageFor('C#2 fragments are out of scope', ['c#'])).toBe(0)
+  })
 })
 
 describe('extractJobKeywords (re-exported from documentRules consumers)', () => {
@@ -102,6 +118,13 @@ describe('missingKeywords', () => {
   })
   it('returns empty array when all present', () => {
     expect(missingKeywords('react typescript python', ['react', 'typescript', 'python'])).toEqual([])
+  })
+  it('does not falsely flag c++ as missing when the CV writes it in prose', () => {
+    // P0.1: coverageFor/missingKeywords must share the same boundary
+    // semantics. If coverageFor('Built C++ services', ['c++']) === 1,
+    // then missingKeywords on the same input must be [].
+    expect(missingKeywords('Built C++ services', ['c++'])).toEqual([])
+    expect(missingKeywords('Professional C# developer', ['c#'])).toEqual([])
   })
 })
 
@@ -258,6 +281,22 @@ describe('selectTechnicalSkills', () => {
     const r = selectTechnicalSkills({ values: [], keywords: ['react'] })
     expect(r.kept).toEqual([])
     expect(r.dropped).toEqual([])
+  })
+  it('scores C++ as matching the "c++" JD keyword via boundary-tolerant matching', () => {
+    // P0.1: the skills culler used \b<c\+\+>\b and scored C++ as 0,
+    // so a CV listing "C++" beyond the top-15 position would be
+    // culled. After wiring selectTechnicalSkills through
+    // keywordMatchPattern(), C++ must survive a JD that asks for
+    // "c++". We place C++ last so the stable tiebreak (all scores 0
+    // today) would not accidentally rescue it.
+    const values = [
+      'Python', 'React', 'TypeScript', 'Java', 'Go', 'Rust',
+      'Ruby', 'PHP', 'Scala', 'Elixir', 'Clojure', 'Haskell', 'Swift',
+      'Kotlin', 'Dart', 'Lua', 'C++'
+    ]
+    const r = selectTechnicalSkills({ values, keywords: ['c++'] })
+    expect(r.kept).toEqual(expect.arrayContaining(['C++']))
+    expect(r.dropped).not.toContain('C++')
   })
 })
 
