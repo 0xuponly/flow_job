@@ -33,6 +33,7 @@ export interface Api {
   dedupeJobs: () => Promise<{ removedIds: number[]; remaining: number }>
   searchJobs: (query: string) => Promise<Job[]>
   importJobFromUrl: (url: string) => Promise<{ job: Job; wasBlacklisted: boolean }>
+  openQuickAddWindow: () => Promise<void>
   scanBoards: (filters?: ScanFilters) => Promise<ScanResult>
   recomputeFit: (id: number) => Promise<Job>
   backfillJobDates: () => Promise<number>
@@ -85,6 +86,7 @@ export interface Api {
   onScanCounters: (cb: (counters: { totalFound: number; totalAdded: number; totalSkipped: number; totalIncompatible: number; totalErrors: number }) => void) => () => void
   onScanComplete: (cb: (result: ScanResult) => void) => () => void
   onJobScoreUpdated: (cb: (job: Job) => void) => () => void
+  onJobImported: (cb: (job: Job) => void) => () => void
   clearSeenUrls: () => Promise<void>
   clearAllData: () => Promise<void>
   retrofitLocations: () => Promise<{ updated: number; total: number }>
@@ -140,6 +142,7 @@ const api: Api = {
   dedupeJobs: () => ipcRenderer.invoke('jobs:dedupe'),
   searchJobs: (query) => ipcRenderer.invoke('jobs:search', query),
   importJobFromUrl: (url) => ipcRenderer.invoke('jobs:importFromUrl', url),
+  openQuickAddWindow: () => ipcRenderer.invoke('quickadd:openWindow'),
   scanBoards: (filters) => ipcRenderer.invoke('jobs:scanBoards', filters),
   recomputeFit: (id) => ipcRenderer.invoke('jobs:recomputeFit', id),
   backfillJobDates: () => ipcRenderer.invoke('jobs:backfillDates'),
@@ -167,6 +170,11 @@ const api: Api = {
     const handler = (_e: Electron.IpcRendererEvent, job: Job) => cb(job)
     ipcRenderer.on('job:scoreUpdated', handler)
     return () => ipcRenderer.removeListener('job:scoreUpdated', handler)
+  },
+  onJobImported: (cb: (job: Job) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, job: Job) => cb(job)
+    ipcRenderer.on('job:imported', handler)
+    return () => ipcRenderer.removeListener('job:imported', handler)
   },
   listDocuments: (jobId) => ipcRenderer.invoke('documents:list', jobId),
   createDocument: (type, title, content, jobId) =>

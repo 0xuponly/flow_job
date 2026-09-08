@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, screen, session, shell } from 'electron'
 import { join } from 'path'
+import { openQuickAddWindow } from './quickAddWindow'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs'
 import * as db from './database'
 import * as secureStore from './secureStore'
@@ -198,6 +199,12 @@ function createWindow(): void {
 function registerIpc(): void {
   ipcMain.handle('dashboard:stats', () => db.getDashboardStats())
 
+  // Quick-add mini-window: opened from the sidebar so it survives a
+  // minimized main window (window creation lives in the main process).
+  ipcMain.handle('quickadd:openWindow', () => {
+    openQuickAddWindow()
+  })
+
   // Score a single job against the current base CV. Shared by the manual
   // background scorer (fired after createJob) and the explicit
   // recomputeFit handler. Emits 'job:scoreUpdated' on success so the
@@ -335,6 +342,10 @@ function registerIpc(): void {
       const { job, wasBlacklisted } = db.createJob(input, { skipDuplicateCheck: true, force: true })
       // Fire-and-forget background fit scoring for the imported job.
       void scoreOneJobInBackground(job.id)
+      // Notify all renderers that a job was imported so lists can refresh.
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('job:imported', job)
+      }
       return { job, wasBlacklisted }
     } finally {
       _importAbortController = null
