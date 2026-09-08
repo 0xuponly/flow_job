@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, within, fireEvent } from '@testing-library/react'
 import { ThemeProvider } from '../theme/ThemeProvider'
 import { NotificationsProvider } from '../notifications/NotificationsProvider'
 import Sidebar from './Sidebar'
@@ -11,6 +11,7 @@ const mockApi = {
   notificationsDismissAll: vi.fn(),
   notificationsPurgeOldDismissed: vi.fn(),
   getScanStatus: vi.fn(),
+  openQuickAddWindow: vi.fn(),
 }
 
 function renderSidebar(props: Partial<React.ComponentProps<typeof Sidebar>> = {}) {
@@ -39,6 +40,26 @@ beforeEach(() => {
 })
 
 describe('Sidebar bottom-actions order', () => {
+  it('renders the quick-add URL button directly above the notification button', () => {
+    renderSidebar()
+    const bottom = document.querySelector('.sidebar-bottom-actions')
+    expect(bottom).toBeTruthy()
+    const buttons = within(bottom as HTMLElement).getAllByRole('button')
+    const labels = buttons.map((b) => b.getAttribute('aria-label') || b.getAttribute('title') || '')
+    const quickIdx = labels.findIndex((l) => /add job by url/i.test(l))
+    const bellIdx = labels.findIndex((l) => /notification center/i.test(l))
+    expect(quickIdx).toBeGreaterThanOrEqual(0)
+    expect(bellIdx).toBeGreaterThanOrEqual(0)
+    expect(quickIdx).toBeLessThan(bellIdx)
+  })
+
+  it('clicking the quick-add URL button calls openQuickAddWindow', () => {
+    renderSidebar()
+    const btn = screen.getByRole('button', { name: /add job by url/i })
+    fireEvent.click(btn)
+    expect(mockApi.openQuickAddWindow).toHaveBeenCalled()
+  })
+
   it('renders the bell button above the theme toggle', () => {
     renderSidebar()
     const bottom = document.querySelector('.sidebar-bottom-actions')

@@ -28,7 +28,8 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: {
-          index: resolve(__dirname, 'index.html')
+          index: resolve(__dirname, 'index.html'),
+          quickadd: resolve(__dirname, 'quickadd.html')
         }
       }
     },

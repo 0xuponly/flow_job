@@ -33,6 +33,7 @@ export interface Api {
   dedupeJobs: () => Promise<{ removedIds: number[]; remaining: number }>
   searchJobs: (query: string) => Promise<Job[]>
   importJobFromUrl: (url: string) => Promise<{ job: Job; wasBlacklisted: boolean }>
+  openQuickAddWindow: () => Promise<void>
   scanBoards: (filters?: ScanFilters) => Promise<ScanResult>
   cancelScan: () => Promise<void>
   cancelImport: () => Promise<void>
@@ -86,6 +87,7 @@ export interface Api {
   onScanCounters: (cb: (counters: { totalFound: number; totalAdded: number; totalSkipped: number; totalIncompatible: number; totalErrors: number }) => void) => () => void
   onScanComplete: (cb: (result: ScanResult) => void) => () => void
   onJobScoreUpdated: (cb: (job: Job) => void) => () => void
+  onJobImported: (cb: (job: Job) => void) => () => void
   clearSeenUrls: () => Promise<void>
   clearAllData: () => Promise<void>
   openExternal: (url: string) => Promise<void>

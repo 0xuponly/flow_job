@@ -37,6 +37,7 @@ vi.mock('../api', () => {
       getSettings: vi.fn(async () => ({ base_cv: '' })),
       listDocuments: noopAsyncArr,
       onJobScoreUpdated: noopSubscribe,
+      onJobImported: noopSubscribe,
       getJob: noopAsync,
       getOrCreateApplication: noopAsync,
       extractJobKeywords: noopAsync,

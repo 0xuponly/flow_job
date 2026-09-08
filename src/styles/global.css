@@ -1247,3 +1247,67 @@ input[type="checkbox"]:disabled {
 .location-picker-remove:hover {
   color: var(--text);
 }
+
+/* Quick-add mini-window. Tiny always-on-top popup for pasting a job URL.
+   Uses the same color tokens as the main app and respects the theme. */
+.quickadd-window {
+  padding: 14px;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg);
+  -webkit-app-region: drag;
+}
+
+.quickadd-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  -webkit-app-region: no-drag;
+}
+
+.quickadd-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.quickadd-close {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text-muted);
+  padding: 0;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.quickadd-close:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
+.quickadd-status {
+  font-size: 12px;
+  min-height: 18px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  -webkit-app-region: no-drag;
+}
+
+.quickadd-status--success {
+  color: var(--success);
+}
+
+.quickadd-status--error {
+  color: var(--danger);
+}

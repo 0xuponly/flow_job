@@ -1271,6 +1271,12 @@ export default function JobsPage() {
     })
   }, [])
 
+  // A job was imported from the quick-add mini-window. Reload the list
+  // so the user sees the new row when they return to the main window.
+  const loadJobsRef = useRef(loadJobs)
+  loadJobsRef.current = loadJobs
+  useEffect(() => api.onJobImported(() => loadJobsRef.current()), [])
+
   async function handleImportFromLink() {
     if (!linkUrl.trim()) {
       setLinkError('Paste a job posting URL.')
