@@ -13,6 +13,7 @@ import {
   wrapDekWithPassphrase
 } from './backupCrypto'
 import { tailorDocument, generateFollowUpMessage, regenerateSection, verifyDocumentContent, scoreJobFit, extractJobKeywordsV3, RateLimitError } from './ai'
+import { scoreOneJobInBackground } from './fitScorer'
 import { countPdfPages } from '../src/cvOnePage'
 import { buildPdfHtml } from './pdfTemplate'
 import { extractJobKeywordsStructured } from '../src/keywordExtractor'
@@ -205,106 +206,6 @@ function registerIpc(): void {
     openQuickAddWindow()
   })
 
-  // Score a single job against the current base CV. Shared by the manual
-  // background scorer (fired after createJob) and the explicit
-  // recomputeFit handler. Emits 'job:scoreUpdated' on success so the
-  // renderer can refresh the affected row without a full re-list.
-  // Returns the post-update row, or null if the job was deleted
-  // between the call and the read.
-  async function scoreOneJobInBackground(jobId: number): Promise<Job | null> {
-    const job = db.getJob(jobId)
-    if (!job) return null
-    const settings = db.getSettings()
-    const baseCv = settings.base_cv || ''
-    const currentVersion = settings.cv_version ?? 0
-    if (!baseCv) {
-      // No CV configured — leave the row at the neutral 0.31 default
-      // (matches the createJob placeholder) and stamp the CV version so
-      // we don't retry on every subsequent add.
-      try {
-        const updated = db.updateJob(jobId, {
-          score: 0.31,
-          fit_rationale: 'No base CV configured.',
-          fit_breakdown: { matched_skills: [], missing_skills: [], experience_years_match: null },
-          fit_score_version: currentVersion,
-          fit_source: 'heuristic'
-        })
-        emitJobScoreUpdated(jobId)
-        return updated
-      } catch (err) {
-        if (err instanceof Error && err.message === 'Job not found') {
-          log.fit.warn(`scoreOneJobInBackground: job ${jobId} was deleted mid-run, skipping`)
-          return null
-        }
-        throw err
-      }
-    }
-    try {
-      const fit = await scoreJobFit({
-        title: job.title,
-        description: job.description,
-        requirements: job.requirements,
-        location: job.location,
-        baseCv
-      })
-      if (fit.source === 'heuristic') {
-        // Don't pretend a heuristic fallback is a real fit score.
-        try {
-          const updated = db.updateJob(jobId, {
-            fit_last_error: fit.error || 'LLM scorer fell back to heuristic.',
-            fit_source: 'heuristic'
-          })
-          emitJobScoreUpdated(jobId)
-          return updated
-        } catch (err) {
-          if (err instanceof Error && err.message === 'Job not found') {
-            log.fit.warn(`scoreOneJobInBackground: job ${jobId} was deleted mid-run, skipping`)
-            return null
-          }
-          throw err
-        }
-      }
-      try {
-        const updated = db.updateJob(jobId, {
-          score: fit.score,
-          fit_rationale: fit.rationale,
-          fit_breakdown: fit.breakdown,
-          fit_score_version: currentVersion,
-          fit_source: 'llm',
-          fit_last_error: null
-        })
-        emitJobScoreUpdated(jobId)
-        return updated
-      } catch (err) {
-        if (err instanceof Error && err.message === 'Job not found') {
-          log.fit.warn(`scoreOneJobInBackground: job ${jobId} was deleted mid-run, skipping`)
-          return null
-        }
-        throw err
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Unknown error'
-      log.fit.warn(`job ${jobId} (${job.company} — ${job.title}): ${msg}`)
-      try {
-        const updated = db.updateJob(jobId, { fit_last_error: msg })
-        emitJobScoreUpdated(jobId)
-        return updated
-      } catch (writeErr) {
-        if (writeErr instanceof Error && writeErr.message === 'Job not found') {
-          log.fit.warn(`scoreOneJobInBackground: job ${jobId} was deleted mid-run, skipping`)
-          return null
-        }
-        throw writeErr
-      }
-    }
-  }
-
-  // Auto-queue: any job without a real fit score is enqueued for
-  // 'job:scoreUpdated' broadcaster shared with module-scope callers.
-  function emitJobScoreUpdated(jobId: number): void {
-    emitJobScoreUpdatedModule(jobId)
-  }
-
   ipcMain.handle('jobs:list', (_e, status?: JobStatus) => db.listJobs(status))
   ipcMain.handle('jobs:get', (_e, id: number) => db.getJob(id))
   ipcMain.handle('jobs:create', (_e, input: CreateJobInput) => {
@@ -316,9 +217,10 @@ function registerIpc(): void {
     // `wasBlacklisted` is returned so the renderer can prompt the
     // user to confirm.
     const { job, wasBlacklisted } = db.createJob(input, { skipDuplicateCheck: true, force: true })
-    // Fire-and-forget background fit scoring. The job is created with a
-    // neutral placeholder (0.31) and the score is replaced in place when
-    // the LLM call resolves. Errors surface as fit_last_error in the row.
+    // Fire-and-forget background fit scoring. The job starts with
+    // score=null and is updated in place when the LLM call resolves
+    // (or falls back to a heuristic). Errors surface as fit_last_error
+    // in the row.
     void scoreOneJobInBackground(job.id)
     return { job, wasBlacklisted }
   })
@@ -1225,13 +1127,11 @@ function enqueueScoreFitBacklog(): void {
   }
 }
 
-function emitJobScoreUpdatedModule(jobId: number): void {
-  const job = db.getJob(jobId)
-  if (!job) return
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send('job:scoreUpdated', job)
-  }
-}
+// Score a single job against the current base CV. Shared by the manual
+// background scorer (fired after createJob), the import-from-link flow,
+// the explicit recomputeFit handler, and aiQueue's score_fit retries.
+// Lives in ./fitScorer so it can be imported without dragging in the
+// full main-process module graph (which would break unit tests).
 
 // Deferred startup work — runs only after the renderer has finished
 // loading (did-finish-load), so the first synchronous loadStore() (~0.63s)

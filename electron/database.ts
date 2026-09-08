@@ -631,7 +631,7 @@ export function createJob(
     source: input.source ?? null,
     status: 'sourced',
     manual_status: 0,
-    score: input.score !== undefined ? (input.score ?? null) : 0.31,
+    score: input.score !== undefined ? (input.score ?? null) : null,
     fit_rationale: input.fit_rationale ?? null,
     fit_breakdown: input.fit_breakdown ?? null,
     fit_score_version: input.fit_score_version ?? null,
