@@ -2,7 +2,7 @@
 // imports — safe to import from anywhere, including vitest and the
 // renderer.
 
-import { loadKeywordAllowlists, KEYWORD_ALIASES } from './keywordAllowlists'
+import { loadKeywordAllowlists, KEYWORD_ALIASES, matchKey } from './keywordAllowlists'
 import type { KeywordAllowlists } from './keywordAllowlists'
 import type { KeywordCategory, KeywordSource, KeywordEntry, KeywordResult } from './types'
 export type { KeywordCategory, KeywordSource, KeywordEntry, KeywordResult }
@@ -559,6 +559,36 @@ export function extractPhases(section: string, source: KeywordSource): KeywordEn
   //    architect" exists. Sort by length desc so the longer phrase is
   //    always kept first, then drop any phrase contained in (or equal to)
   //    an already-kept phrase.
+  //
+  //    P1.4: phrase-boost head matching for title sections. For each
+  //    multi-token phrase_boost entry, if the first N-1 tokens appear
+  //    consecutively in the title, emit the entry. This lets
+  //    role-titled JDs (e.g. "Platform Engineer") surface their
+  //    phrase_boost skill ("platform engineering") without requiring
+  //    the exact trigram match. Restricted to phrase_boost entries
+  //    — applying this to hard or seniority entries would
+  //    over-generalize (e.g. "manager" → "management").
+  if (source === 'title') {
+    for (const phrase of allowlists.phraseBoost) {
+      const keyTokens = matchKey(phrase).split(' ')
+      if (keyTokens.length < 2) continue
+      const headLen = keyTokens.length - 1
+      const head = keyTokens.slice(0, headLen)
+      let matched = false
+      outer: for (let i = 0; i <= tokens.length - headLen; i++) {
+        for (let j = 0; j < headLen; j++) {
+          if (tokens[i + j] !== head[j]) continue outer
+        }
+        matched = true
+        break
+      }
+      if (matched) {
+        const category = allowlists.phraseBoostByCategory.get(phrase) ?? 'hard'
+        add(phrase, phrase, category)
+      }
+    }
+  }
+
   const entries = [...found.values()]
   entries.sort((a, b) => b.phrase.length - a.phrase.length || a.phrase.localeCompare(b.phrase))
   const kept: KeywordEntry[] = []

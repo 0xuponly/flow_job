@@ -1287,6 +1287,53 @@ describe('P0.2 allowlist + acronym expansion (fixture-audit misses)', () => {
   })
 })
 
+describe('P1.4 phrase-boost head matching (title sections only)', () => {
+  // The plan's example: "Platform Engineer" → "platform engineering"
+  // (the head "platform" is consecutive in the title; the trailing
+  // noun variant "engineer" differs from the canonical "engineering").
+  // Restricted to phrase_boost entries — not hard skills or seniority,
+  // which would over-generalize (manager → management).
+  it('"Platform Engineer" title yields the phrase_boost entry "platform engineering"', () => {
+    const out = extractPhases('Platform Engineer', 'title')
+    expect(out.map((k) => k.phrase)).toContain('platform engineering')
+  })
+
+  it('"Data Engineer" title yields the phrase_boost entry "data engineering"', () => {
+    const out = extractPhases('Data Engineer', 'title')
+    expect(out.map((k) => k.phrase)).toContain('data engineering')
+  })
+
+  it('"Senior Data Engineer" title yields "data engineering" via head match', () => {
+    const out = extractPhases('Senior Data Engineer', 'title')
+    expect(out.map((k) => k.phrase)).toContain('data engineering')
+  })
+
+  it('exact phrase-boost match in the title still works (regression guard)', () => {
+    const out = extractPhases('Platform Engineering Lead', 'title')
+    expect(out.map((k) => k.phrase)).toContain('platform engineering')
+  })
+
+  it('head matching only fires on title sections, not required/preferred/body', () => {
+    // "platform engineer" in the body of a non-platform-engineer role
+    // must not promote to "platform engineering" — the head match is a
+    // title-specific signal that the role itself is the skill.
+    const out = extractPhases('Our platform engineer is awesome.', 'required')
+    expect(out.map((k) => k.phrase)).not.toContain('platform engineering')
+  })
+
+  it('head matching does not pull hard skills or seniority from title tokens', () => {
+    // The manager → management risk: if "management" were a phrase_boost
+    // entry and "manager" were in the seniority list, head matching on
+    // the title "Engineering Manager" could wrongly surface both. We
+    // gate the head match on phrase_boost only, so neither
+    // over-generalization occurs for unrelated titles.
+    const out = extractPhases('Software Engineer', 'title')
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).not.toContain('platform engineering')
+    expect(phrases).not.toContain('data engineering')
+  })
+})
+
 describe('PMI false-negative guards (skills survive the noise filter)', () => {
   const lists = loadKeywordAllowlists()
 
