@@ -311,6 +311,19 @@ export interface KeywordEntry {
   source: KeywordSource
 }
 
+// P1.3 — structured years-of-experience signal for fit scoring and
+// tailor prompts. Additive; consumers can read it when ready, ignore
+// it otherwise. Each entry pairs a canonical skill phrase (the form
+// emitted by extractPhases / allowlist) with a minYears value parsed
+// from the JD ("5+ years of Python" → 5, "3-5 years experience with
+// Kubernetes" → 3, the lower bound of a range). Negated years
+// mentions ("5+ years of Python not required") are dropped from
+// this list, mirroring the keyword-suppression rule.
+export interface YearsOfExperience {
+  phrase: string
+  minYears: number
+}
+
 export interface KeywordResult {
   keywords: KeywordEntry[]
   refinedByLlm: boolean
@@ -318,6 +331,11 @@ export interface KeywordResult {
   // user can review them and decide whether to add to keywordAllowlists.json
   // in a follow-up PR. Populated only when refinedByLlm is true.
   unknownPhrases: string[]
+  // P1.3 (additive, optional — present on results from
+  // extractJobKeywordsStructured / extractJobKeywordsV3, absent on
+  // results from mergeKeywordResults until the orchestrator wires
+  // it through in a follow-up). See YearsOfExperience above.
+  yearsOfExperience?: YearsOfExperience[]
 }
 
 export interface TailorRequest {
