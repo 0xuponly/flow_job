@@ -1642,3 +1642,142 @@ describe('curated ESCO taxonomy seed (per-domain extraction)', () => {
     expect(total).toBeLessThanOrEqual(1200)
   })
 })
+
+// P1.3 — contextual rules. See docs/keyword-detection-improvement-plan.md
+// §P1.3. Negation suppresses a skill from the section bucket where it
+// only appears in negated contexts; years-of-experience metadata is
+// exposed additively on KeywordResult.
+describe('P1.3 negation detector', () => {
+  it('suppresses a skill that only appears negated in the required section', () => {
+    const jd = [
+      'Senior Engineer',
+      '',
+      'Requirements',
+      '- Kubernetes not required'
+    ].join('\n')
+    const r = extractJobKeywordsStructured(jd)
+    const required = r.keywords.filter((k) => k.source === 'required')
+    expect(required.map((k) => k.phrase)).not.toContain('kubernetes')
+  })
+
+  it('does not suppress a skill that also appears non-negated elsewhere in the required section', () => {
+    // Two required lines: one negated, one not. The non-negated
+    // mention "rescues" the skill in this section.
+    const jd = [
+      'Senior Engineer',
+      '',
+      'Requirements',
+      '- Kubernetes not required',
+      '- Experience with Kubernetes in production'
+    ].join('\n')
+    const r = extractJobKeywordsStructured(jd)
+    const required = r.keywords.filter((k) => k.source === 'required')
+    expect(required.map((k) => k.phrase)).toContain('kubernetes')
+  })
+
+  it('does not suppress a skill that only appears negated in a body section (it is not in the required bucket anyway)', () => {
+    const jd = [
+      'Senior Engineer',
+      '',
+      'About the role',
+      '- Kubernetes not required, we use EKS instead'
+    ].join('\n')
+    const r = extractJobKeywordsStructured(jd)
+    // Suppression is targeted at the section where the negation lives
+    // (body here); a real required mention elsewhere still surfaces.
+    const bodyPhrases = r.keywords.filter((k) => k.source === 'body').map((k) => k.phrase)
+    expect(bodyPhrases).not.toContain('kubernetes')
+  })
+
+  it('recognises "no experience with X needed" as a negation', () => {
+    const jd = [
+      'Senior Engineer',
+      '',
+      'Requirements',
+      '- No experience with React needed'
+    ].join('\n')
+    const r = extractJobKeywordsStructured(jd)
+    const required = r.keywords.filter((k) => k.source === 'required')
+    expect(required.map((k) => k.phrase)).not.toContain('react')
+  })
+
+  it('recognises "X is a plus, not a requirement" as a negation', () => {
+    const jd = [
+      'Senior Engineer',
+      '',
+      'Requirements',
+      '- Go is a plus, not a requirement'
+    ].join('\n')
+    const r = extractJobKeywordsStructured(jd)
+    const required = r.keywords.filter((k) => k.source === 'required')
+    expect(required.map((k) => k.phrase)).not.toContain('go')
+  })
+
+  it('leaves an allowlist skill untouched when no negation is present', () => {
+    // Regression guard: the negation detector must not produce false
+    // positives on normal required-bucket content.
+    const jd = [
+      'Senior Engineer',
+      '',
+      'Requirements',
+      '- Experience with Kubernetes and Python'
+    ].join('\n')
+    const r = extractJobKeywordsStructured(jd)
+    const required = r.keywords.filter((k) => k.source === 'required')
+    const phrases = required.map((k) => k.phrase)
+    expect(phrases).toContain('kubernetes')
+    expect(phrases).toContain('python')
+  })
+})
+
+describe('P1.3 years-of-experience metadata (additive)', () => {
+  it('extracts minYears from "5+ years of Python"', () => {
+    const jd = [
+      'Senior Engineer',
+      '',
+      'Requirements',
+      '- 5+ years of Python'
+    ].join('\n')
+    const r = extractJobKeywordsStructured(jd)
+    const py = r.yearsOfExperience?.find((y) => y.phrase === 'python')
+    expect(py).toBeDefined()
+    expect(py!.minYears).toBeGreaterThanOrEqual(5)
+  })
+
+  it('extracts the lower bound from a "3-5 years experience with Kubernetes" range', () => {
+    const jd = [
+      'Senior Engineer',
+      '',
+      'Requirements',
+      '- 3-5 years experience with Kubernetes'
+    ].join('\n')
+    const r = extractJobKeywordsStructured(jd)
+    const k = r.yearsOfExperience?.find((y) => y.phrase === 'kubernetes')
+    expect(k).toBeDefined()
+    expect(k!.minYears).toBeGreaterThanOrEqual(3)
+    // And the upper bound: 5
+    expect(k!.minYears).toBeLessThanOrEqual(5)
+  })
+
+  it('exposes yearsOfExperience as an empty array (not undefined) for a JD with no years mentions', () => {
+    const r = extractJobKeywordsStructured('Senior Engineer\n\nRequirements\n- Python')
+    // Additive contract: the field is always present so consumers
+    // don't need to defend against undefined.
+    expect(r.yearsOfExperience).toBeDefined()
+    expect(r.yearsOfExperience).toEqual([])
+  })
+
+  it('does not surface yearsOfExperience when the line is negated', () => {
+    // "Python not required" — even if there's a years mention on the
+    // same line, the skill is negated; the metadata follows.
+    const jd = [
+      'Senior Engineer',
+      '',
+      'Requirements',
+      '- 5+ years of Python not required'
+    ].join('\n')
+    const r = extractJobKeywordsStructured(jd)
+    const py = r.yearsOfExperience?.find((y) => y.phrase === 'python')
+    expect(py).toBeUndefined()
+  })
+})

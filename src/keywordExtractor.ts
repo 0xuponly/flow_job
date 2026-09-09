@@ -4,8 +4,8 @@
 
 import { loadKeywordAllowlists, KEYWORD_ALIASES, matchKey } from './keywordAllowlists'
 import type { KeywordAllowlists } from './keywordAllowlists'
-import type { KeywordCategory, KeywordSource, KeywordEntry, KeywordResult } from './types'
-export type { KeywordCategory, KeywordSource, KeywordEntry, KeywordResult }
+import type { KeywordCategory, KeywordSource, KeywordEntry, KeywordResult, YearsOfExperience } from './types'
+export type { KeywordCategory, KeywordSource, KeywordEntry, KeywordResult, YearsOfExperience }
 
 const REQUIRED_RE = /\b(requirements?|required|must[- ]?haves?|basic qualifications|minimum qualifications|qualifications|essential|what you(?:'|’)ll need|what you will need|what we(?:'|’)re looking for|what we are looking for|who you are|what you bring)\b/i
 // Tested before REQUIRED_RE so a heading like "Preferred Qualifications"
@@ -176,15 +176,27 @@ function computeWeight(entry: KeywordEntry): number {
 
 export function extractJobKeywordsStructured(description: string): KeywordResult {
   const sections = parseSections(description)
+  const allowlists = loadKeywordAllowlists()
+
+  // P1.3: per-section negation detector. Phrases that only appear
+  // in negated contexts within a section are dropped from that
+  // section's keyword bucket before dedupe.
+  const negatedBySection = {
+    title: detectFullyNegatedPhrases(sections.title, allowlists),
+    required: detectFullyNegatedPhrases(sections.required, allowlists),
+    preferred: detectFullyNegatedPhrases(sections.preferred, allowlists),
+    body: detectFullyNegatedPhrases(sections.body, allowlists)
+  }
+
   const collected: KeywordEntry[] = []
   // Title is one line; parseSections already extracted it. Run extractPhases on it
   // as a single line so allowlist matches inside the title are captured.
   if (sections.title) {
-    collected.push(...extractPhases(sections.title, 'title'))
+    collected.push(...extractPhases(sections.title, 'title', negatedBySection.title))
   }
-  if (sections.required) collected.push(...extractPhases(sections.required, 'required'))
-  if (sections.preferred) collected.push(...extractPhases(sections.preferred, 'preferred'))
-  if (sections.body) collected.push(...extractPhases(sections.body, 'body'))
+  if (sections.required) collected.push(...extractPhases(sections.required, 'required', negatedBySection.required))
+  if (sections.preferred) collected.push(...extractPhases(sections.preferred, 'preferred', negatedBySection.preferred))
+  if (sections.body) collected.push(...extractPhases(sections.body, 'body', negatedBySection.body))
 
   // Dedupe by (phrase, source) — same phrase in title and body stays as 2 entries.
   const seen = new Set<string>()
@@ -208,7 +220,18 @@ export function extractJobKeywordsStructured(description: string): KeywordResult
 
   // Pre-LLM cap is 40; final cap is 30.
   const capped = weighted.slice(0, PRE_LLM_CAP)
-  return { keywords: capped.slice(0, POST_RANK_CAP), refinedByLlm: false, unknownPhrases: [] }
+
+  // P1.3: structured years-of-experience metadata. Additive — always
+  // present on the result so consumers don't have to defend against
+  // undefined. Empty array when no years mentions are found.
+  const yearsOfExperience = extractYearsOfExperience(sections, allowlists)
+
+  return {
+    keywords: capped.slice(0, POST_RANK_CAP),
+    refinedByLlm: false,
+    unknownPhrases: [],
+    yearsOfExperience
+  }
 }
 
 const UNKNOWN_DOWNWEIGHT = 0.8
@@ -407,6 +430,236 @@ export function missingForKeywords(document: string, keywords: string[]): string
   return keywords.filter((kw) => !keywordMatchPattern(kw).test(document))
 }
 
+// ---------------------------------------------------------------------------
+// P1.3 contextual rules. See docs/keyword-detection-improvement-plan.md
+// §P1.3. Two deterministic, unit-test-covered rules added to the rule
+// pipeline:
+//
+//   1. Negation detector — if a skill appears ONLY in negated
+//      contexts inside a section, drop it from that section's keyword
+//      bucket. A non-negated mention of the same skill in the same
+//      section "rescues" it. Cross-section behavior is natural:
+//      a body-section negation does not affect a required-section
+//      mention.
+//
+//   2. Years-of-experience metadata — parse "5+ years of Python",
+//      "3-5 years experience with Kubernetes", and similar patterns
+//      into structured {phrase, minYears} pairs, exposed additively
+//      on KeywordResult. Negated years mentions are dropped.
+//
+// Both rules are per-section and per-line so they fit the existing
+// parseSections → extractPhases flow without a second pass over the
+// whole JD. Performance is O(n) on the section text.
+// ---------------------------------------------------------------------------
+
+// P1.3 negation cues. Each is the smallest substring whose presence in
+// a line signals that an allowlist skill in that line is being
+// explicitly NOT-required / NOT-needed. Tested via the line-level scan
+// in isNegatedLine.
+const NEGATION_CUE_PATTERNS: readonly RegExp[] = [
+  // "Kubernetes is not required" / "Go not required" / "is not needed"
+  /\b(?:is\s+|are\s+)?not\s+(?:strictly\s+)?(?:required|needed|necessary)\b/i,
+  // "Go is a plus, not a requirement" / "TypeScript is a plus, not required"
+  /\b(?:is\s+|are\s+)?a\s+plus\s*,?\s+not\s+(?:a\s+)?requirement\b/i,
+  // "No experience with React needed" / "no GraphQL experience required"
+  /\bno\s+(?:\w+\s+){0,3}experience\s+(?:with\s+|in\s+)?\w/i,
+  // "experience with X is not required"
+  /\bexperience\s+with\s+\w[\w+#./ -]*\s+(?:is\s+)?not\s+(?:required|needed)\b/i,
+  // "X is optional" — also counts as a negation for the required bucket
+  /\b(?:is\s+|are\s+)?optional\b/i
+]
+
+function isNegatedLine(line: string): boolean {
+  const t = normalizeHeaderCandidate(line)
+  if (t === '') return false
+  for (const re of NEGATION_CUE_PATTERNS) {
+    if (re.test(t)) return true
+  }
+  return false
+}
+
+// P1.3: collect the allowlist-matching phrases in a line. Returns
+// matchKey forms so the caller can dedupe across unigram/bigram/
+// trigram matches of the same phrase.
+function findAllowlistMatchesInTokens(
+  tokens: string[],
+  allowlists: KeywordAllowlists
+): Set<string> {
+  const out = new Set<string>()
+  // Try longer n-grams first so "go to market" beats "go" in a
+  // negation context; extractPhases' own length-desc sort then
+  // doesn't matter — the negation set is per-phrase, not per-token.
+  for (const gram of [...trigrams(tokens), ...bigrams(tokens)]) {
+    const hit = allowlists.byKey.get(gram)
+    if (hit) {
+      out.add(matchKey(hit.phrase))
+      continue
+    }
+    const boost = allowlists.phraseBoostByKey.get(gram)
+    if (boost) out.add(matchKey(boost.phrase))
+  }
+  for (const t of tokens) {
+    const hit = allowlists.byKey.get(t) ?? allowlists.phraseBoostByKey.get(t)
+    if (hit) out.add(matchKey(hit.phrase))
+  }
+  return out
+}
+
+// P1.3: per-section scan, returns matchKey forms of phrases whose
+// EVERY mention in this section is negated. Phrases with at least
+// one non-negated mention in this section are NOT in the set (so
+// they survive to the keyword bucket).
+function detectFullyNegatedPhrases(
+  section: string,
+  allowlists: KeywordAllowlists
+): Set<string> {
+  const occurrences = new Map<string, { negated: boolean; nonNegated: boolean }>()
+  if (!section) return new Set()
+  const lines = section.split('\n')
+  for (const raw of lines) {
+    const negated = isNegatedLine(raw)
+    const tokens = tokenize(raw).map(canonicalToken)
+    const matches = findAllowlistMatchesInTokens(tokens, allowlists)
+    for (const key of matches) {
+      const occ = occurrences.get(key) ?? { negated: false, nonNegated: false }
+      if (negated) occ.negated = true
+      else occ.nonNegated = true
+      occurrences.set(key, occ)
+    }
+  }
+  const fullyNegated = new Set<string>()
+  for (const [key, occ] of occurrences) {
+    if (occ.negated && !occ.nonNegated) fullyNegated.add(key)
+  }
+  return fullyNegated
+}
+
+// P1.3: years-of-experience extraction. Per-line scan, returns one
+// entry per (years-mention, allowlist-skill) pair where the skill is
+// in the same line as the years mention. Negated lines are skipped
+// entirely — "5+ years of Python not required" must not surface as
+// years metadata. A skill mentioned across multiple lines keeps the
+// maximum minYears so the fit heuristic has the strictest signal.
+//
+// Ranges ("3-5 years") and single numbers ("5+ years") are matched in
+// a range-first pass: a range yields one entry (its lower bound),
+// and any single-year regex match whose span falls inside a range
+// is suppressed so "3-5 years" doesn't double-count as both 3 and 5.
+const YEARS_RANGE_RE = /(\d+)\s*[-–]\s*(\d+)\+?\s*(?:years?|yrs?)\b/gi
+const YEARS_SINGLE_RE = /(\d+)\+?\s*(?:years?|yrs?)\b/gi
+
+function extractYearsOfExperience(
+  sections: { title: string; required: string; preferred: string; body: string },
+  allowlists: KeywordAllowlists
+): YearsOfExperience[] {
+  // phrase -> max(minYears) so repeated mentions keep the strictest signal.
+  const out = new Map<string, number>()
+  for (const [, text] of [
+    ['', sections.title],
+    ['', sections.required],
+    ['', sections.preferred],
+    ['', sections.body]
+  ] as const) {
+    if (!text) continue
+    for (const raw of text.split('\n')) {
+      // Skip negated lines (e.g., "5+ years of Python not required").
+      if (isNegatedLine(raw)) continue
+
+      // 1) Find all range matches on this line so we can suppress
+      //    their inner single-year matches. A range yields one
+      //    entry: minYears = lower bound (3 in "3-5 years").
+      const rangeSpans: Array<{ start: number; end: number; minYears: number }> = []
+      for (const m of raw.matchAll(YEARS_RANGE_RE)) {
+        const start = m.index ?? 0
+        const end = start + m[0].length
+        const lower = parseInt(m[1], 10)
+        const upper = parseInt(m[2], 10)
+        const minYears = Math.min(lower, upper)
+        rangeSpans.push({ start, end, minYears })
+        const skill = findClosestAllowlistSkill(raw, start, allowlists)
+        if (!skill) continue
+        const existing = out.get(skill)
+        if (existing === undefined || minYears > existing) {
+          out.set(skill, minYears)
+        }
+      }
+
+      // 2) Find all single-year matches, skipping any that fall
+      //    inside a range span (avoids double-counting 3 in "3-5").
+      for (const m of raw.matchAll(YEARS_SINGLE_RE)) {
+        const start = m.index ?? 0
+        const end = start + m[0].length
+        if (rangeSpans.some((r) => start >= r.start && end <= r.end)) continue
+        const minYears = parseInt(m[1], 10)
+        const skill = findClosestAllowlistSkill(raw, start, allowlists)
+        if (!skill) continue
+        const existing = out.get(skill)
+        if (existing === undefined || minYears > existing) {
+          out.set(skill, minYears)
+        }
+      }
+    }
+  }
+  return [...out.entries()].map(([phrase, minYears]) => ({ phrase, minYears }))
+}
+
+// P1.3: scan the line around the years-mention offset for the
+// closest allowlist skill. Considers unigrams, bigrams, and trigrams
+// centered on the years mention.
+function findClosestAllowlistSkill(
+  line: string,
+  yearOffset: number,
+  allowlists: KeywordAllowlists
+): string | null {
+  const tokens = tokenize(line).map(canonicalToken)
+  if (tokens.length === 0) return null
+  // The years tokens are digit/word-pieces; re-tokenize without
+  // them and look at the surviving token indices to find the closest
+  // n-gram to the years mention.
+  const lower = line.toLowerCase()
+  const yearsMatch = lower.slice(yearOffset).match(/(\d+)\+?\s*(?:years?|yrs?)\b/)
+  if (!yearsMatch) return null
+  const yearsEnd = yearOffset + yearsMatch[0].length
+  // Try bigrams and trigrams of the tokenized line; pick the one
+  // whose character span is nearest the years mention.
+  type Candidate = { phrase: string; dist: number }
+  const candidates: Candidate[] = []
+  // n-gram index ranges
+  let pos = 0
+  const tokenRanges: Array<{ start: number; end: number; token: string }> = []
+  for (const t of tokens) {
+    // Find the next occurrence of the token after `pos`.
+    const idx = lower.indexOf(t, pos)
+    if (idx >= 0) {
+      tokenRanges.push({ start: idx, end: idx + t.length, token: t })
+      pos = idx + t.length
+    }
+  }
+  function consider(startIdx: number, endIdx: number, gram: string[]) {
+    const start = tokenRanges[startIdx]?.start ?? 0
+    const end = tokenRanges[endIdx - 1]?.end ?? 0
+    const text = gram.join(' ')
+    const hit = allowlists.byKey.get(text) ?? allowlists.phraseBoostByKey.get(text)
+    if (!hit) return
+    // distance to years mention: prefer tokens AFTER the years (the
+    // "5+ years OF python" form); tokens BEFORE are penalized
+    // slightly so "experience with python, 5+ years" still works
+    // but the post-years token wins ties.
+    const dist = end <= yearOffset
+      ? (yearOffset - end) + 5  // before: small penalty
+      : Math.max(0, start - yearsEnd)  // after: true distance
+    candidates.push({ phrase: hit.phrase, dist })
+  }
+  for (let i = 0; i < tokens.length; i++) {
+    consider(i, i + 1, [tokens[i]])
+    if (i + 2 <= tokens.length) consider(i, i + 2, [tokens[i], tokens[i + 1]])
+    if (i + 3 <= tokens.length) consider(i, i + 3, [tokens[i], tokens[i + 1], tokens[i + 2]])
+  }
+  if (candidates.length === 0) return null
+  candidates.sort((a, b) => a.dist - b.dist)
+  return candidates[0].phrase
+}
+
 function tokenize(section: string): string[] {
   return section
     .toLowerCase()
@@ -512,7 +765,11 @@ function canonicalToken(t: string): string {
   return KEYWORD_ALIASES[t] ?? t
 }
 
-export function extractPhases(section: string, source: KeywordSource): KeywordEntry[] {
+export function extractPhases(
+  section: string,
+  source: KeywordSource,
+  negated: ReadonlySet<string> = new Set()
+): KeywordEntry[] {
   const allowlists = loadKeywordAllowlists()
   const tokens = tokenize(section).map(canonicalToken)
   // matchKey → matched entry. Allowlist entries are indexed by their
@@ -603,6 +860,12 @@ export function extractPhases(section: string, source: KeywordSource): KeywordEn
   const kept: KeywordEntry[] = []
   for (const e of entries) {
     if (kept.some((k) => k.phrase.includes(e.phrase) || e.phrase.includes(k.phrase))) continue
+    // P1.3 negation: a phrase whose every mention in this section
+    // is negated is dropped from the section's keyword bucket. The
+    // matchKey form is used so alias keys and canonical phrases
+    // compare equal ("k8s" and "kubernetes" both match the same
+    // "kubernetes" entry).
+    if (negated.has(matchKey(e.phrase))) continue
     kept.push({ phrase: e.phrase, weight: 0, category: e.category, source })
   }
   return kept

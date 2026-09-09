@@ -127,10 +127,23 @@ export interface KeywordEntry {
   source: KeywordSource
 }
 
+// P1.3 — structured years-of-experience signal (kept in sync with
+// src/types.ts:YearsOfExperience so renderer and main agree on the
+// shape).
+export interface YearsOfExperience {
+  phrase: string
+  minYears: number
+}
+
 export interface KeywordResult {
   keywords: KeywordEntry[]
   refinedByLlm: boolean
   unknownPhrases: string[]
+  // P1.3 (additive, optional). See src/types.ts:YearsOfExperience.
+  // Present on results from extractJobKeywordsStructured /
+  // extractJobKeywordsV3, absent on results from mergeKeywordResults
+  // until the orchestrator wires it through in a follow-up.
+  yearsOfExperience?: YearsOfExperience[]
 }
 
 export interface Application {
