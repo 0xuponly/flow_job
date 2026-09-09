@@ -7,14 +7,14 @@ import { parseLocationPicks } from '../utils'
 import Modal from '../components/Modal'
 import { BOARD_TYPES } from '../boardTypes'
 
-const PRESETS: { name: string; desc: string; model: Omit<ApiModelConfig, 'id'> }[] = [
-  { name: 'Big Pickle', desc: 'Free, no API key needed', model: { name: 'Big Pickle', base_url: 'https://opencode.ai/zen/v1', api_key: '', model: 'big-pickle' } },
-  { name: 'Gemma 4 31B Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Gemma 4 31B', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'google/gemma-4-31b-it:free' } },
-  { name: 'MiMo V2.5 Free', desc: 'Free, no API key needed', model: { name: 'MiMo V2.5', base_url: 'https://opencode.ai/zen/v1', api_key: '', model: 'mimo-v2.5-free' } },
-  { name: 'Nemotron 3 Super 120B Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Nemotron 3 Super 120B', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'nvidia/nemotron-3-super-120b-a12b:free' } },
-  { name: 'Nemotron 3 Ultra Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Nemotron 3 Ultra', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'nvidia/nemotron-3-ultra-550b-a55b:free' } },
-  { name: 'North Mini Code Free', desc: 'Free, no API key needed', model: { name: 'North Mini Code', base_url: 'https://opencode.ai/zen/v1', api_key: '', model: 'north-mini-code-free' } },
-  { name: 'Poolside Laguna S 2.1 Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Poolside Laguna S 2.1', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'poolside/laguna-s-2.1:free' } }
+export const PRESETS: { name: string; desc: string; model: Omit<ApiModelConfig, 'id'> }[] = [
+  { name: 'Gemma 4 26B A4B Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Gemma 4 26B A4B', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'google/gemma-4-26b-a4b-it:free' } },
+  { name: 'Nemotron 3.5 Lightning Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Nemotron 3.5 Lightning', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'nvidia/nemotron-3.5-lightning:free' } },
+  { name: 'North Mini Code Free', desc: 'via OpenRouter (needs API key)', model: { name: 'North Mini Code', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'cohere/north-mini-code:free' } },
+  { name: 'Inkling Small Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Inkling Small', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'thinkingmachines/inkling-small:free' } },
+  { name: 'Laguna XS 2.1 Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Laguna XS 2.1', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'poolside/laguna-xs-2.1:free' } },
+  { name: 'Nex-N2.5 Mini Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Nex-N2.5 Mini', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'nex-agi/nex-n2.5-mini:free' } },
+  { name: 'Ling 3.0 Flash Fin Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Ling 3.0 Flash Fin', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'inclusionai/ling-3.0-flash-fin:free' } }
 ]
 
 type Tab = 'profile' | 'models' | 'boards' | 'companies' | 'scan' | 'data'
