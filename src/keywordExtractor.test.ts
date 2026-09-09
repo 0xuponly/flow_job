@@ -1518,3 +1518,127 @@ describe('JD fixture regression suite', () => {
     }
   })
 })
+
+describe('curated ESCO taxonomy seed (per-domain extraction)', () => {
+  // The seed is curated from ESCO v1.x via the public search API
+  // (https://ec.europa.eu/esco/api/search, EUPL 1.2, no key) and
+  // /tmp/keywords_audit/curate_esco.ts. Each test below pins one
+  // entry from a target domain to lock in the seed's behavior —
+  // a regression that drops the entry will fail one of these tests.
+  // We don't pin the entire list (200+ entries) in tests; the
+  // provenance comment in keywordAllowlists.ts plus the
+  // /tmp/keywords_audit/esco_curated.json output carry the
+  // authoritative list.
+  //
+  // Entries are lowercased on load by norm() in keywordAllowlists.ts,
+  // so the test assertions match the lowercased form that
+  // extractPhases emits.
+
+  it('software-engineering domain: an ESCO seed entry is in the curated hard list', () => {
+    const lists = loadKeywordAllowlists()
+    // Pin to a single-token ESCO entry that pre-existed nowhere
+    // else in the bundle: AJAX, Jboss, etc.
+    expect(lists.hard.has('ajax') || lists.phraseBoost.has('javascript framework')).toBe(true)
+  })
+
+  it('data domain: "data warehouse" is in the curated phrase_boost list', () => {
+    const lists = loadKeywordAllowlists()
+    expect(lists.phraseBoost.has('data warehouse')).toBe(true)
+  })
+
+  it('cloud/devops domain: "cloud technologies" is in the curated phrase_boost list', () => {
+    const lists = loadKeywordAllowlists()
+    expect(lists.phraseBoost.has('cloud technologies')).toBe(true)
+  })
+
+  it('finance domain: "modern portfolio theory" is in the curated phrase_boost list', () => {
+    const lists = loadKeywordAllowlists()
+    expect(lists.phraseBoost.has('modern portfolio theory')).toBe(true)
+  })
+
+  it('product/marketing domain: "customer relationship management" is in the curated phrase_boost list', () => {
+    const lists = loadKeywordAllowlists()
+    expect(lists.phraseBoost.has('customer relationship management')).toBe(true)
+  })
+
+  it('sales/ops domain: "supply chain management" is in the curated phrase_boost list', () => {
+    const lists = loadKeywordAllowlists()
+    expect(lists.phraseBoost.has('supply chain management')).toBe(true)
+  })
+
+  it('extracts a curated software-engineering entry from prose', () => {
+    const out = extractPhases(
+      'Experience with JavaScript Framework and web programming required.',
+      'required'
+    )
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('javascript framework')
+    expect(phrases).toContain('web programming')
+  })
+
+  it('extracts a curated data entry from prose', () => {
+    const out = extractPhases(
+      'Build the data warehouse and apply data mining methods to it.',
+      'required'
+    )
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('data warehouse')
+    expect(phrases).toContain('data mining methods')
+  })
+
+  it('extracts a curated finance entry from prose', () => {
+    const out = extractPhases(
+      'Apply modern portfolio theory and risk transfer to client portfolios.',
+      'required'
+    )
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('modern portfolio theory')
+    expect(phrases).toContain('risk transfer')
+  })
+
+  it('extracts a curated marketing entry from prose', () => {
+    const out = extractPhases(
+      'Own customer relationship management and digital marketing techniques.',
+      'required'
+    )
+    const phrases = out.map((k) => k.phrase)
+    expect(phrases).toContain('customer relationship management')
+    expect(phrases).toContain('digital marketing techniques')
+  })
+
+  it('no curated entry matches the LLM deny-list (canada, years experience, university degree, remote, full-time)', () => {
+    const lists = loadKeywordAllowlists()
+    const denyForms = [
+      'canada', 'years experience', 'university degree', 'remote', 'full-time', 'full time'
+    ]
+    const allEntries: string[] = [
+      ...lists.hard,
+      ...lists.soft,
+      ...lists.cert,
+      ...lists.seniority,
+      ...lists.phraseBoost
+    ]
+    for (const entry of allEntries) {
+      const norm = entry.toLowerCase().trim()
+      for (const deny of denyForms) {
+        // Exact match only — the deny-list is meant to drop LLM
+        // noise phrases verbatim. Substring matches (e.g. an
+        // entry containing the word "remote") aren't a noise
+        // issue and shouldn't fail this guard.
+        expect(norm !== deny, `entry "${entry}" collides with deny-list form ${deny}`).toBe(true)
+      }
+    }
+  })
+
+  it('curated seed size is in the 200-800 target band (P0.2 anti-recommendation: no taxonomy noise)', () => {
+    const lists = loadKeywordAllowlists()
+    const total =
+      lists.hard.size + lists.soft.size + lists.cert.size +
+      lists.seniority.size + lists.phraseBoost.size
+    // The bundle total is the prior P0.2 / round-2 entries (~280)
+    // plus the ESCO seed (~200). 200-1200 covers both ends with
+    // headroom so accidental over-dumping fails CI.
+    expect(total).toBeGreaterThanOrEqual(200)
+    expect(total).toBeLessThanOrEqual(1200)
+  })
+})

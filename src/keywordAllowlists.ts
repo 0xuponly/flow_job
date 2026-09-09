@@ -138,6 +138,248 @@ const EXTRA_TERMS: RawBundle = {
   ]
 }
 
+// ESCO taxonomy seed. Provenance and curation notes:
+//   Source: ESCO v1.x (https://ec.europa.eu/esco/, EUPL 1.2 / API EUPL).
+//   Retrieved 2026-09-09 via the public search API
+//   https://ec.europa.eu/esco/api/search?text=…&type=skill&language=en
+//   (no API key required). 211 seed queries across the app's
+//   target domains — software engineering, data, cloud/devops,
+//   finance/trading, product, sales/ops. Curation rules, in
+//   order (see /tmp/keywords_audit/curate_esco.ts):
+//     1. Drop verb-form labels (ESCO competency form: "use X",
+//        "apply X", "manage X"). Keep noun-form skills.
+//     2. Drop paren-disambiguation labels (e.g. "Python
+//        (computer programming)") — the base word is already
+//        on the allowlist via the JSON bundle or EXTRA_TERMS.
+//     3. Keep labels ≤ 4 words.
+//     4. Drop labels whose every token is in PMI_NOISE_WORDS.
+//     5. Drop labels matching the LLM_DENY_LIST patterns
+//        (locations, years-of-experience boilerplate, degree
+//        mentions, employment types).
+//     6. Drop duplicates of the existing allowlist + alias
+//        targets (no signature changes, no removals).
+//     7. Categorize: cert-like → cert; 1 token → hard;
+//        2-4 tokens → phrase_boost.
+//     8. ISCED-F domain filter: keep only 0612-0613 / 0619
+//        (ICT), 0411-0416 (business/finance/sales/marketing),
+//        0421 (law/compliance), 0541-0542 (math/stats),
+//        0311 (economics). Drop 0415 (secretarial), 0417
+//        (work skills), 0532 (earth sciences), 0611
+//        (computer use — too generic).
+//     9. Manual triage of brand-niche tools (LMS platforms,
+//        consumer OS, obscure niche tools) and off-domain
+//        phrases (railway, e-learning, military, publishing,
+//        textile, etc.) to keep the seed focused on the app's
+//        target domains per the plan P0.2 §7 anti-
+//        recommendation against taxonomy noise.
+//   Counts at seed time: hard=37, phrase_boost=178, soft=0,
+//   cert=0; dropped=4170 (verb forms, duplicates, off-domain).
+//   Authoritative list: /tmp/keywords_audit/esco_curated.json.
+//   Authoritative source: ESCO API + curation script.
+const ESCO_SEED: RawBundle = {
+  hard: [
+    'AJAX',
+    'Jboss',
+    'Objective-C',
+    'Drupal',
+    'Joomla',
+    'CSS',
+    'Sass',
+    'MDX',
+    'MarkLogic',
+    'PostgreSQL',
+    'statistics',
+    'economics',
+    'Wireshark',
+    'biostatistics',
+    'DB2',
+    'Xcode',
+    'Cisco',
+    'Nessus',
+    'Metasploit',
+    'accounting',
+    'depreciation',
+    'mathematics',
+    'algorithms',
+    'COBOL',
+    'R',
+    'MATLAB',
+    'Erlang',
+    'Lisp',
+    'APL',
+    'CoffeeScript',
+    'VBScript',
+    'ABAP',
+    'Groovy',
+    'ASP.NET',
+    'Perl',
+    'pay-per-click',
+    'e-procurement'
+  ],
+  soft: [],
+  cert: [],
+  seniority: [],
+  phrase_boost: [
+    'JavaScript Framework',
+    'web programming',
+    'Apache Tomcat',
+    'IBM WebSphere',
+    'Oracle WebLogic',
+    'computer programming',
+    'OWASP ZAP',
+    'mobile operating systems',
+    'style sheet languages',
+    'IBM Informix',
+    'SQL Server',
+    'CAD software',
+    'database management systems',
+    'data warehouse',
+    'Teradata Database',
+    'Oracle Warehouse Builder',
+    'warehouse operations',
+    'data mining methods',
+    'data protection',
+    'product data management',
+    'unstructured data',
+    'data models',
+    'online analytical processing',
+    'web analytics',
+    'audit techniques',
+    'automatic meter reading',
+    'computer science',
+    'data mining',
+    'customer insight',
+    'conflict management',
+    'strategic planning',
+    'CAE software',
+    'CADD software',
+    'distributed computing',
+    'CAM software',
+    'machine translation',
+    'statistical quality control',
+    'statistical process control',
+    'actuarial science',
+    'financial capability',
+    'hardware testing methods',
+    'debt classification',
+    'business intelligence',
+    'business processes',
+    'business law',
+    'business management principles',
+    'business model',
+    'business requirements techniques',
+    'business knowledge',
+    'business valuation techniques',
+    'business analysis',
+    'business loans',
+    'business process modelling',
+    'marketing management',
+    'corporate social responsibility',
+    'outsourcing strategy',
+    'Informatica PowerCenter',
+    'cloud technologies',
+    'data storage',
+    'task algorithmisation',
+    'sales activities',
+    'legal department processes',
+    'financial department processes',
+    'operations department processes',
+    'sales department processes',
+    'marketing department processes',
+    'accounting department processes',
+    'management department processes',
+    'internal auditing',
+    'online job platforms',
+    'social media management',
+    'publicity code',
+    'products coding system',
+    'warehousing regulations',
+    'information structure',
+    'Pentaho Data Integration',
+    'systems thinking',
+    'Oracle Data Integrator',
+    'SAP Data Services',
+    'SAS Data Management',
+    'QlikView Expressor',
+    'hybrid control systems',
+    'IBM InfoSphere DataStage',
+    'solution deployment',
+    'project commissioning',
+    'network marketing',
+    'internet governance',
+    'security panels',
+    'social security law',
+    'information security strategy',
+    'penetration testing tool',
+    'risk transfer',
+    'financial engineering',
+    'financial jurisdiction',
+    'financial markets',
+    'modern portfolio theory',
+    'financial management',
+    'financial statements',
+    'investment analysis',
+    'financial forecasting',
+    'market analysis',
+    'financial products',
+    'market entry planning',
+    'accounting entries',
+    'funding methods',
+    'stock market',
+    'database quality standards',
+    'trading law',
+    'trade sector policies',
+    'usability engineering',
+    'Lean project management',
+    'Process-based management',
+    'Agile project management',
+    'liquidity management',
+    'project management principles',
+    'customer relationship management',
+    'types of insurance',
+    'organisational resilience',
+    'credit card payments',
+    'credit control processes',
+    'market pricing',
+    'vertical markets',
+    'sales strategies',
+    'brand marketing techniques',
+    'market participants',
+    'marketing mix',
+    'digital marketing techniques',
+    'content marketing strategy',
+    'market entry strategies',
+    'market research',
+    'product life-cycle',
+    'Common Lisp',
+    'SAS language',
+    'Visual Studio .NET',
+    'SAP R3',
+    'crowdsourcing strategy',
+    'insourcing strategy',
+    'marketing principles',
+    'mass customisation',
+    'product comprehension',
+    'sales argumentation',
+    'pricing strategies',
+    'proofing methods',
+    'channel marketing',
+    'Agile development',
+    'software design methodologies',
+    'search engine optimisation',
+    'mobile marketing',
+    'information extraction',
+    'sales promotion techniques',
+    'merchandising techniques',
+    'customer segmentation',
+    'supply chain management',
+    'supply chain principles',
+    'theory of constraints',
+    'inventory management rules',
+    'Prince2 project management'
+  ]
+}
+
 // Normalizes a phrase into its token-join "match key": allowlist entries
 // containing punctuation ("next.js", "ci/cd", "scikit-learn", "a/b
 // testing") become keys over the token stream ("next js", "ci cd", ...),
@@ -186,11 +428,17 @@ function effectiveLists(): RawBundle {
     return out
   }
   return {
-    hard: merge(validated.hard, EXTRA_TERMS.hard),
-    soft: merge(validated.soft, EXTRA_TERMS.soft),
-    cert: merge(validated.cert, EXTRA_TERMS.cert),
-    seniority: merge(validated.seniority, EXTRA_TERMS.seniority),
-    phrase_boost: merge(validated.phrase_boost, EXTRA_TERMS.phrase_boost)
+    hard: merge(validated.hard, merge(EXTRA_TERMS.hard, ESCO_SEED.hard)),
+    soft: merge(validated.soft, merge(EXTRA_TERMS.soft, ESCO_SEED.soft)),
+    cert: merge(validated.cert, merge(EXTRA_TERMS.cert, ESCO_SEED.cert)),
+    seniority: merge(
+      validated.seniority,
+      merge(EXTRA_TERMS.seniority, ESCO_SEED.seniority)
+    ),
+    phrase_boost: merge(
+      validated.phrase_boost,
+      merge(EXTRA_TERMS.phrase_boost, ESCO_SEED.phrase_boost)
+    )
   }
 }
 
