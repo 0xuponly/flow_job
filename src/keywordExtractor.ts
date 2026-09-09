@@ -768,7 +768,8 @@ function canonicalToken(t: string): string {
 export function extractPhases(
   section: string,
   source: KeywordSource,
-  negated: ReadonlySet<string> = new Set()
+  negated: ReadonlySet<string> = new Set(),
+  semanticCanonicalizations: ReadonlyMap<string, string> = new Map()
 ): KeywordEntry[] {
   const allowlists = loadKeywordAllowlists()
   const tokens = tokenize(section).map(canonicalToken)
@@ -866,7 +867,18 @@ export function extractPhases(
     // compare equal ("k8s" and "kubernetes" both match the same
     // "kubernetes" entry).
     if (negated.has(matchKey(e.phrase))) continue
-    kept.push({ phrase: e.phrase, weight: 0, category: e.category, source })
+    // P1.1: if a pre-computed semantic canonicalization is provided
+    // (built off the allowlist via the embedding matcher), replace
+    // the phrase with its canonical. The map is keyed by the
+    // matched phrase as emitted, so we look up the entry's phrase
+    // first, then its matchKey form. The semantic matcher is async
+    // and may be unavailable; an empty map is a no-op and keeps
+    // the sync extraction path fast.
+    const canonical =
+      semanticCanonicalizations.get(e.phrase) ??
+      semanticCanonicalizations.get(matchKey(e.phrase))
+    const finalPhrase = canonical ?? e.phrase
+    kept.push({ phrase: finalPhrase, weight: 0, category: e.category, source })
   }
   return kept
 }
