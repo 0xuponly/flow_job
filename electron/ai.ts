@@ -388,7 +388,9 @@ export async function callAI(
   return promise
 }
 
-const EXTRACTION_SYSTEM_PROMPT = `You extract keywords from a job description for ATS and recruiter screening.
+// Exported for tests (P0.3 §3.3 — negative-example prompt hardening
+// regression guard). Not part of the public surface; treat as internal.
+export const EXTRACTION_SYSTEM_PROMPT = `You extract keywords from a job description for ATS and recruiter screening.
 Return JSON only, no markdown, no prose.
 
 {
@@ -412,15 +414,41 @@ Rules:
 - weight reflects how important the phrase is for ATS + recruiter screening,
   not how many times it appears.
 - Aim for 25-40 candidates. Err on the side of more.
-- Output JSON only.`
+
+Do NOT extract (these pollute the top-30 and crowd out real skills):
+- Location, country, region, or work-authorization: "canada", "united
+  states", "united kingdom", "north america", "remote", "hybrid", "on-site",
+  "based in X", "located in X", city or province names, time zones, or any
+  phrase whose only purpose is to constrain where the candidate lives.
+- Years-of-experience boilerplate: "5+ years", "3-5 years experience",
+  "1-2 years experience", "years of experience" — these describe seniority,
+  not a skill.
+- Degree / certification requirement boilerplate: "bachelor's degree",
+  "university degree", "master's", "phd" — unless the JD explicitly treats
+  the degree as a hard requirement AND the same job has no equivalent
+  professional experience path (e.g., a JD-issued PE license). When in
+  doubt, omit.
+- Employment-type boilerplate: "full-time", "part-time", "contract",
+  "permanent", "salary", "equity", "benefits".
+- Generic soft-skill filler that every JD mentions: "communication",
+  "teamwork", "leadership", "problem solving", "self-starter", "detail
+  oriented", "time management" — unless the JD singles one out as a
+  must-have and ties it to a concrete responsibility.
+
+Output JSON only.`
 
 /**
  * v3 LLM keyword extractor. Produces structured candidates from the JD
  * directly; the rule pipeline (extractJobKeywordsStructured) is the
  * deterministic safety net and the source of the section source field.
  *
- * Throws KeywordExtractionError on any parse failure or zero valid entries.
- * Callers should catch and fall back to the rule-only result.
+ * Throws KeywordExtractionError on UNRECOVERABLE failures (callAI
+ * failure, no content, no JSON, JSON parse error, JSON not an object,
+ * JSON missing the keywords array) — the rule pipeline cannot backfill
+ * these. Returns the partial valid subset (possibly empty) when the
+ * LLM responded but some/all individual candidates failed validation
+ * — the rule pipeline still backfills on empty, and any survivors
+ * merge into the final top-30.
  */
 export async function extractJobKeywordsLLM(
   description: string,
@@ -477,10 +505,13 @@ export async function extractJobKeywordsLLM(
     })
   }
 
-  if (entries.length === 0) {
-    throw new KeywordExtractionError('LLM produced no valid entries')
-  }
-
+  // P0.3 §3.4: return the partial valid subset (possibly empty) instead
+  // of throwing. The orchestrator's catch path only fires for
+  // unrecoverable failures (callAI / parse); an LLM response that
+  // survived JSON parsing but yielded zero valid candidates is no
+  // worse than the LLM returning [] directly, and the rule pipeline
+  // backfills either way. Crucially, when SOME candidates validate,
+  // we no longer throw the good ones away with the bad.
   return entries
 }
 

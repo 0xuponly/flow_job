@@ -1047,6 +1047,25 @@ describe('mergeKeywordResults', () => {
     const r = mergeKeywordResults(llm, rule, lists)
     expect(r.keywords.map((k) => k.phrase)).toContain('remote')
   })
+
+  // P0.3 §3.3 additive country-name extension (coordinated with the
+  // deny-list owner via commit-body note; "united states" + "united
+  // kingdom" added because they showed up in production logs as LLM
+  // unknown-phrase noise competing for the top-30 cap).
+  it('drops LLM-only country names ("united states", "united kingdom") as noise', () => {
+    const llm: KeywordEntry[] = [
+      { phrase: 'united states', weight: 0.7, category: 'hard', source: 'body' },
+      { phrase: 'united kingdom', weight: 0.6, category: 'hard', source: 'body' },
+      { phrase: 'python', weight: 0.9, category: 'hard', source: 'body' }
+    ]
+    const r = mergeKeywordResults(llm, [], lists)
+    const phrases = r.keywords.map((k) => k.phrase)
+    expect(phrases).not.toContain('united states')
+    expect(phrases).not.toContain('united kingdom')
+    expect(phrases).toContain('python')
+    expect(r.unknownPhrases).not.toContain('united states')
+    expect(r.unknownPhrases).not.toContain('united kingdom')
+  })
 })
 
 describe('coverage-safe keyword matching (additive helpers)', () => {

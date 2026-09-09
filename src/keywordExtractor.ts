@@ -229,8 +229,17 @@ function canonicalPhrase(s: string): string {
 // allowlist already surfaced a term, it is preserved as the safety net.
 // Matching is by match-key form (lowercase, token-joined) so "M&A" and
 // "m & a" both resolve to the same entry as "m&a".
+//
+// P0.3 §3.3 additive extension (owner: docswright, landed in 6345d30;
+// see P0.3 commit body for the coordination note): country names that
+// the LLM surfaces as keywords. "canada" was already present; added
+// the two full forms observed in the production logs. Ambiguous short
+// forms ("us", "uk") are intentionally NOT included because they collide
+// with too many legitimate tokens.
 export const LLM_DENY_LIST: ReadonlySet<string> = new Set([
   'canada',
+  'united states',
+  'united kingdom',
   'years experience',
   'university degree',
   'remote',
