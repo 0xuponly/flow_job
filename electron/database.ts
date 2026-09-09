@@ -84,6 +84,7 @@ function defaultStore(): Store {
       deleted_jobs_cap: 50000,
       auto_scan_enabled: true,
       auto_scan_interval_minutes: 120,
+      fit_autoscore_interval_minutes: 240,
       locations_normalized: '',
       locations_normalized_v2: '',
       locations_normalized_v3: '',
@@ -256,6 +257,9 @@ export function loadStore(): Store {
     }
     if (typeof store.settings.auto_scan_interval_minutes !== 'number' || store.settings.auto_scan_interval_minutes <= 0) {
       store.settings.auto_scan_interval_minutes = 120
+    }
+    if (typeof store.settings.fit_autoscore_interval_minutes !== 'number' || store.settings.fit_autoscore_interval_minutes <= 0) {
+      store.settings.fit_autoscore_interval_minutes = 240
     }
     if (typeof store.settings.auto_tailor_on_scan !== 'boolean') {
       store.settings.auto_tailor_on_scan = false

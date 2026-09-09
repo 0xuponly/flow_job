@@ -54,6 +54,7 @@ function stripHmac(manifest: Record<string, unknown>): Record<string, unknown> {
 import { formatLocation } from './utils'
 import { startQueueProcessor, stopQueueProcessor, enqueue } from './aiQueue'
 import { scheduleNextAutoScan, cancelAutoScan, markScanStarted, markScanCompleted, restartAutoScanTimer } from './autoScan'
+import { scheduleNextFitAutoScore, restartFitAutoScoreTimer } from './fitAutoScore'
 import {
   addNotification,
   listActiveNotifications,
@@ -322,6 +323,9 @@ function registerIpc(): void {
       // (heuristic pre-filter or LLM-error fallback paths) get picked
       // up by the persistent queue processor.
       enqueueScoreFitBacklog()
+      // Push the periodic fit-score timer out by a full interval so a
+      // just-completed scan does not immediately collide with the timer.
+      scheduleNextFitAutoScore()
       // Notify all renderers that the scan has completed (success or cancelled)
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) win.webContents.send('scan:complete', result)
@@ -514,6 +518,9 @@ function registerIpc(): void {
     // Re-schedule auto-scan if the relevant settings changed
     if ('auto_scan_enabled' in partial || 'auto_scan_interval_minutes' in partial) {
       restartAutoScanTimer()
+    }
+    if ('fit_autoscore_interval_minutes' in partial) {
+      restartFitAutoScoreTimer()
     }
     return result
   })
@@ -1149,6 +1156,7 @@ function runDeferredStoreWork(): void {
   // sessions until empty.
   enqueueScoreFitBacklog()
   scheduleNextAutoScan()
+  scheduleNextFitAutoScore()
   // Fire-and-forget: the returned `stop` is intentionally dropped
   // (the interval lives for the app's lifetime; the helper
   // double-registers are guarded inside the module).
