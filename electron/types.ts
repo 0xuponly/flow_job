@@ -208,6 +208,7 @@ export interface Settings {
   deleted_jobs_cap: number
   auto_scan_enabled: boolean
   auto_scan_interval_minutes: number
+  fit_autoscore_interval_minutes: number
   locations_normalized: string
   locations_normalized_v2: string
   locations_normalized_v3: string
