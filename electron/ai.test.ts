@@ -26,7 +26,7 @@ vi.mock('./database', () => ({
 // matching the style of the `callAI failure summary` tests above.
 
 import * as database from './database'
-import { callAI, extractJobKeywordsV3, KeywordExtractionError, RateLimitError, resetModelHealth, scoreJobFit } from './ai'
+import { callAI, EXTRACTION_SYSTEM_PROMPT, extractJobKeywordsV3, KeywordExtractionError, RateLimitError, resetModelHealth, scoreJobFit } from './ai'
 
 beforeEach(() => {
   resetModelHealth()
@@ -138,6 +138,15 @@ describe('KeywordExtractionError', () => {
         keywords: [{ phrase: 'python', weight: 0.9, category: 'evil', source: 'body' }]
       }) } }]
     }), { status: 200 })))
+    // P0.3: this behavior moved to extractJobKeywordsLLM (returns []
+    // when all candidates are invalid); see "P0.3 partial valid
+    // subset" describe block. The remaining KeywordExtractionError
+    // cases here are the *unrecoverable* ones: callAI failure, no
+    // content, no JSON object — those still throw.
+  })
+
+  it('still throws on callAI failure (unrecoverable)', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([])
     const { extractJobKeywordsLLM } = await import('./ai')
     await expect(extractJobKeywordsLLM('any jd')).rejects.toBeInstanceOf(KeywordExtractionError)
   })
@@ -443,5 +452,163 @@ describe('generateFollowUpMessage', () => {
     const out = await generateFollowUpMessage('Acme', 'Staff Engineer', 7)
     expect(out).toContain('Test User')
     expect(out).toContain('Staff Engineer')
+  })
+})
+
+// P0.3 — LLM extractor hardening + top-30 noise reduction.
+// See docs/keyword-detection-improvement-plan.md §3.3 + §3.4.
+describe('P0.3 EXTRACTION_SYSTEM_PROMPT (prompt tightening)', () => {
+  it('is exported and non-empty so tests can assert on its contents', () => {
+    expect(typeof EXTRACTION_SYSTEM_PROMPT).toBe('string')
+    expect(EXTRACTION_SYSTEM_PROMPT.length).toBeGreaterThan(0)
+  })
+
+  it('warns the LLM away from location noise (P0.3 §3.3)', () => {
+    const p = EXTRACTION_SYSTEM_PROMPT.toLowerCase()
+    expect(p).toContain('location')
+    expect(p).toContain('country')
+  })
+
+  it('warns the LLM away from years-of-experience and degree boilerplate', () => {
+    const p = EXTRACTION_SYSTEM_PROMPT.toLowerCase()
+    expect(p).toContain('years')
+    expect(p).toContain('degree')
+  })
+
+  it('warns the LLM away from generic soft-skill noise ("communication", etc.)', () => {
+    const p = EXTRACTION_SYSTEM_PROMPT.toLowerCase()
+    // Catches at least one generic-soft-skill negative example.
+    expect(p).toMatch(/communication/)
+  })
+})
+
+describe('P0.3 extractJobKeywordsLLM partial valid subset (P0.3 §3.4)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 1, name: 'mock', enabled: true } as any
+    ])
+  })
+
+  it('returns only the valid entries when the LLM emits a mix of valid + invalid', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({
+        keywords: [
+          { phrase: 'python', weight: 0.9, category: 'hard', source: 'required' },
+          { phrase: 'aws',     weight: 0.8, category: 'hard', source: 'body' },
+          { phrase: 'evil',    weight: 0.7, category: 'not-a-real-category', source: 'body' },
+          { phrase: '',        weight: 0.7, category: 'hard', source: 'body' },
+          { phrase: 'kafka',   weight: 1.5, category: 'hard', source: 'body' }
+        ]
+      }) } }]
+    }), { status: 200 })))
+
+    const { extractJobKeywordsLLM } = await import('./ai')
+    const out = await extractJobKeywordsLLM('any jd')
+    // 5 candidates in, 2 valid (python, aws) — the others fail
+    // category / phrase / weight checks. No throw, the partial set
+    // is returned so the orchestrator can still merge it.
+    expect(out.map((e) => e.phrase)).toEqual(['python', 'aws'])
+  })
+
+  it('returns an empty array (no throw) when every candidate fails validation', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({
+        keywords: [
+          { phrase: 'python', weight: 0.9, category: 'evil', source: 'body' },
+          { phrase: '',       weight: 0.7, category: 'hard', source: 'body' }
+        ]
+      }) } }]
+    }), { status: 200 })))
+
+    const { extractJobKeywordsLLM } = await import('./ai')
+    // Old behavior: threw KeywordExtractionError here. New behavior:
+    // the rule pipeline backfills, so the orchestrator just needs an
+    // empty (or partial) LLM result to proceed.
+    const out = await extractJobKeywordsLLM('any jd')
+    expect(out).toEqual([])
+  })
+})
+
+describe('P0.3 end-to-end noise reduction (P0.3 §3.3)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 1, name: 'mock', enabled: true } as any
+    ])
+  })
+
+  it('strips LLM-only noise ("canada", "years experience", "university degree", "remote", "full-time") from the merged top-30', async () => {
+    // JD contains "5+ years experience" + "Canada" so the rule
+    // pipeline can match some real signal, but the LLM also emits the
+    // known noise terms. They must NOT appear in the final keyword
+    // list because the deny-list filter is now in the pipeline.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({
+        keywords: [
+          { phrase: 'python', weight: 0.9, category: 'hard', source: 'required' },
+          { phrase: 'canada', weight: 0.7, category: 'hard', source: 'body' },
+          { phrase: 'years experience', weight: 0.6, category: 'hard', source: 'body' },
+          { phrase: 'university degree', weight: 0.5, category: 'hard', source: 'body' },
+          { phrase: 'remote', weight: 0.4, category: 'hard', source: 'body' },
+          { phrase: 'full-time', weight: 0.4, category: 'hard', source: 'body' },
+          // P0.3 §3.3 additive country-name deny-list extension
+          // (united states, united kingdom) — see comment in
+          // src/keywordExtractor.ts:LLM_DENY_LIST.
+          { phrase: 'united states', weight: 0.3, category: 'hard', source: 'body' },
+          { phrase: 'united kingdom', weight: 0.3, category: 'hard', source: 'body' }
+        ]
+      }) } }]
+    }), { status: 200 })))
+
+    const jd = [
+      'Senior Python Engineer',
+      '',
+      'Requirements',
+      '- 5+ years experience with Python',
+      '- Based in Canada or United States; remote considered'
+    ].join('\n')
+
+    const result = await extractJobKeywordsV3(jd, undefined)
+    const phrases = result.keywords.map((k) => k.phrase)
+    expect(phrases).not.toContain('canada')
+    expect(phrases).not.toContain('years experience')
+    expect(phrases).not.toContain('university degree')
+    // Note: "remote" is in PMI_NOISE_WORDS, so the rule pipeline will
+    // also not surface it. The deny-list is the LLM-side safety net.
+    expect(phrases).not.toContain('full-time')
+    // P0.3 §3.3 country-name noise terms (additive deny-list
+    // extension). Same deny-list mechanism as the rest — only
+    // LLM-unknown phrases are dropped, so a real rule-pipeline match
+    // for a country would survive.
+    expect(phrases).not.toContain('united states')
+    expect(phrases).not.toContain('united kingdom')
+    // The real skill survives the merge.
+    expect(phrases).toContain('python')
+  })
+
+  it('keeps the LLM-derived real skills even when the LLM also emits noise', async () => {
+    // P0.3 §3.4: when the LLM returns a mixed list, the partial-valid
+    // path (now) lets real candidates through instead of throwing
+    // everything away. Previously, any single all-invalid batch would
+    // throw and we'd lose the real ones too.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({
+        keywords: [
+          { phrase: 'kubernetes', weight: 0.9, category: 'hard', source: 'required' },
+          { phrase: 'rust',       weight: 0.8, category: 'hard', source: 'body' },
+          // Bogus category — fails validation:
+          { phrase: 'noisy',      weight: 0.5, category: 'invalid', source: 'body' }
+        ]
+      }) } }]
+    }), { status: 200 })))
+
+    const jd = 'Senior Engineer\n\nRequirements\n- Kubernetes + Rust'
+    const result = await extractJobKeywordsV3(jd, undefined)
+    const phrases = result.keywords.map((k) => k.phrase)
+    // The two valid LLM candidates survive; the bogus one is dropped
+    // by validation, but does NOT take the rest with it.
+    expect(phrases).toContain('kubernetes')
+    expect(phrases).toContain('rust')
   })
 })
