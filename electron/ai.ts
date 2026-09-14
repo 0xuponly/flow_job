@@ -344,6 +344,37 @@ export function resetModelHealth(): void {
   modelHealth.clear()
 }
 
+/**
+ * P1.6: scoped health reset. The `modelHealth` map persists for the
+ * lifetime of the main process; disabling a model does NOT delete its
+ * entry, and re-enabling inherits the prior cooldown / circuit-break.
+ * The IPC layer for Settings → Models (models:save / add / delete)
+ * calls this after persisting model edits so a re-enabled model is
+ * genuinely tried on the next callAI.
+ *
+ * The map itself is NOT exported — callers cannot iterate it or
+ * hand-clear arbitrary entries. The BRIEF: "do NOT export the map".
+ * Only this targeted reset, scoped to specific ids, is the supported
+ * surface.
+ *
+ * Matching uses the same canonical key as the rotation
+ * (`modelKey()` — model.id or `base_url::model`), so callers can
+ * pass either a stable model.id from the DB or a synthetic key.
+ * Unknown ids are a no-op (delete + re-add with the same id scheme:
+ * the id may or may not already be in the map; we always handle
+ * both cases).
+ */
+export function resetModelHealthByIds(ids: Iterable<string>): void {
+  const target = new Set<string>()
+  for (const id of ids) {
+    if (typeof id === 'string' && id.length > 0) target.add(id)
+  }
+  if (target.size === 0) return
+  for (const key of Array.from(modelHealth.keys())) {
+    if (target.has(key)) modelHealth.delete(key)
+  }
+}
+
 function modelKey(model: ApiModelConfig): string {
   return model.id || `${model.base_url}::${model.model}`
 }
