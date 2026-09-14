@@ -12,7 +12,7 @@ import {
   verifyManifest,
   wrapDekWithPassphrase
 } from './backupCrypto'
-import { tailorDocument, generateFollowUpMessage, regenerateSection, verifyDocumentContent, scoreJobFit, extractJobKeywordsV3, RateLimitError } from './ai'
+import { tailorDocument, generateFollowUpMessage, regenerateSection, verifyDocumentContent, scoreJobFit, extractJobKeywordsV3, RateLimitError, resetModelHealthByIds } from './ai'
 import { scoreOneJobInBackground } from './fitScorer'
 import { countPdfPages } from '../src/cvOnePage'
 import { buildPdfHtml } from './pdfTemplate'
@@ -527,9 +527,38 @@ function registerIpc(): void {
   ipcMain.handle('settings:reset', () => db.resetSettings())
 
   ipcMain.handle('models:list', () => db.listApiModels())
-  ipcMain.handle('models:save', (_e, models: ApiModelConfig[]) => db.saveApiModels(models))
-  ipcMain.handle('models:add', (_e, model: Omit<ApiModelConfig, 'id'>) => db.addApiModel(model))
-  ipcMain.handle('models:delete', (_e, id: string) => db.deleteApiModel(id))
+  // P1.6: model-health reset. Disabling a model in the Settings UI
+  // leaves its cooldown/circuit-breaker entry in ai.ts's in-memory
+  // modelHealth map; re-enabling would inherit the stale state and the
+  // just-re-enabled model would be silently skipped. After each
+  // model-persistence IPC we call resetModelHealthByIds with the
+  // affected ids so the next callAI rotation tries them again. We
+  // export only the targeted reset from ai.ts (not the map itself) per
+  // the BRIEF, so callers cannot iterate or hand-clear arbitrary
+  // entries.
+  //
+  // Policy chosen for models:save: reset for every id in the new list
+  // (management's preference — a fresh outlook after any user
+  // action). models:add and models:delete reset for the single id
+  // involved. The delete-then-readd-with-same-id case is covered by
+  // models:add (the add reuses the canonical id, and the reset hook
+  // handles "never in the map" as a no-op).
+  ipcMain.handle('models:save', (_e, models: ApiModelConfig[]) => {
+    const saved = db.saveApiModels(models)
+    resetModelHealthByIds(saved.map((m) => m.id).filter((id): id is string => typeof id === 'string'))
+    return saved
+  })
+  ipcMain.handle('models:add', (_e, model: Omit<ApiModelConfig, 'id'>) => {
+    const saved = db.addApiModel(model)
+    const last = saved[saved.length - 1]
+    if (last && typeof last.id === 'string') resetModelHealthByIds([last.id])
+    return saved
+  })
+  ipcMain.handle('models:delete', (_e, id: string) => {
+    const saved = db.deleteApiModel(id)
+    resetModelHealthByIds([id])
+    return saved
+  })
 
   ipcMain.handle('ai:tailor', async (_e, request: TailorRequest) => {
     try {
