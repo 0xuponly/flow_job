@@ -121,6 +121,79 @@ interface CallAIResult {
   errors: string[]
 }
 
+// Sentinel error thrown by tailorDocument when the LLM call succeeded
+// (every model in the rotation returned HTTP 200) but the validator
+// rejected ALL their contents (e.g., reasoning-channel / planning-meta
+// text instead of a CV). Distinct from RateLimitError so the caller
+// can surface it as a real failure rather than silently persisting the
+// raw user-supplied base CV (the prior behavior for any non-rate-limit
+// error: generateFallbackDocument → looks-tailored but isn't).
+//
+// Production trigger (2026-09-13, jobId 7605 family): reasoning-style
+// VL models in the user's saved rotation returned planning-meta text
+// like "We need to tailor the CV. We must follow the Harvard template
+// exactly." The validator now catches this and refuses to persist.
+export class TailoredOutputValidationError extends Error {
+  constructor(public readonly docType: 'cv' | 'cover_letter', public readonly reason: string) {
+    super(`Tailored ${docType} failed validation: ${reason}`)
+    this.name = 'TailoredOutputValidationError'
+  }
+}
+
+// Structural validator for a tailored-CV response. A well-formed
+// Harvard-format CV must contain at least one canonical section header
+// as a bare line ("Education", "Experience",
+// "Leadership & Activities", "Skills & Interests"), at least one TAB
+// character (TAB alignment is mandatory in the spec for org/title/date
+// separators), and a name-style first line (short, no sentence
+// punctuation, no first-person-plural planning markers).
+//
+// Defensive anti-reasoning gate: a model that emits "We need to…",
+// "Better to follow exactly…", "Wait — actually…", or similar
+// planning-meta text fails this check, even if the output also
+// happens to contain a few real section headers as quoted echoes of
+// the prompt. Reasoning-channel style output is rejected on the
+// planning-line count: 0-2 lines of first-person-plural planning is
+// tolerable (a model may legitimately say "we should" inside a real
+// CV bullet); ≥3 is a deliberation pass, not a CV.
+//
+// Pure, deterministic, no I/O. Exported for unit tests.
+export function looksLikeHarvardCv(content: string): boolean {
+  if (!content || content.trim().length < 50) return false
+  const lines = content.split('\n').map((l) => l.trim()).filter(Boolean)
+  if (lines.length === 0) return false
+
+  // 1. At least one canonical section header as a bare line.
+  const HEADER_RE = /^(Education|Experience|Leadership(?: & Activities| and Activities)?|Skills(?: & Interests| and Interests)?)$/
+  const headerCount = lines.filter((l) => HEADER_RE.test(l)).length
+  if (headerCount < 1) return false
+
+  // 2. TAB alignment is mandatory in the spec (the Harvard template
+  // uses literal \t separators between bold left text and right-aligned
+  // location/dates). Comma-only outputs are not Harvard format — the
+  // validator rejects them and forces a retry.
+  if (!/\t/.test(content)) return false
+
+  // 3. First non-blank line must be a name-style line, not a
+  // planning sentence. Real name lines are short and have no
+  // sentence-ending punctuation. Reasoning-channel preambles
+  // ("We need to tailor the CV…") are caught here.
+  const firstNonBlank = lines[0] ?? ''
+  if (firstNonBlank.length > 60) return false
+  if (/[.!?]$/.test(firstNonBlank)) return false
+  if (/^(we|we need to|we must|we have to|we should|let me|but we|wait)/i.test(firstNonBlank)) return false
+
+  // 4. Anti-deliberation gate: ≤2 lines that look like first-person
+  // planning monologue. Reasoning models paraphrase the system prompt
+  // as "Better to follow exactly: …", "Wait — actually …", etc.
+  // A real CV rarely contains these patterns.
+  const PLANNING_RE = /\b(we (?:need|must|have|should) to|let me|wait\b|but (?:we|the)\b|better to)\b/i
+  const planningLineCount = lines.filter((l) => PLANNING_RE.test(l)).length
+  if (planningLineCount > 2) return false
+
+  return true
+}
+
 const DEFAULT_MAX_TOKENS = 2048
 
 // Slug patterns that identify rerank/embeddings models that do not belong in
@@ -240,17 +313,19 @@ async function tryModels(
   userPrompt: string,
   temperature: number,
   timeoutMs: number,
-  externalSignal?: AbortSignal
+  externalSignal?: AbortSignal,
+  validateResponse?: (content: string) => boolean
 ): Promise<CallAIResult> {
   let content: string | null = null
   let modelUsed: string | null = null
   let rateLimited = false
   const errors: string[] = []
+  let validationFailures = 0
 
   for (const model of models) {
     // Opt-in per-request trace. Set FLOW_JOB_DEBUG_AI=1 in the shell before
-    // launching the app to enable; the env read is cached by V8 so the cost
-    // when disabled is one string compare per request.
+    // launching the app to enable; the cost when disabled is one string
+    // compare per request.
     if (process.env.FLOW_JOB_DEBUG_AI === '1') {
       log.ai.info(
         `[ai] req name="${model.name}" host=${hostOf(model.base_url)} key=${fingerprintKey(model.api_key)} modelId=${model.model} max_tokens=${getMaxTokens(model)} body=${redactBody('')}`
@@ -287,15 +362,48 @@ async function tryModels(
       clearTimeout(timer)
       if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort)
       if (response.ok) {
-        const data = (await response.json()) as { choices: { message: { content: string } }[] }
+        const data = (await response.json()) as {
+          choices: {
+            message: { content: string; reasoning_content?: unknown }
+          }[]
+        }
         content = data.choices[0]?.message?.content ?? null
+        if (content && validateResponse) {
+          // Defensive validation gate. A model that returns HTTP 200
+          // with reasoning-channel / planning-meta content (VL-style
+          // deliberation pass) is treated as if it returned an empty
+          // response — we move on to the next model in the rotation.
+          // The fallback path (no validator or all-validators-fail)
+          // is unchanged so non-tailored call sites behave as before.
+          let valid = false
+          try {
+            valid = validateResponse(content)
+          } catch (vErr) {
+            errors.push(`${model.name}: validator threw ${vErr instanceof Error ? vErr.message : String(vErr)}`)
+            valid = false
+          }
+          if (!valid) {
+            validationFailures++
+            errors.push(`${model.name}: response did not pass content validation`)
+            // Record a soft failure (no HTTP error code from the
+            // provider) so the per-model health tracker reflects the
+            // bad output. We do NOT circuit-break on validation
+            // failures — a model can improve tomorrow.
+            recordModelFailure(model, null, false)
+            content = null
+            // continue to next model
+          }
+        }
         if (content) {
           modelUsed = model.name || model.model
           recordModelSuccess(model)
           break
         }
-        errors.push(`${model.name}: empty response`)
-        recordModelFailure(model, null, false)
+        if (!validateResponse || errors.length === 0) {
+          // No validator OR no error entry yet — keep the empty-response error.
+          errors.push(`${model.name}: empty response`)
+          recordModelFailure(model, null, false)
+        }
       } else if (response.status === 429) {
         rateLimited = true
         errors.push(`${model.name}: rate limited (429)`)
@@ -330,11 +438,22 @@ async function tryModels(
     }
   }
 
-  if (!content && rateLimited) {
+  if (!content && rateLimited && validationFailures === 0) {
     throw new RateLimitError(`All ${models.length} configured AI models are rate limited — try again in a minute:\n${errors.join('\n')}`)
   }
   if (!content) {
-    throw new Error(`All ${models.length} configured AI models failed — check Settings → Models:\n${errors.join('\n')}`)
+    // Distinguish "all rate-limited / network errors" from "all
+    // responses rejected by content validation". The latter is the
+    // 2026-09-13 incident: VL models returned planning-meta text
+    // instead of a CV, and the orchestrator silently persisted
+    // garbage. Surfacing the validation failure lets the caller
+    // (tailorDocument → tailorJobDocsForJob) raise a clear cv_failed
+    // with the validator reason, and never persists base CV as a
+    // "tailored" document.
+    const detail = validationFailures === errors.length && errors.length > 0
+      ? `all ${errors.length} response${errors.length === 1 ? '' : 's'} failed validation`
+      : `errors: ${errors.join(' | ')}`
+    throw new Error(`All ${models.length} configured AI models failed — ${detail}`)
   }
 
   return { content, modelUsed, rateLimited: false, errors: [] }
@@ -349,13 +468,26 @@ async function tryModels(
  * Implements per-model 429 cooldown (exponential backoff), circuit breaker for
  * persistent client errors (401/402/404), and request coalescing so duplicate
  * concurrent calls share a single in-flight request.
+ *
+ * validateResponse (optional): per-model content validator. When provided,
+ * each model's `content` is checked before being accepted; rejected
+ * responses are treated as if the model returned empty and the rotation
+ * moves on. Used by tailorDocument to reject reasoning-channel /
+ * planning-meta output (CV incident 2026-09-13). Coalescing keys do NOT
+ * vary by validator — concurrent calls with different validators share
+ * an in-flight request as long as prompt+temperature+max_tokens match;
+ * the response is whatever the first caller observes, so callers that
+ * pass a validator MUST be comfortable receiving unvalidated content in
+ * that race. validateResponse-on-rejection is therefore best applied
+ * per call site rather than as a global guarantee.
  */
 export async function callAI(
   systemPrompt: string,
   userPrompt: string,
   temperature = 0.7,
   timeoutMs = 20000,
-  externalSignal?: AbortSignal
+  externalSignal?: AbortSignal,
+  validateResponse?: (content: string) => boolean
 ): Promise<CallAIResult> {
   const models = availableModels()
   const allEligible = eligibleModels()
@@ -379,7 +511,7 @@ export async function callAI(
     return existing
   }
 
-  const promise = tryModels(models, systemPrompt, userPrompt, temperature, timeoutMs, externalSignal)
+  const promise = tryModels(models, systemPrompt, userPrompt, temperature, timeoutMs, externalSignal, validateResponse)
   inFlightRequests.set(key, promise)
   promise.then(
     () => inFlightRequests.delete(key),
@@ -619,13 +751,37 @@ ${request.document_type === 'cover_letter' ? 'Write a tailored cover letter.' : 
 
   let content: string
   let modelUsed: string | null = null
+  // P1.4: structural content validator. tailors the rotation to skip
+  // models that emit reasoning-channel / planning-meta text instead of
+  // a real CV / cover letter. See looksLikeHarvardCv above for the
+  // signature coverage; CVs have TAB-aligned structural markers that
+  // cover letters do not, so we use the dedicated validator for CVs
+  // and skip validation for cover letters (the existing paragraph-cap
+  // enforcement in sanitizeDocument still runs downstream).
+  const validator = request.document_type === 'cv' ? looksLikeHarvardCv : undefined
   try {
-    const result = await callAI(systemPrompt, userPrompt, 0.7)
+    const result = await callAI(systemPrompt, userPrompt, 0.7, 20000, undefined, validator)
     content = result.content!
     modelUsed = result.modelUsed
   } catch (err) {
     if (err instanceof RateLimitError) throw err
-    // Non-rate-limit failure: fall back to base CV / template
+    // P1.4: validation failure (every model in the rotation returned
+    // content the validator rejected — typically reasoning-channel /
+    // planning-meta text) is a real tailoring failure, not a network
+    // / rate-limit blip. Do NOT fall back to the un-tailored base CV
+    // (the prior behavior was to persist baseCv as a "tailored" CV,
+    // which is worse than failing cleanly). Surface the error so
+    // tailorJobDocsForJob can record cv_failed with the validator
+    // reason and the user can retry once a healthier model is added
+    // or the bad ones are pruned via Settings → Models.
+    if (err instanceof Error && /failed validation|did not pass/i.test(err.message)) {
+      throw new TailoredOutputValidationError(
+        request.document_type,
+        err.message
+      )
+    }
+    // Non-rate-limit, non-validation failure: a real network/parser
+    // error, etc. Fall back to base CV / template (legacy safety net).
     content = generateFallbackDocument(job, request.document_type, baseContent, settings)
   }
 

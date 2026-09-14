@@ -612,3 +612,244 @@ describe('P0.3 end-to-end noise reduction (P0.3 §3.3)', () => {
     expect(phrases).toContain('rust')
   })
 })
+
+// CV reconstruction (Production incident 2026-09-13, jobId 7605 family):
+// VL / "deliberation-style" model output was being persisted as the
+// generated CV. The validator + validateResponse plumbing on callAI
+// rejects reasoning-channel / planning-meta content and forces the
+// rotation to skip to the next model. If every model's content fails
+// the validator, the orchestrator surfaces a clear error rather than
+// writing the deliberation text to the document row.
+//
+// See electron/ai.ts:looksLikeHarvardCv + tailorDocument.
+describe('P1.4 looksLikeHarvardCv (deliberation-text detector)', () => {
+  // The bad CV the user pasted: a reasoning/thinking-channel style
+  // output that paraphrases the system prompt as planning monologue
+  // ("We need to tailor...", "We must follow the Harvard CV template
+  // exactly...", "But we need to be careful: ...") and never produces
+  // any actual CV section headers or TAB-aligned entries.
+  const deliberationOutput = [
+    'We need to tailor the candidate CV for the Senior Financial Analyst role.',
+    'We must follow the Harvard CV template exactly as shown in the prompt.',
+    'We have to produce plain text output only — no markdown, no asterisks.',
+    'But we need to be careful: the contact line must use bullet points (•).',
+    'Better to follow exactly: name on its own line, contact line, then sections.',
+    'Let me consider the Education section. We need to include GPA. But again, only',
+    'what is in the candidate\'s Base CV. We should not invent any specific numbers.',
+    'We need to think about the Experience section. Two entries each with TAB separator.',
+    'Wait — actually a single candidate has four roles. We have to pick the most relevant.',
+    'Let me write that out. Skills: 5-15 technical entries, ranked by job-keyword match.'
+  ].join('\n')
+
+  it('rejects pure planning-meta output with no section markers', async () => {
+    const { looksLikeHarvardCv } = await import('./ai')
+    expect(looksLikeHarvardCv(deliberationOutput)).toBe(false)
+  })
+
+  it('rejects reasoning that contains a real section header but only as quoted echo, not as a line', async () => {
+    // Some reasoning models will quote the prompt's section list ("Education",
+    // "Experience", "Leadership") inside their monologue without ever producing
+    // those as bare section headers. With our spec, "Education" must appear
+    // on its own as a line (centered, bold) to count.
+    const quotedEcho = deliberationOutput + '\n\nEducation\nExperience'
+    const { looksLikeHarvardCv } = await import('./ai')
+    expect(looksLikeHarvardCv(quotedEcho)).toBe(false)
+  })
+
+  it('accepts a well-formed Harvard CV with TAB-aligned entries and section headers', async () => {
+    // Minimum-viable real CV: centered name + contact line, then Education /
+    // Experience with TAB-aligned entries and L&: bold,title<TAB>org<TAB>years.
+    // The validator checks for structural markers — it does NOT need to be
+    // exhaustive about the spec; that is the verifier's job (documentRules).
+    const goodCv = [
+      'Jane Doe',
+      '1 Main St • Cambridge, MA 02139 • jane@example.com • 617-555-0100',
+      '',
+      'Education',
+      'Harvard University\tCambridge, MA, A.B. Computer Science\tMay 2024',
+      '',
+      'Experience',
+      'Acme Corp\tBoston, MA',
+      'Software Engineer\tJun 2024 – Present',
+      '- Led the migration of the data pipeline from Python 2 to Python 3',
+      '',
+      'Leadership & Activities',
+      '**President**, Harvard Coding Club\t2023 – 2024',
+      '',
+      'Skills & Interests',
+      'Technical:',
+      'Python, TypeScript, React, AWS, PostgreSQL',
+      'Language:',
+      'English (native), Spanish (conversational)'
+    ].join('\n')
+    const { looksLikeHarvardCv } = await import('./ai')
+    expect(looksLikeHarvardCv(goodCv)).toBe(true)
+  })
+
+  it('rejects a well-formed-looking output with NO TAB characters (TAB alignment is mandatory in the spec)', async () => {
+    const noTab = [
+      'Jane Doe',
+      '1 Main St • Cambridge, MA • jane@example.com',
+      '',
+      'Education',
+      'Harvard University, Cambridge, MA, A.B. Computer Science, May 2024',
+      '',
+      'Experience',
+      'Acme Corp, Boston, MA',
+      'Software Engineer, Jun 2024 – Present',
+      '- Led a migration'
+    ].join('\n')
+    const { looksLikeHarvardCv } = await import('./ai')
+    // Comma-separated entries are not Harvard format; the validator rejects
+    // them and forces a retry.
+    expect(looksLikeHarvardCv(noTab)).toBe(false)
+  })
+
+  it('rejects an output that starts with a reasoning preamble even if a fragment of CV appears at the end', async () => {
+    // This is the user's exact failure mode: planning text dominates the
+    // first ~80% of the response, with the actual CV (name + education
+    // line) appearing only at the tail. Section-header count is below the
+    // minimum so the validator still rejects.
+    const preambleHeavy = [
+      ...deliberationOutput.split('\n'),
+      '',
+      'Jane Doe',
+      '1 Main St • Cambridge, MA • jane@example.com',
+      '',
+      'Education',
+      'Harvard University\tCambridge, MA, A.B.\tMay 2024'
+    ].join('\n')
+    const { looksLikeHarvardCv } = await import('./ai')
+    expect(looksLikeHarvardCv(preambleHeavy)).toBe(false)
+  })
+})
+
+describe('P1.4 callAI validateResponse (deliberation gate at the rotation layer)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    resetModelHealth()
+  })
+
+  // cv_failed was firing without an error message in production logs
+  // because tailorJobDocsForJob only logs `cv_failed` (the wrapper) and
+  // the underlying Error was thrown away. With validateResponse in play,
+  // a model whose content fails validation is treated as "empty
+  // response" and the rotation moves on; if every model fails, callAI
+  // throws an Error whose message names the validation failure so the
+  // orchestrator can include it in fit_last_error / cv_error.
+  it('skips a model whose content fails validateResponse and uses the next model', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 'bad',  name: 'bad',  enabled: true, base_url: 'https://example.invalid', model: 'bad',  api_key: 'k' } as any,
+      { id: 'good', name: 'good', enabled: true, base_url: 'https://example.invalid', model: 'good', api_key: 'k' } as any
+    ])
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string)
+      if (body.model === 'bad') {
+        // First model: deliberation-style output.
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: 'We need to tailor the CV.\nWe must follow the template exactly.' } }]
+        }), { status: 200 })
+      }
+      // Second model: a real CV.
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'Jane Doe\n1 Main St • Cambridge, MA • jane@example.com\n\nEducation\nHarvard University\tCambridge, MA\tMay 2024\n\nExperience\nAcme Corp\tBoston, MA\nSoftware Engineer\tJun 2024 – Present\n- Led a data pipeline migration' } }]
+      }), { status: 200 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { looksLikeHarvardCv } = await import('./ai')
+    const result = await callAI('sys', 'user', 0.7, 20000, undefined, looksLikeHarvardCv)
+    expect(result.content).toContain('Jane Doe')
+    expect(result.modelUsed).toBe('good')
+    // The bad model was tried exactly once.
+    const calledModels = fetchMock.mock.calls.map((call) => JSON.parse(call[1].body as string).model)
+    expect(calledModels).toEqual(['bad', 'good'])
+  })
+
+  it('throws a clear error naming the validator when every model fails', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 'bad', name: 'bad', enabled: true, base_url: 'https://example.invalid', model: 'bad', api_key: 'k' } as any
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: 'We need to follow the template exactly. But we need...' } }]
+    }), { status: 200 })))
+    const { looksLikeHarvardCv } = await import('./ai')
+    await expect(callAI('sys', 'user', 0.7, 20000, undefined, looksLikeHarvardCv))
+      .rejects.toThrow(/failed validation|looksLikeHarvardCv|did not pass/i)
+  })
+})
+
+describe('P1.4 tailorDocument rejects deliberation-style CV output', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    resetModelHealth()
+  })
+
+  // Production evidence (user-reported, real output for "Senior
+  // Financial Analyst, Transportation Investment Corporation"):
+  // the model returned planning-meta text instead of a CV. Previously
+  // this was persisted as the generated CV. The fix: validate the
+  // response and reject it; if every model fails, throw so the
+  // orchestrator surfaces a clear error instead of writing planning
+  // text to the document row.
+  it('throws when the only configured model returns deliberation text (no CV is persisted)', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 1, name: 'reasoning', enabled: true, base_url: 'https://example.invalid', model: 'r1', api_key: 'k' } as any
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: 'We need to tailor the CV.\nWe must follow the template exactly.' } }]
+    }), { status: 200 })))
+
+    const { tailorDocument } = await import('./ai')
+    await expect(tailorDocument({ job_id: 1, document_type: 'cv' }))
+      .rejects.toThrow()
+    // Critical: createDocument was NEVER called with the bad content.
+    expect(database.createDocument).not.toHaveBeenCalled()
+  })
+
+  it('persists the good response when a follow-up model produces a real CV', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 'reasoning', name: 'reasoning', enabled: true, base_url: 'https://example.invalid', model: 'r1', api_key: 'k' } as any,
+      { id: 'good',      name: 'good',      enabled: true, base_url: 'https://example.invalid', model: 'g1', api_key: 'k' } as any
+    ])
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string)
+      if (body.model === 'r1') {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: 'We need to tailor the CV.\nWe must follow the template.' } }]
+        }), { status: 200 })
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'Jane Doe\n1 Main St • Cambridge, MA • jane@example.com\n\nEducation\nHarvard University\tCambridge, MA\tMay 2024\n\nExperience\nAcme Corp\tBoston, MA\nSoftware Engineer\tJun 2024 – Present' } }]
+      }), { status: 200 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    // Wire createDocument return so the happy path can be observed.
+    vi.mocked(database.createDocument).mockReturnValue({ id: 99 } as any)
+    vi.spyOn(database, 'getJob').mockReturnValue({
+      id: 1, title: 'Senior Financial Analyst', company: 'TIC',
+      description: 'JD text', location: 'Remote', score: null, fit_score_version: null,
+      fit_source: null, fit_breakdown: null, fit_last_error: null, fit_error_toasted: null,
+      match_grade: null, fit_rationale: null, status: 'sourced'
+    } as any)
+    vi.spyOn(database, 'getSettings').mockReturnValue({
+      base_cv: 'CV body', openai_api_key: '', openai_base_url: 'https://example.invalid',
+      openai_model: 'm', user_name: 'Jane Doe', user_email: 'jane@example.com',
+      user_phone: '', user_country: '', job_search_keywords: '', job_search_location: '',
+      job_search_locations: '', deleted_jobs_cap: 50000, auto_scan_enabled: true,
+      auto_scan_interval_minutes: 120, locations_normalized: '', locations_normalized_v2: '',
+      locations_normalized_v3: '', locations_normalized_v4: '', locations_normalized_v5: '',
+      locations_normalized_v6: '', locations_array_migrated_v1: '', disabled_boards_migrated_v1: '',
+      employment_type_normalized: '', work_mode_normalized: '', title_casing_normalized: '',
+      title_casing_normalized_v2: '', statuses_recomputed: '', statuses_manual_v2: '',
+      backup_path: '', backup_last_success_at: '', backup_last_error: '', passphrase: '',
+      auto_tailor_on_scan: false, auto_tailor_min_fit: 90, quick_apply_shortcut: null,
+      cv_version: 0
+    } as any)
+    const { tailorDocument } = await import('./ai')
+    const result = await tailorDocument({ job_id: 1, document_type: 'cv' })
+    expect(result.document_id).toBe(99)
+    const persistedContent = vi.mocked(database.createDocument).mock.calls[0]?.[2] ?? ''
+    expect(persistedContent).toContain('Jane Doe')
+    expect(persistedContent).not.toContain('We need to tailor')
+  })
+})
