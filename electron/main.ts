@@ -211,7 +211,7 @@ function registerIpc(): void {
   ipcMain.handle('jobs:get', (_e, id: number) => db.getJob(id))
   ipcMain.handle('jobs:create', (_e, input: CreateJobInput) => {
     const dup = db.findDuplicateJob(input)
-    if (dup) throw new Error(`Job already exists: ${dup.company} — ${dup.title}`)
+    if (dup) throw new Error(`Job already exists. (${dup.title} @ ${dup.company})`)
     // `force: true` lets the user re-add a previously-deleted job
     // from the manual-add form. The deleted-jobs blacklist entry is
     // preserved (so the scanner won't auto-re-add it) and
@@ -237,7 +237,7 @@ function registerIpc(): void {
     try {
       const input = await scrapeJobFromUrl(url, _importAbortController.signal)
       const dup = db.findDuplicateJob(input)
-      if (dup) throw new Error(`Job already exists: ${dup.company} — ${dup.title}`)
+      if (dup) throw new Error(`Job already exists. (${dup.title} @ ${dup.company})`)
       // `force: true` lets the user re-add a previously-deleted job
       // from a link. The deleted-jobs blacklist entry is preserved
       // (so the scanner won't auto-re-add it) and `wasBlacklisted` is
