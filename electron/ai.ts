@@ -119,6 +119,10 @@ interface CallAIResult {
   modelUsed: string | null
   rateLimited: boolean
   errors: string[]
+  // P1.5: ordered list of model keys attempted during the rotation.
+  // Empty if the model pool was already empty. Used by call sites to
+  // exclude the bad model on a bounded retry after parse_failed.
+  attempted: string[]
 }
 
 // Sentinel error thrown by tailorDocument when the LLM call succeeded
@@ -138,6 +142,107 @@ export class TailoredOutputValidationError extends Error {
     super(`Tailored ${docType} failed validation: ${reason}`)
     this.name = 'TailoredOutputValidationError'
   }
+}
+
+// Robust JSON-object extraction used by JSON-parsing call sites
+// (verifyDocumentContent, scoreJobFit). Replaces the legacy regex
+// /\{[\s\S]*\}/ which captured from the first `{` to the LAST `}`
+// in the response — when a reasoning-channel model wraps its JSON in
+// prose ("Here is my review: {"score":85} Hope this helps"), the
+// legacy regex grabbed the prose + JSON, JSON.parse failed, and the
+// caller silently skipped with reason 'parse_failed'.
+//
+// Three tiers, in order of preference:
+//   1. A fenced ```json ... ``` block. Models that follow the
+//      markdown-fence convention emit the JSON between fences; this
+//      gives us a tightly-scoped capture with no prose.
+//   2. An unfenced ``` ... ``` block. Some models wrap without the
+//      `json` tag, especially smaller models following chat
+//      conventions.
+//   3. A balanced-brace scan from the FIRST `{` in the response,
+//      walking the string and tracking quote/escape state so escaped
+//      quotes inside JSON string values do not throw off the brace
+//      counter. Returns the FIRST balanced object; parses it. If
+//      parsing fails (malformed), continues scanning for the next
+//      balanced `{...}` (some models emit an unrelated preamble
+//      before the real answer). Returns null when nothing parses.
+//
+// Pure, deterministic, no I/O. Exported for unit tests. P1.5.a.
+export function parseJsonObject(content: string): unknown | null {
+  if (!content) return null
+
+  // Tier 1+2: fenced code blocks.
+  const fencedRe = /```(?:json)?\s*(\{[\s\S]*?\})\s*```/gi
+  let m: RegExpExecArray | null
+  while ((m = fencedRe.exec(content)) !== null) {
+    try {
+      const parsed = JSON.parse(m[1])
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
+    } catch {
+      // Keep scanning — some fenced blocks are not valid JSON.
+    }
+    // Guard against zero-length matches on infinite-loop edge cases.
+    if (m.index === fencedRe.lastIndex) fencedRe.lastIndex++
+  }
+
+  // Tier 3: balanced-brace scan from the FIRST `{`. We do not use a
+  // regex here because the legacy /\{[\s\S]*\}/ was the bug — it does
+  // not know what "balanced" means for nested braces. We walk the
+  // string with explicit state.
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] !== '{') continue
+    const candidate = balancedJsonFrom(content, i)
+    if (candidate === null) continue
+    try {
+      const parsed = JSON.parse(candidate)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
+    } catch {
+      // Malformed JSON at this span — keep scanning for the next `{`.
+    }
+  }
+  return null
+}
+
+// Returns the first balanced `{...}` slice starting at `start` (which
+// MUST be the index of `{`). Tracks string-quote/escape state so a
+// literal `{` inside a JSON string value does not throw off the
+// brace counter. Returns null when the `{` has no matching `}` ahead
+// of it (i.e., the response was cut off or contains a stray brace).
+function balancedJsonFrom(content: string, start: number): string | null {
+  let depth = 0
+  let inString = false
+  let escape = false
+  for (let i = start; i < content.length; i++) {
+    const c = content[i]
+    if (inString) {
+      if (escape) {
+        escape = false
+        continue
+      }
+      if (c === '\\') {
+        escape = true
+        continue
+      }
+      if (c === '"') {
+        inString = false
+      }
+      continue
+    }
+    // Not in a string.
+    if (c === '"') {
+      inString = true
+      continue
+    }
+    if (c === '{') {
+      depth++
+    } else if (c === '}') {
+      depth--
+      if (depth === 0) {
+        return content.slice(start, i + 1)
+      }
+    }
+  }
+  return null
 }
 
 // Structural validator for a tailored-CV response. A well-formed
@@ -314,15 +419,27 @@ async function tryModels(
   temperature: number,
   timeoutMs: number,
   externalSignal?: AbortSignal,
-  validateResponse?: (content: string) => boolean
+  validateResponse?: (content: string) => boolean,
+  excludeModelIds?: ReadonlySet<string>
 ): Promise<CallAIResult> {
   let content: string | null = null
   let modelUsed: string | null = null
   let rateLimited = false
   const errors: string[] = []
   let validationFailures = 0
+  const attempted: string[] = []
 
   for (const model of models) {
+    // P1.5: skip models the caller asked to exclude (bounded retry on
+    // parse_failed at a higher level). Comparing on the same canonical
+    // key modelKey() uses — model.id (or base_url::model slug).
+    const key = modelKey(model)
+    if (excludeModelIds && excludeModelIds.has(key)) {
+      errors.push(`${model.name}: excluded by caller's exclude set`)
+      continue
+    }
+    attempted.push(key)
+
     // Opt-in per-request trace. Set FLOW_JOB_DEBUG_AI=1 in the shell before
     // launching the app to enable; the cost when disabled is one string
     // compare per request.
@@ -456,7 +573,7 @@ async function tryModels(
     throw new Error(`All ${models.length} configured AI models failed — ${detail}`)
   }
 
-  return { content, modelUsed, rateLimited: false, errors: [] }
+  return { content, modelUsed, rateLimited: false, errors: [], attempted }
 }
 
 /**
@@ -480,6 +597,14 @@ async function tryModels(
  * pass a validator MUST be comfortable receiving unvalidated content in
  * that race. validateResponse-on-rejection is therefore best applied
  * per call site rather than as a global guarantee.
+ *
+ * excludeModelIds (optional): canonical model keys (model.id or
+ * base_url::model) to skip in the rotation. Used by parse_failed retry
+ * to exclude the model that produced the bad output. Cannot be used
+ * with coalescing: callers that exclude models MUST not race against
+ * a different exclusion set on the same prompt+temperature+max_tokens
+ * — callAI documents this as a per-call-site guarantee, not a
+ * process-wide one.
  */
 export async function callAI(
   systemPrompt: string,
@@ -487,7 +612,8 @@ export async function callAI(
   temperature = 0.7,
   timeoutMs = 20000,
   externalSignal?: AbortSignal,
-  validateResponse?: (content: string) => boolean
+  validateResponse?: (content: string) => boolean,
+  excludeModelIds?: ReadonlySet<string>
 ): Promise<CallAIResult> {
   const models = availableModels()
   const allEligible = eligibleModels()
@@ -505,13 +631,21 @@ export async function callAI(
   const key = coalesceKey(systemPrompt, userPrompt, temperature, maxTokens)
   const existing = inFlightRequests.get(key)
   if (existing) {
-    if (process.env.FLOW_JOB_DEBUG_AI === '1') {
-      log.ai.info('[ai] coalescing duplicate request')
+    // Coalescing cannot honor per-call excludeModelIds — two concurrent
+    // callers with different exclusion sets would receive whatever the
+    // first one observed. Refuse to coalesce when the exclude set is
+    // non-empty so each retry attempt is uncontended and predictable.
+    if (excludeModelIds && excludeModelIds.size > 0) {
+      // fall through and start a fresh request
+    } else {
+      if (process.env.FLOW_JOB_DEBUG_AI === '1') {
+        log.ai.info('[ai] coalescing duplicate request')
+      }
+      return existing
     }
-    return existing
   }
 
-  const promise = tryModels(models, systemPrompt, userPrompt, temperature, timeoutMs, externalSignal, validateResponse)
+  const promise = tryModels(models, systemPrompt, userPrompt, temperature, timeoutMs, externalSignal, validateResponse, excludeModelIds)
   inFlightRequests.set(key, promise)
   promise.then(
     () => inFlightRequests.delete(key),
@@ -972,61 +1106,111 @@ ${doc.content}
 
 Evaluate how well this document is tailored for this specific job.`
 
-  let rawResponse = ''
-  try {
-    const aiResult = await callAI(systemPrompt, userPrompt, 0.3)
-    if (aiResult.content) {
-      rawResponse = aiResult.content
-      // Defensive: locate the first JSON object in the response, in case the
-      // model wraps it in prose or stray markdown. Don't blindly `JSON.parse`
-      // the whole string — that's what let malformed responses silently
-      // overwrite a previously-passing score with 0.
-      const match = rawResponse.match(/\{[\s\S]*\}/)
-      if (!match) {
-        return { kind: 'skip', reason: 'parse_failed', feedback: 'Reviewer returned a non-JSON response.' }
+  // P1.5: bounded retry on parse_failed. The user's enabled-model pool
+  // is largely rate-limited / 402 / 400 (per ai.log 09-12/13), so a
+  // single 429-d storm can knock the entire rotation offline. When
+  // parseJsonObject returns null (no balanced JSON in the response),
+  // retry on a DIFFERENT model up to 2 extra times before surfacing
+  // the skip. The first attempt is the regular callAI; retries
+  // exclude the model that produced the bad output.
+  const MAX_RETRIES = 2
+  const exclude = new Set<string>()
+  let lastRaw = ''
+  let lastModel: string | null = null
+  let lastAttempted: string[] = []
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    let aiResult
+    try {
+      aiResult = await callAI(
+        systemPrompt, userPrompt, 0.3, 20000, undefined,
+        undefined, exclude
+      )
+    } catch (err) {
+      // Rate-limit / no-config / network: surface as skip immediately.
+      // The retry budget is for parse failures, not transport
+      // failures — those are already handled by callAI's own rotation.
+      if (err instanceof RateLimitError) throw err
+      return {
+        kind: 'skip',
+        reason: 'parse_failed',
+        feedback: lastRaw
+          ? 'Could not parse the reviewer response.'
+          : 'Verification failed before the reviewer could respond.'
       }
-      const parsed = JSON.parse(match[0]) as { score?: unknown; passed?: unknown; feedback?: unknown }
+    }
+    if (!aiResult.content) {
+      return { kind: 'skip', reason: 'no_ai_response', feedback: 'No AI model responded to the verification request.' }
+    }
+    lastRaw = aiResult.content
+    lastModel = aiResult.modelUsed
+    lastAttempted = aiResult.attempted
+
+    const parsed = parseJsonObject(aiResult.content) as
+      | { score?: unknown; passed?: unknown; feedback?: unknown }
+      | null
+    if (parsed && typeof parsed === 'object') {
       const rawScore = Number(parsed.score)
-      if (!Number.isFinite(rawScore)) {
-        return { kind: 'skip', reason: 'parse_failed', feedback: 'Reviewer response was missing a numeric score.' }
+      if (Number.isFinite(rawScore)) {
+        const score = Math.max(0, Math.min(100, rawScore))
+        const llmFeedback = typeof parsed.feedback === 'string' ? parsed.feedback : ''
+        // Per-rule structural checks (one_page, paragraph_count,
+        // skills_count, keyword_coverage) — run after the LLM review.
+        // Each rule reports pass/fail with a detail string; the
+        // overall `passed` flag is the AND of the LLM's own pass and
+        // every rule check, so a structural failure can veto a high
+        // LLM score.
+        const rules: RuleCheck[] = runDocumentRuleChecks({
+          document: doc.content,
+          jobDescription: job.description || '',
+          docType
+        })
+        const allRulesPassed = rules.every((r) => r.passed)
+        const ruleSuffix = `<!-- rules:${JSON.stringify(rules)} -->`
+        const result: VerificationResult = {
+          kind: 'review',
+          score,
+          passed: !!parsed.passed && allRulesPassed,
+          feedback: `${llmFeedback}\n\n${ruleSuffix}`,
+          rules
+        }
+        updateDocumentVerification(documentId, result.score, result.feedback)
+        return result
       }
-      const score = Math.max(0, Math.min(100, rawScore))
-      const llmFeedback = typeof parsed.feedback === 'string' ? parsed.feedback : ''
-      // Per-rule structural checks (one_page, paragraph_count, skills_count,
-      // keyword_coverage) — run after the LLM review. Each rule reports
-      // pass/fail with a detail string; the overall `passed` flag is the
-      // AND of the LLM's own pass and every rule check, so a structural
-      // failure can veto a high LLM score.
-      const rules: RuleCheck[] = runDocumentRuleChecks({
-        document: doc.content,
-        jobDescription: job.description || '',
-        docType
-      })
-      const allRulesPassed = rules.every((r) => r.passed)
-      const ruleSuffix = `<!-- rules:${JSON.stringify(rules)} -->`
-      const result: VerificationResult = {
-        kind: 'review',
-        score,
-        passed: !!parsed.passed && allRulesPassed,
-        feedback: `${llmFeedback}\n\n${ruleSuffix}`,
-        rules
-      }
-      updateDocumentVerification(documentId, result.score, result.feedback)
-      return result
+      // parsed.score missing/non-numeric — treat as a parse failure
+      // and fall through to the per-attempt model-skip block below.
     }
-    return { kind: 'skip', reason: 'no_ai_response', feedback: 'No AI model responded to the verification request.' }
-  } catch (err) {
-    if (err instanceof RateLimitError) throw err
-    // Non-rate-limit failure (network, parse error, etc.) — return a skip and
-    // do NOT call updateDocumentVerification. The previous score, if any, is
-    // preserved on the document row.
-    return {
-      kind: 'skip',
-      reason: 'parse_failed',
-      feedback: rawResponse
-        ? 'Could not parse the reviewer response.'
-        : 'Verification failed before the reviewer could respond.'
+
+    // parseJsonObject returned null (no JSON object found) OR the
+    // JSON lacked a numeric score. Either way: warn-log model + a
+    // 240-char snippet (P1.5.b) so the next incident is
+    // diagnosable, then retry on a different model if budget
+    // allows.
+    const snippet = (aiResult.content || '')
+      .replace(/\s+/g, ' ')
+      .slice(0, 240)
+    log.fit.warn(
+      `[verify] ${aiResult.modelUsed ?? 'unknown model'} returned a non-parseable review response ` +
+      `(attempt ${attempt + 1} of ${MAX_RETRIES + 1}): ${snippet}`
+    )
+    if (attempt >= MAX_RETRIES) break
+    if (aiResult.attempted.length > 0) {
+      // Add every model that produced the bad response to the exclude
+      // set so the retry does not try them again. (In practice only
+      // one model produced this attempt's content, but guarding
+      // against future rotation changes.)
+      for (const k of aiResult.attempted) exclude.add(k)
     }
+  }
+
+  // Bounded retries exhausted. Surface the skip. Include the last
+  // attempted model so the user can prune it.
+  const attemptedList = lastAttempted.length > 0
+    ? ` (attempted: ${lastAttempted.join(', ')})`
+    : ''
+  return {
+    kind: 'skip',
+    reason: 'parse_failed',
+    feedback: `Reviewer returned no parseable JSON after ${MAX_RETRIES + 1} attempts on ${lastModel ?? 'unknown model'}${attemptedList}.`
   }
 }
 
@@ -1246,56 +1430,89 @@ PARSED CONTEXT (hints only — verify against the CV above):
 
 Return the JSON object now.`
 
-  try {
-    const result = await callAI(systemPrompt, userPrompt, 0.2, 20000, signal)
-    const content = result.content || ''
-    // Try to locate a JSON object in the response (defensive against stray prose)
-    const match = content.match(/\{[\s\S]*\}/)
-    if (!match) {
-      return fallbackWithError(
-        result.rateLimited
-          ? 'All AI models were rate limited.'
-          : 'Reviewer returned a non-JSON response.'
+  // P1.5: bounded retry on parse_failed (mirrors verifyDocumentContent).
+  // The user's enabled-model pool is largely rate-limited / 402 / 400
+  // (per ai.log 09-12/13); rotating to the next model on a parse
+  // failure gives a better chance of receiving a valid JSON review.
+  const MAX_RETRIES = 2
+  const exclude = new Set<string>()
+  let lastModel: string | null = null
+  let lastAttempted: string[] = []
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    let result
+    try {
+      result = await callAI(
+        systemPrompt, userPrompt, 0.2, 20000, signal,
+        undefined, exclude
       )
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown error'
+      return fallbackWithError(msg)
     }
-    const parsed = JSON.parse(match[0]) as {
+    const content = result.content || ''
+    lastModel = result.modelUsed
+    lastAttempted = result.attempted
+
+    // Robust JSON extraction (P1.5.a): fenced ```json first, then a
+    // balanced-brace scan that respects quote/escape state. The
+    // legacy regex /\{[\s\S]*\}/ would have grabbed prose + JSON
+    // and broken the parse.
+    const parsed = parseJsonObject(content) as null | {
       score?: number
       rationale?: string
       matched_skills?: unknown
       missing_skills?: unknown
       experience_years_match?: unknown
     }
-    const rawScore = Number(parsed.score)
-    if (!Number.isFinite(rawScore)) {
-      return fallbackWithError('Reviewer response was missing a numeric score.')
+    if (parsed && typeof parsed === 'object') {
+      const rawScore = Number(parsed.score)
+      if (Number.isFinite(rawScore)) {
+        const score = Math.max(0, Math.min(1, rawScore))
+        const matched = Array.isArray(parsed.matched_skills)
+          ? parsed.matched_skills.filter((s): s is string => typeof s === 'string').slice(0, 8)
+          : []
+        const missing = Array.isArray(parsed.missing_skills)
+          ? parsed.missing_skills.filter((s): s is string => typeof s === 'string').slice(0, 8)
+          : []
+        const expMatch =
+          typeof parsed.experience_years_match === 'boolean'
+            ? parsed.experience_years_match
+            : null
+        const rationale =
+          typeof parsed.rationale === 'string' && parsed.rationale.trim().length > 0
+            ? parsed.rationale.trim().slice(0, 300)
+            : `LLM score ${score.toFixed(2)}.`
+        return {
+          score,
+          rationale,
+          breakdown: {
+            matched_skills: matched,
+            missing_skills: missing,
+            experience_years_match: expMatch
+          },
+          source: 'llm'
+        }
+      }
     }
-    const score = Math.max(0, Math.min(1, rawScore))
-    const matched = Array.isArray(parsed.matched_skills)
-      ? parsed.matched_skills.filter((s): s is string => typeof s === 'string').slice(0, 8)
-      : []
-    const missing = Array.isArray(parsed.missing_skills)
-      ? parsed.missing_skills.filter((s): s is string => typeof s === 'string').slice(0, 8)
-      : []
-    const expMatch =
-      typeof parsed.experience_years_match === 'boolean'
-        ? parsed.experience_years_match
-        : null
-    const rationale =
-      typeof parsed.rationale === 'string' && parsed.rationale.trim().length > 0
-        ? parsed.rationale.trim().slice(0, 300)
-        : `LLM score ${score.toFixed(2)}.`
-    return {
-      score,
-      rationale,
-      breakdown: {
-        matched_skills: matched,
-        missing_skills: missing,
-        experience_years_match: expMatch
-      },
-      source: 'llm'
+
+    // No JSON / bad JSON / no score — warn-log model + snippet
+    // (P1.5.b) and retry on a different model.
+    const snippet = (content || '').replace(/\s+/g, ' ').slice(0, 240)
+    log.fit.warn(
+      `[fitScorer] ${result.modelUsed ?? 'unknown model'} returned a non-parseable fit response ` +
+      `(attempt ${attempt + 1} of ${MAX_RETRIES + 1}): ${snippet}`
+    )
+    if (attempt >= MAX_RETRIES) break
+    if (result.attempted.length > 0) {
+      for (const k of result.attempted) exclude.add(k)
     }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Unknown error'
-    return fallbackWithError(msg)
   }
+
+  // Bounded retries exhausted.
+  const attemptedList = lastAttempted.length > 0
+    ? ` (attempted: ${lastAttempted.join(', ')})`
+    : ''
+  return fallbackWithError(
+    `Reviewer returned no parseable JSON after ${MAX_RETRIES + 1} attempts on ${lastModel ?? 'unknown model'}${attemptedList}.`
+  )
 }
