@@ -6,7 +6,7 @@ import { join } from 'path'
 import { createStderrFilter } from './stderrFilter'
 
 const IPC_BLOCK =
-  "Error occurred in handler for 'jobs:create': Error: Job already exists: Acme — Engineer\n" +
+  "Error occurred in handler for 'jobs:create': Error: Job already exists. (Engineer @ Acme)\n" +
   '    at /path/to/main.ts:308:16\n' +
   '    at WebContents.<anonymous> (node:electron/js2c/browser_init:2:87444)\n'
 

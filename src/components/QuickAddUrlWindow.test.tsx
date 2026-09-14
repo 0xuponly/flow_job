@@ -31,7 +31,7 @@ describe('QuickAddUrlWindow', () => {
   })
 
   it('surfaces duplicate and other errors without clearing the input', async () => {
-    const onSubmit = vi.fn().mockRejectedValue(new Error('Job already exists: Acme — Engineer'))
+    const onSubmit = vi.fn().mockRejectedValue(new Error('Job already exists. (Engineer @ Acme)'))
     render(<QuickAddUrlWindow onSubmit={onSubmit} />)
 
     const input = screen.getByLabelText('Job URL')
