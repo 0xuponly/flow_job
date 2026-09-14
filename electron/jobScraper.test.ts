@@ -841,3 +841,71 @@ describe('Crypto Careers URL import after board removal', () => {
     }
   })
 })
+
+// Minimal fixture mirroring the real web3.career detail page shape:
+// title tag in "Title at Company" form, long meta description, <main>
+// wrapper, and body text that happens to contain both "Cloudflare" and
+// "challenge" — the combination that used to false-positive isChallengePage.
+const WEB3_CAREER_JOB_HTML = `<!doctype html>
+<html>
+<head>
+  <title>Web3 Customer Support Team Lead $72k - $102k Canada at Cryptio</title>
+  <meta property="og:title" content="Web3 Customer Support Team Lead $72k - $102k Canada at Cryptio">
+  <meta name="description" content="About CryptioWe’re Cryptio. We build infrastructure to bring financial integrity to the crypto economy. Our enterprise-grade back-office and data platform power mission-critical accounting, reporting, and operational workflows for institutions, corporates, and crypto-native organisations. We’re trusted by leaders like Circle, Societe Generale, Uniswap, Gemini, and the Government of El Salvador. We’ve raised $26m from top investors including Point Nine, 1kx, Tim Draper, and Ledger Cathay. The opportunity We’re hiring a Customer Support Team Lead to oversee the day-to-day operations of Cryptio’s Level 1 Support team. Knowledge of PKI infrastructure. Experience with Cloudflare Warp and the Cloudflare challenge.">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "JobPosting",
+    "title": "Customer Support Team Lead",
+    "description": "About CryptioWe’re Cryptio. We build infrastructure to bring financial integrity to the crypto economy. Our enterprise-grade back-office and data platform power mission-critical accounting, reporting, and operational workflows for institutions, corporates, and crypto-native organisations.",
+    "hiringOrganization": { "name": "Cryptio" },
+    "jobLocation": { "address": { "addressLocality": "Remote", "addressCountry": "Canada" } },
+    "datePosted": "2025-11-19"
+  }
+  </script>
+</head>
+<body>
+  <main>
+    <h1>Cryptio is hiring a Web3 Customer Support Team Lead</h1>
+    <p>Location: Canada</p>
+    <div class="job-description">
+      <p>About Cryptio...</p>
+    </div>
+  </main>
+</body>
+</html>`
+
+describe('web3.career detail URL import', () => {
+  it('does not classify a detail URL as non-job and extracts the posting', async () => {
+    const originalFetch = global.fetch
+    global.fetch = vi.fn(async () => new Response(WEB3_CAREER_JOB_HTML, { status: 200 })) as unknown as typeof fetch
+    try {
+      const result = await scrapeJobFromUrl('https://web3.career/customer-support-team-lead-cryptio/141157')
+      expect(result.title).toBe('Customer Support Team Lead')
+      expect(result.company).toBe('Cryptio')
+      expect(result.description).toContain('About Cryptio')
+      expect(result.source).toBe('Web3.career')
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+
+  it('still classifies /web3-salaries paths as non-job', async () => {
+    await expect(scrapeJobFromUrl('https://web3.career/web3-salaries/nft')).rejects.toSatisfy((err: unknown) => {
+      if (!(err instanceof ScraperClassificationError)) return false
+      return err.reason === 'non-job URL'
+    })
+  })
+})
+
+describe('isChallengePage Cloudflare+challenge handling', () => {
+  it('returns false for a rich job page that mentions Cloudflare and challenge', () => {
+    expect(isChallengePage(WEB3_CAREER_JOB_HTML)).toBe(false)
+  })
+
+  it('returns true for a tiny shell that only mentions Cloudflare and challenge', () => {
+    expect(isChallengePage('<html><body>Cloudflare challenge</body></html>')).toBe(true)
+  })
+})
+
+

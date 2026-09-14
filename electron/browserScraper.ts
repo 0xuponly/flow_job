@@ -1074,8 +1074,7 @@ export function isChallengePage(html: string): boolean {
     html.includes('cf-browser-verification') ||
     html.includes('data-cf-challenge') ||
     html.includes('cf_challenge_response') ||
-    html.includes('Cloudflare') && (html.includes('challenge') || html.includes('security check')) ||
-    html.includes('Attention Required') && html.includes('Cloudflare')
+    (html.includes('Attention Required') && html.includes('Cloudflare'))
 
   if (strongSignal) return true
 
@@ -1084,12 +1083,16 @@ export function isChallengePage(html: string): boolean {
   //   into EVERY page it serves for passive bot scoring, even non-challenge pages.
   // - 'cf-turnstile' / 'data-turnstile' / 'turnstile.render': Turnstile widgets appear
   //   on legitimate apply forms for bot protection, not challenge pages.
+  // - 'Cloudflare' + 'challenge'/'security check': can appear in real job descriptions
+  //   (e.g. a web3.career JD mentioning Cloudflare and "challenge"), so it must NOT
+  //   be a strong signal that bypasses the rich-content check.
   // These only count as challenge markers when combined with other suspicious content.
   const hasWeakSignal =
     html.includes('challenge-platform') ||
     html.includes('cf-turnstile') ||
     html.includes('data-turnstile') ||
-    html.includes('turnstile.render')
+    html.includes('turnstile.render') ||
+    (html.includes('Cloudflare') && (html.includes('challenge') || html.includes('security check')))
 
   if (hasWeakSignal) {
     // A real challenge page has the weak signal + suspicious content like
