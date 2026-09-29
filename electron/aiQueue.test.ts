@@ -44,7 +44,7 @@ vi.mock('./database', () => ({
 }))
 
 import { AUTO_REGEN_MAX, AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX } from './types'
-import { processQueue, enqueue, listQueueInPickOrder, retryQueueItem } from './aiQueue'
+import { processQueue, enqueue, listQueueInPickOrder, retryQueueItem, reclaimInterruptedItems, startQueueProcessor, stopQueueProcessor } from './aiQueue'
 import { scoreOneJobInBackground } from './fitScorer'
 import { tailorJobDocsForJob } from './tailorJobDocs'
 import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, getJob, getDocument, listDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
@@ -677,6 +677,153 @@ describe('automatic revival of capped items', () => {
     await processQueue()
 
     expect(mockedScore).toHaveBeenCalledWith(42)
+  })
+})
+
+// A row left `processing` by a killed or crashed app is invisible to
+// the processor: it only ever picked `pending`, so the task was
+// stranded forever no matter how long the app stayed running. Over a
+// long queue an interrupted item is near-certain, so this is the
+// normal path to "some jobs never finished".
+describe('reclaiming interrupted items', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('reclaims a row left processing by a previous run', () => {
+    const stuck = queueItem({ id: 7, type: 'score_fit', jobId: 42, status: 'processing', attempts: 2 })
+    mockedGetQueue.mockReturnValue([stuck])
+    reclaimInterruptedItems()
+    expect(mockedUpdate).toHaveBeenCalledWith(7, expect.objectContaining({ status: 'pending' }))
+  })
+
+  it('makes a reclaimed item due immediately rather than waiting out a backoff', () => {
+    // The interruption already cost the user the wait; re-running now
+    // is the whole point of reclaiming.
+    const before = Date.now()
+    mockedGetQueue.mockReturnValue([queueItem({ id: 7, status: 'processing' })])
+    reclaimInterruptedItems()
+    const patch = mockedUpdate.mock.calls[0][1] as { nextRetryAt: number }
+    expect(patch.nextRetryAt).toBeLessThanOrEqual(before)
+  })
+
+  it('leaves pending and failed items alone', () => {
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 1, status: 'pending' }),
+      queueItem({ id: 2, status: 'failed' })
+    ])
+    reclaimInterruptedItems()
+    expect(mockedUpdate).not.toHaveBeenCalled()
+  })
+
+  it('does not disturb a healthy empty queue', () => {
+    mockedGetQueue.mockReturnValue([])
+    reclaimInterruptedItems()
+    expect(mockedUpdate).not.toHaveBeenCalled()
+  })
+
+  it('is safe to run when nothing was interrupted', () => {
+    mockedGetQueue.mockReturnValue([queueItem({ id: 1, status: 'pending' })])
+    expect(() => reclaimInterruptedItems()).not.toThrow()
+  })
+
+  it('recovers a stuck item through a real pass', async () => {
+    mockedGetQueue.mockReturnValue([queueItem({ id: 7, type: 'score_fit', jobId: 42, status: 'processing' })])
+    mockedScore.mockResolvedValue(scoredJob({ score: 0.9 }))
+    reclaimInterruptedItems()
+    vi.mocked(updateAIQueueItem).mockClear()
+    mockedGetQueue.mockReturnValue([queueItem({ id: 7, type: 'score_fit', jobId: 42, status: 'pending' })])
+    await processQueue()
+    expect(mockedScore).toHaveBeenCalledWith(42)
+    expect(mockedRemove).toHaveBeenCalledWith(7)
+  })
+
+  it('is actually invoked at startup, not merely available', () => {
+    // The bug was never a missing reclaim function — it was a missing
+    // call site. Asserting the function in isolation would keep passing
+    // if the call were dropped from startQueueProcessor, which is
+    // exactly the regression worth guarding.
+    mockedGetQueue.mockReturnValue([queueItem({ id: 7, status: 'processing' })])
+    startQueueProcessor(60_000)
+    try {
+      expect(mockedUpdate).toHaveBeenCalledWith(7, expect.objectContaining({ status: 'pending' }))
+    } finally {
+      stopQueueProcessor()
+    }
+  })
+
+  it('preserves the spent attempt count of an interrupted item', () => {
+    // The attempt was still consumed. Resetting it would hand a task
+    // that reliably crashes an unlimited budget.
+    mockedGetQueue.mockReturnValue([queueItem({ id: 7, status: 'processing', attempts: 3 })])
+    reclaimInterruptedItems()
+    const patch = mockedUpdate.mock.calls[0][1] as { attempts?: number }
+    expect(patch.attempts).toBeUndefined()
+  })
+})
+
+// Each processor pass is a long serial await loop. If one runs longer
+// than the poll interval, setInterval starts a second pass over the
+// same store and two LLM calls end up in flight at once — the opposite
+// of the serialization the queue depends on, and a direct cause of the
+// rate limiting the backoff exists to handle.
+describe('overlapping passes', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  function liveStore(size: number) {
+    const rows = Array.from({ length: size }, (_, i) =>
+      queueItem({ id: i + 1, type: 'score_fit', jobId: i + 1, status: 'pending' })
+    )
+    let store = rows
+    vi.mocked(getAIQueue).mockImplementation(() => store)
+    vi.mocked(updateAIQueueItem).mockImplementation((id: unknown, p: Partial<AIQueueItem>) => {
+      store = store.map((r) => (r.id === id ? { ...r, ...p } : r))
+    })
+    vi.mocked(removeAIQueueItem).mockImplementation((id: unknown) => {
+      store = store.filter((r) => r.id !== id)
+    })
+    return () => store
+  }
+
+  it('does not run two LLM calls at once when a second pass is triggered', async () => {
+    const read = liveStore(4)
+    let inFlight = 0
+    let maxConcurrent = 0
+    mockedScore.mockImplementation(async () => {
+      inFlight++
+      maxConcurrent = Math.max(maxConcurrent, inFlight)
+      await new Promise((r) => setTimeout(r, 20))
+      inFlight--
+      return scoredJob({ score: 0.8 })
+    })
+
+    const first = processQueue()
+    await new Promise((r) => setTimeout(r, 5))
+    const second = processQueue()
+    await Promise.all([first, second])
+
+    expect(maxConcurrent).toBe(1)
+    // The second pass is a no-op, not a skipped item: everything is
+    // still processed exactly once.
+    expect(read()).toHaveLength(0)
+  })
+
+  it('processes every item even though one pass was suppressed', async () => {
+    liveStore(3)
+    mockedScore.mockResolvedValue(scoredJob({ score: 0.8 }))
+    await processQueue()
+    expect(mockedScore).toHaveBeenCalledTimes(3)
+  })
+
+  it('releases the guard so a later pass still runs', async () => {
+    liveStore(1)
+    mockedScore.mockResolvedValue(scoredJob({ score: 0.8 }))
+    await processQueue()
+    expect(mockedScore).toHaveBeenCalledTimes(1)
+    await processQueue()
+    expect(mockedScore).toHaveBeenCalledTimes(1)
   })
 })
 

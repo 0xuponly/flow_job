@@ -83,9 +83,12 @@ function pickOrder(items: AIQueueItem[]): AIQueueItem[] {
 }
 
 async function processItem(item: AIQueueItem): Promise<void> {
-  updateAIQueueItem(item.id, { status: 'processing' })
-
   try {
+    // Inside the try: if this write throws there is nothing useful to
+    // record for the item, and letting it escape would abort the whole
+    // pass for every other item in it.
+    updateAIQueueItem(item.id, { status: 'processing' })
+
     switch (item.type) {
       case 'generate_cv':
       case 'generate_cover_letter': {
@@ -258,8 +261,51 @@ async function processItem(item: AIQueueItem): Promise<void> {
 
 let processorTimer: ReturnType<typeof setInterval> | null = null
 
+/**
+ * Guards against overlapping passes.
+ *
+ * A pass is a serial `await` loop over every due item, so with a real
+ * backlog one pass runs far longer than the 30s poll. Without this,
+ * setInterval would start a second pass over the same store while the
+ * first was mid-flight: two items in flight at once, which is exactly
+ * what the serial design and the rate-limit backoff exist to prevent.
+ *
+ * The suppressed pass is a no-op, not a dropped pass — the next tick
+ * picks up whatever the running pass has not reached yet.
+ */
+let passInFlight = false
+
+/**
+ * Return rows abandoned mid-run by a previous process to the queue.
+ *
+ * `processItem` marks an item `processing` before doing its work, so a
+ * quit, crash or force-kill during an LLM call leaves the row
+ * `processing` in the store. The processor only ever picked `pending`,
+ * so those items were stranded permanently — no amount of leaving the
+ * app running would finish them, and nothing in the UI explained why.
+ * Over a long queue at least one interruption is close to certain, so
+ * this runs once at startup, before the first pass.
+ *
+ * `attempts` is deliberately preserved: the interrupted attempt was
+ * still spent, and resetting it would hand a repeatedly-crashing task
+ * an unlimited budget.
+ */
+export function reclaimInterruptedItems(): void {
+  for (const item of getAIQueue()) {
+    if (item.status !== 'processing') continue
+    updateAIQueueItem(item.id, {
+      status: 'pending',
+      nextRetryAt: Date.now(),
+      lastError: 'Interrupted before completion; requeued at startup.'
+    })
+  }
+}
+
 export function startQueueProcessor(intervalMs = 30000): void {
   if (processorTimer) return
+  // Before the first pass, so a row stranded by a crash is requeued
+  // rather than sitting invisible for the life of this process.
+  reclaimInterruptedItems()
   processQueue()
   processorTimer = setInterval(processQueue, intervalMs)
 }
@@ -274,6 +320,21 @@ export function stopQueueProcessor(): void {
 export { RateLimitError }
 
 export async function processQueue(): Promise<void> {
+  // A pass already running owns the store for this tick; a second
+  // concurrent pass would double LLM concurrency and race the
+  // first pass's status writes.
+  if (passInFlight) return
+  passInFlight = true
+  try {
+    await runPass()
+  } finally {
+    // Released even on throw, or one bad pass would wedge the queue
+    // for the rest of the process's life.
+    passInFlight = false
+  }
+}
+
+async function runPass(): Promise<void> {
   const queue = getAIQueue()
   const now = Date.now()
 
