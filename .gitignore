@@ -14,6 +14,16 @@ camoufox-*.tgz
 CLAUDE.md
 CODEBASE_REVIEW.md
 
+# Agent scratch space + task briefs (local-only, never commit)
+# BRIEF*.md are working documents for a single task; .hermes/ and
+# plans/ are the agent's own run state. None of it belongs in history:
+# they churn per session, and plans/ can contain transcripts or paths
+# that are not meant to be shared. Enforced by .githooks/pre-commit,
+# which is the real guard -- .gitignore only covers the default add.
+.hermes/
+plans/
+BRIEF*.md
+
 # Log files (audit, scraper, hook) — could contain user URLs and job content
 *.log
 *.log.*
