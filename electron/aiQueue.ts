@@ -1,4 +1,5 @@
 import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, getDocument, getJob, listDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
+import { log } from './logger'
 import { tailorDocument, regenerateSection, verifyDocumentContent, RateLimitError } from './ai'
 import type { AIQueueItem } from './types'
 import { AUTO_REGEN_MAX, PASSING_REVIEW_SCORE } from './types'
@@ -191,6 +192,22 @@ async function processItem(item: AIQueueItem): Promise<void> {
     const msg = err instanceof Error ? err.message : 'Unknown error'
     const isRateLimit = err instanceof RateLimitError
 
+    // Log every failure, not just the terminal one. The queue's own
+    // `lastError` is the only other record of this, and it is a single
+    // string with no stack: a bug like "X is not a function" reaching
+    // the UI with nothing in <userData>/logs made it undiagnosable
+    // after the fact. `error` keeps the stack so the next occurrence is
+    // traceable. This must not throw — logging is best-effort and the
+    // retry bookkeeping below has to proceed either way.
+    try {
+      log.ai.error(
+        `aiQueue item ${item.id} (${item.type}, job ${item.jobId}) failed on attempt ${item.attempts + 1}: ${msg}`,
+        err instanceof Error ? err.stack : undefined
+      )
+    } catch {
+      /* logging must never break the queue */
+    }
+
     const attempts = item.attempts + 1
     if (isRateLimit && attempts < 10) {
       updateAIQueueItem(item.id, {
@@ -248,6 +265,34 @@ export async function processQueue(): Promise<void> {
   for (const item of pickOrder(pending)) {
     await processItem(item)
   }
+}
+
+/**
+ * Put a failed (or otherwise stalled) item back in line for processing.
+ *
+ * `attempts` MUST be reset alongside `status` / `nextRetryAt`. The
+ * catch block in processItem gates its retry on `attempts < N`
+ * (5 for score_fit, 10 for rate limits), so an item that has already
+ * exhausted its budget would otherwise be re-run exactly once and then
+ * fail again immediately — the user's Retry would look like it worked
+ * while changing nothing. Resetting the counter is what makes Retry
+ * grant a full fresh budget rather than the single attempt the
+ * exhausted counter still allows.
+ *
+ * `lastError` is cleared so the Queue panel stops showing a stale
+ * failure for a task the user just asked to run again.
+ *
+ * Returns the queue in pick order so the caller can hand the refreshed
+ * list straight back to the renderer.
+ */
+export function retryQueueItem(id: number): AIQueueItem[] {
+  updateAIQueueItem(id, {
+    status: 'pending',
+    nextRetryAt: Date.now(),
+    attempts: 0,
+    lastError: undefined
+  })
+  return listQueueInPickOrder()
 }
 
 /**

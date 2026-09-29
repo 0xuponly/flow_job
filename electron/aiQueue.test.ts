@@ -43,7 +43,7 @@ vi.mock('./database', () => ({
   bumpDocumentAutoRegenAttempts: vi.fn(() => 1)
 }))
 
-import { processQueue, enqueue, listQueueInPickOrder } from './aiQueue'
+import { processQueue, enqueue, listQueueInPickOrder, retryQueueItem } from './aiQueue'
 import { scoreOneJobInBackground } from './fitScorer'
 import { tailorJobDocsForJob } from './tailorJobDocs'
 import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, getJob, getDocument, listDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
@@ -563,5 +563,70 @@ describe('listQueueInPickOrder (Queue panel ordering)', () => {
     mockedGetJob.mockImplementation((id) => ({ id, score: 0.1 }) as Job)
     listQueueInPickOrder()
     expect(rows.map((i) => i.id)).toEqual([2, 1])
+  })
+})
+
+// Retry has to clear `attempts`, not just the status. The catch block
+// gates retries on `attempts < N`, so an item that already burned its
+// budget would otherwise get exactly one more attempt and fail again —
+// a Retry button that looks live but changes nothing.
+describe('retryQueueItem', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('resets the attempt counter', () => {
+    mockedGetQueue.mockReturnValue([])
+    retryQueueItem(1)
+    expect(mockedUpdate).toHaveBeenCalledWith(1, expect.objectContaining({ attempts: 0 }))
+  })
+
+  it('makes the item immediately eligible again', () => {
+    const before = Date.now()
+    mockedGetQueue.mockReturnValue([])
+    retryQueueItem(1)
+    const patch = mockedUpdate.mock.calls[0][1] as { status: string; nextRetryAt: number }
+    expect(patch.status).toBe('pending')
+    expect(patch.nextRetryAt).toBeGreaterThanOrEqual(before)
+  })
+
+  it('clears the stale error so the panel stops showing a resolved failure', () => {
+    mockedGetQueue.mockReturnValue([])
+    retryQueueItem(1)
+    expect(mockedUpdate).toHaveBeenCalledWith(1, expect.objectContaining({ lastError: undefined }))
+  })
+
+  it('returns the queue in pick order', () => {
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 1, type: 'verify', jobId: 1 }),
+      queueItem({ id: 2, type: 'score_fit', jobId: 2 })
+    ])
+    mockedGetJob.mockImplementation((id) => ({ id, score: 0.5 }) as Job)
+    expect(retryQueueItem(1).map((i) => i.id)).toEqual([2, 1])
+  })
+
+  it('grants a capped score_fit item a full retry budget instead of one attempt', async () => {
+    // Regression: this is the user-visible bug. The item is at the
+    // 5-attempt cap and failed; the user clicks Retry. With `attempts`
+    // left untouched the first pass takes it to 6, the `attempts < 5`
+    // gate is false, and it lands straight back in `failed`.
+    mockedScore.mockResolvedValue({ score: null, fit_last_error: 'LLM unavailable' } as never)
+    const capped = queueItem({ id: 1, type: 'score_fit', jobId: 42, attempts: 5, status: 'failed' })
+
+    retryQueueItem(1)
+    // The retry wrote the row back as pending with a fresh budget.
+    const patch = mockedUpdate.mock.calls[0][1] as { attempts: number; status: string }
+    expect(patch).toMatchObject({ attempts: 0, status: 'pending' })
+
+    // Now run the pass the processor would run on that retried row.
+    vi.mocked(updateAIQueueItem).mockClear()
+    mockedGetQueue.mockReturnValue([{ ...capped, ...patch, nextRetryAt: 0 }])
+    await processQueue()
+
+    const after = vi.mocked(updateAIQueueItem).mock.calls.at(-1)?.[1] as { attempts: number; status: string }
+    // It retried (attempt 1 of a fresh budget) and is waiting again,
+    // rather than being marked failed on its first attempt.
+    expect(after.attempts).toBe(1)
+    expect(after.status).toBe('pending')
   })
 })

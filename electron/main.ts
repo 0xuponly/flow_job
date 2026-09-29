@@ -52,7 +52,7 @@ function stripHmac(manifest: Record<string, unknown>): Record<string, unknown> {
   return manifest
 }
 import { formatLocation } from './utils'
-import { startQueueProcessor, stopQueueProcessor, enqueue, listQueueInPickOrder } from './aiQueue'
+import { startQueueProcessor, stopQueueProcessor, enqueue, listQueueInPickOrder, retryQueueItem } from './aiQueue'
 import { scheduleNextAutoScan, cancelAutoScan, markScanStarted, markScanCompleted, restartAutoScanTimer } from './autoScan'
 import { scheduleNextFitAutoScore, restartFitAutoScoreTimer } from './fitAutoScore'
 import {
@@ -1065,10 +1065,7 @@ function registerIpc(): void {
   })
   ipcMain.handle('boards:health', () => db.getBoardHealth())
   ipcMain.handle('boards:scanEstimate', (_e, boardNames: string[]) => computeScanEstimate(boardNames))
-  ipcMain.handle('aiQueue:retry', (_e, id: number) => {
-    db.updateAIQueueItem(id, { status: 'pending', nextRetryAt: Date.now(), lastError: undefined })
-    return db.getAIQueue()
-  })
+  ipcMain.handle('aiQueue:retry', (_e, id: number) => retryQueueItem(id))
   ipcMain.handle('aiQueue:remove', (_e, id: number) => {
     db.removeAIQueueItem(id)
     return db.getAIQueue()
