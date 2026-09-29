@@ -4,6 +4,7 @@ import type { ApiModelConfig, Settings } from '../types'
 import { notify } from '../components/Notifications'
 import { LocationPicker } from '../components/LocationPicker'
 import { parseLocationPicks } from '../utils'
+import { inheritProviderApiKey } from '../apiModels'
 import Modal from '../components/Modal'
 import { BOARD_TYPES } from '../boardTypes'
 
@@ -13,8 +14,8 @@ export const PRESETS: { name: string; desc: string; model: Omit<ApiModelConfig, 
   { name: 'North Mini Code Free', desc: 'via OpenRouter (needs API key)', model: { name: 'North Mini Code', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'cohere/north-mini-code:free' } },
   { name: 'Inkling Small Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Inkling Small', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'thinkingmachines/inkling-small:free' } },
   { name: 'Laguna XS 2.1 Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Laguna XS 2.1', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'poolside/laguna-xs-2.1:free' } },
-  { name: 'Nex-N2.5 Mini Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Nex-N2.5 Mini', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'nex-agi/nex-n2.5-mini:free' } },
-  { name: 'Ling 3.0 Flash Fin Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Ling 3.0 Flash Fin', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'inclusionai/ling-3.0-flash-fin:free' } }
+  { name: 'Qwen3.8 27B Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Qwen3.8 27B', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'qwen/qwen3.8-27b:free' } },
+  { name: 'LFM2.5 2.6B Free', desc: 'via OpenRouter (needs API key)', model: { name: 'LFM2.5 2.6B', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'liquid/lfm-2.5-2.6b:free' } }
 ]
 
 type Tab = 'profile' | 'models' | 'boards' | 'companies' | 'scan' | 'data'
@@ -416,7 +417,9 @@ export default function SettingsPage() {
   }
 
   function addModel() {
-    setModels((prev) => [...prev, { id: '', ...emptyModel }])
+    // Reuse the key from a model already configured for the same provider
+    // so adding a second model doesn't mean re-pasting the same secret.
+    setModels((prev) => [...prev, inheritProviderApiKey({ id: '', ...emptyModel }, prev)])
     setModelsDirty(true)
   }
 
@@ -461,7 +464,10 @@ export default function SettingsPage() {
   }
 
   function addPreset(preset: typeof PRESETS[number]) {
-    setModels((prev) => [...prev, { id: '', ...preset.model }])
+    // Presets ship with an empty key; inherit the one the user already
+    // saved for that provider (e.g. their OpenRouter key) so the model
+    // works the moment it's added.
+    setModels((prev) => [...prev, inheritProviderApiKey({ id: '', ...preset.model }, prev)])
     setModelsDirty(true)
   }
 
