@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import SettingsPage, { PRESETS } from './SettingsPage'
+import { api } from '../api'
 
 const baseSettings = {
   openai_api_key: '',
@@ -54,7 +55,7 @@ describe('SettingsPage PRESETS', () => {
     expect(PRESETS.length).toBeLessThanOrEqual(7)
   })
 
-  it('uses only OpenRouter free models that are listed as of 2026-09-09', () => {
+  it('uses only OpenRouter free models that are currently listed', () => {
     for (const preset of PRESETS) {
       expect(preset.model.base_url).toBe('https://openrouter.ai/api/v1')
       expect(preset.model.model).toMatch(/:free$/)
@@ -79,11 +80,73 @@ describe('SettingsPage PRESETS', () => {
     expect(ids).not.toContain('north-mini-code-free')
   })
 
+  it('drops free models that have since left the OpenRouter free tier', () => {
+    const ids = PRESETS.map((p) => p.model.model)
+    expect(ids).not.toContain('nex-agi/nex-n2.5-mini:free')
+    expect(ids).not.toContain('inclusionai/ling-3.0-flash-fin:free')
+  })
+
   it('renders the Models tab without throwing', async () => {
     render(<SettingsPage />)
     fireEvent.click(await screen.findByRole('button', { name: /Models/i }))
     expect(await screen.findByText(/Presets — click to add/i)).toBeInTheDocument()
     const presetButtons = await screen.findAllByTitle(/via OpenRouter \(needs API key\)/i)
     expect(presetButtons.length).toBe(PRESETS.length)
+  })
+})
+
+describe('SettingsPage API key inheritance', () => {
+  // The model cards render one password input per configured model, in
+  // list order, so index N is the Nth model's key.
+  function keyInputs(): HTMLInputElement[] {
+    return Array.from(document.querySelectorAll('input[type="password"]'))
+  }
+
+  async function openModelsTab() {
+    render(<SettingsPage />)
+    fireEvent.click(await screen.findByRole('button', { name: /Models/i }))
+    await screen.findByText(/Presets — click to add/i)
+  }
+
+  it("fills a new preset with the key already saved for that provider", async () => {
+    vi.mocked(api.listApiModels).mockResolvedValue([
+      { id: '1', name: 'My Router Model', base_url: 'https://openrouter.ai/api/v1', api_key: 'sk-or-secret', model: 'some/other:free' }
+    ])
+    await openModelsTab()
+
+    // Click the last preset, which is not yet in the list.
+    const preset = PRESETS[PRESETS.length - 1]
+    fireEvent.click(await screen.findByText(preset.name))
+
+    const inputs = keyInputs()
+    expect(inputs).toHaveLength(2)
+    expect(inputs[1]).toHaveValue('sk-or-secret')
+  })
+
+  it('fills a new blank model with the key already saved for that provider', async () => {
+    vi.mocked(api.listApiModels).mockResolvedValue([
+      { id: '1', name: 'DeepSeek', base_url: 'https://api.deepseek.com', api_key: 'sk-ds-secret', model: 'deepseek-chat' }
+    ])
+    await openModelsTab()
+
+    fireEvent.click(screen.getByRole('button', { name: /Add blank model/i }))
+
+    const inputs = keyInputs()
+    expect(inputs).toHaveLength(2)
+    expect(inputs[1]).toHaveValue('sk-ds-secret')
+  })
+
+  it('leaves the key blank when no model for that provider exists yet', async () => {
+    vi.mocked(api.listApiModels).mockResolvedValue([
+      { id: '1', name: 'DeepSeek', base_url: 'https://api.deepseek.com', api_key: 'sk-ds-secret', model: 'deepseek-chat' }
+    ])
+    await openModelsTab()
+
+    const preset = PRESETS[PRESETS.length - 1]
+    fireEvent.click(await screen.findByText(preset.name))
+
+    const inputs = keyInputs()
+    expect(inputs).toHaveLength(2)
+    expect(inputs[1]).toHaveValue('')
   })
 })
