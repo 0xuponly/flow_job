@@ -12,7 +12,7 @@ import {
   verifyManifest,
   wrapDekWithPassphrase
 } from './backupCrypto'
-import { tailorDocument, generateFollowUpMessage, regenerateSection, verifyDocumentContent, scoreJobFit, extractJobKeywordsV3, RateLimitError, resetModelHealthByIds } from './ai'
+import { tailorDocument, generateFollowUpMessage, regenerateSection, verifyDocumentContent, scoreJobFit, extractJobKeywordsV3, RateLimitError, resetModelHealthByIds, withAiOperation } from './ai'
 import { scoreOneJobInBackground } from './fitScorer'
 import { countPdfPages } from '../src/cvOnePage'
 import { buildPdfHtml } from './pdfTemplate'
@@ -222,7 +222,7 @@ function registerIpc(): void {
     // score=null and is updated in place when the LLM call resolves
     // (or falls back to a heuristic). Errors surface as fit_last_error
     // in the row.
-    void scoreOneJobInBackground(job.id)
+    void withAiOperation(() => scoreOneJobInBackground(job.id))
     return { job, wasBlacklisted }
   })
   ipcMain.handle('jobs:update', (_e, id: number, fields: Partial<CreateJobInput & { status: JobStatus }>) =>
@@ -244,7 +244,7 @@ function registerIpc(): void {
       // returned so the renderer can prompt the user to confirm.
       const { job, wasBlacklisted } = db.createJob(input, { skipDuplicateCheck: true, force: true })
       // Fire-and-forget background fit scoring for the imported job.
-      void scoreOneJobInBackground(job.id)
+      void withAiOperation(() => scoreOneJobInBackground(job.id))
       // Notify all renderers that a job was imported so lists can refresh.
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) win.webContents.send('job:imported', job)
@@ -286,7 +286,7 @@ function registerIpc(): void {
     // heuristic-fallback (don't overwrite), the error path, and emits
     // job:scoreUpdated. The handler returns the post-update row so
     // the renderer doesn't have to re-read the store.
-    const updated = await scoreOneJobInBackground(id)
+    const updated = await withAiOperation(() => scoreOneJobInBackground(id))
     if (!updated) {
       throw new Error(`Job ${id} not found`)
     }
@@ -376,7 +376,7 @@ function registerIpc(): void {
   })
   ipcMain.handle('documents:verify', async (_e, jobId: number, documentId: number, docType: 'cv' | 'cover_letter'): Promise<VerificationResult | { queued: true }> => {
     try {
-      const result = await verifyDocumentContent(jobId, documentId, docType)
+      const result = await withAiOperation(() => verifyDocumentContent(jobId, documentId, docType))
       db.recomputeJobStatusFromDocs(jobId)
       return result
     } catch (err) {
@@ -389,7 +389,7 @@ function registerIpc(): void {
   })
   ipcMain.handle('documents:regenerateSection', async (_e, documentId: number, sectionName: string, jobId: number, extraContext?: string) => {
     try {
-      return await regenerateSection(documentId, sectionName, jobId, extraContext)
+      return await withAiOperation(() => regenerateSection(documentId, sectionName, jobId, extraContext))
     } catch (err) {
       if (err instanceof RateLimitError) {
         enqueue({ type: 'regenerate_section', jobId, documentId, sectionName, extraContext })
@@ -562,7 +562,7 @@ function registerIpc(): void {
 
   ipcMain.handle('ai:tailor', async (_e, request: TailorRequest) => {
     try {
-      return await tailorDocument(request)
+      return await withAiOperation(() => tailorDocument(request))
     } catch (err) {
       if (err instanceof RateLimitError) {
         enqueue({ type: request.document_type === 'cv' ? 'generate_cv' : 'generate_cover_letter', jobId: request.job_id })

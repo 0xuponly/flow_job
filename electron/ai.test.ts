@@ -26,7 +26,7 @@ vi.mock('./database', () => ({
 // matching the style of the `callAI failure summary` tests above.
 
 import * as database from './database'
-import { callAI, EXTRACTION_SYSTEM_PROMPT, extractJobKeywordsV3, KeywordExtractionError, RateLimitError, resetModelHealth, resetModelHealthByIds, scoreJobFit } from './ai'
+import { callAI, withAiOperation, EXTRACTION_SYSTEM_PROMPT, extractJobKeywordsV3, KeywordExtractionError, RateLimitError, resetModelHealth, resetModelHealthByIds, scoreJobFit } from './ai'
 
 beforeEach(() => {
   resetModelHealth()
@@ -1459,5 +1459,81 @@ describe('AI request serialization', () => {
     await Promise.all([callAI('sys', 'from-queue'), callAI('sys', 'from-renderer')])
     expect(state.max).toBe(1)
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2)
+  })
+})
+
+// Request-level serialization (above) still let a competing operation's
+// request slip between two requests of the same operation — so a job
+// tailoring a CV *and* a cover letter could have its second call
+// interleaved with a recompute the user kicked off. An operation now
+// holds one slot for its whole duration.
+describe('AI operation serialization', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resetModelHealth()
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 'm1', name: 'a', enabled: true, base_url: 'https://openrouter.ai', model: 'a', api_key: 'k' } as any
+    ])
+  })
+
+  function track() {
+    const state = { inFlightOps: 0, max: 0, order: [] as string[] }
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string)
+      const user = body.messages?.[1]?.content ?? ''
+      state.order.push(user)
+      await new Promise((r) => setTimeout(r, 10))
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 })
+    }))
+    return state
+  }
+
+  it('keeps a multi-request operation contiguous', async () => {
+    // THE case that separates this from request-level serialization.
+    const state = track()
+    await Promise.all([
+      withAiOperation(async () => {
+        await callAI('sys', 'a1')
+        await callAI('sys', 'a2')
+      }),
+      withAiOperation(async () => { await callAI('sys', 'b1') })
+    ])
+    // b1 must not land between a1 and a2.
+    expect(state.order).toEqual(['a1', 'a2', 'b1'])
+  })
+
+  it('runs one operation at a time', async () => {
+    const state = { max: 0, inFlight: 0 }
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      state.inFlight++
+      state.max = Math.max(state.max, state.inFlight)
+      await new Promise((r) => setTimeout(r, 10))
+      state.inFlight--
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 })
+    }))
+    await Promise.all([
+      withAiOperation(async () => { await callAI('sys', 'a'); await callAI('sys', 'b') }),
+      withAiOperation(async () => { await callAI('sys', 'c') })
+    ])
+    // Distinct prompts per operation, so coalescing does not merge them.
+    expect(state.max).toBe(1)
+  })
+
+  it('releases the slot when an operation throws', async () => {
+    await expect(
+      withAiOperation(async () => { throw new Error('operation failed') })
+    ).rejects.toThrow('operation failed')
+    // A wedged slot would hang this forever.
+    await expect(withAiOperation(async () => 'ok')).resolves.toBe('ok')
+  })
+
+  it('runs queued operations in order', async () => {
+    const state = track()
+    await Promise.all([
+      withAiOperation(async () => { await callAI('sys', 'first') }),
+      withAiOperation(async () => { await callAI('sys', 'second') }),
+      withAiOperation(async () => { await callAI('sys', 'third') })
+    ])
+    expect(state.order).toEqual(['first', 'second', 'third'])
   })
 })

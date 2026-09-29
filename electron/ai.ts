@@ -659,6 +659,39 @@ function serializeRequest<T>(fn: () => Promise<T>): Promise<T> {
   return run
 }
 
+/**
+ * One AI *operation* at a time — a whole unit of work, not one request.
+ *
+ * `serializeRequest` alone was not enough. An operation that makes
+ * several requests (tailoring a CV and a cover letter, or a retry loop)
+ * released the gate between them, so a competing operation's request
+ * landed in the middle: a document being written for one job could have
+ * another job's review interleaved with it. The provider sees one
+ * request either way, but the work itself was no longer one-at-a-time.
+ *
+ * Applied at the OUTERMOST boundary only — the queue's `processItem` and
+ * the IPC handlers that call the scorers/tailorers directly. The AI
+ * functions themselves are deliberately NOT wrapped, because
+ * `processItem` calls them: wrapping both layers would be a re-entrant
+ * acquire and would deadlock the queue on itself. Callers that are not
+ * wrapped (a scan's keyword extraction, say) still get request-level
+ * serialization from `serializeRequest`.
+ *
+ * Same chaining shape as `serializeRequest`, and for the same reason: it
+ * is FIFO, and it releases on rejection so one failed operation cannot
+ * wedge every later one for the life of the process.
+ */
+let operationChain: Promise<unknown> = Promise.resolve()
+
+export function withAiOperation<T>(fn: () => Promise<T>): Promise<T> {
+  const run = operationChain.then(fn, fn)
+  operationChain = run.then(
+    () => undefined,
+    () => undefined
+  )
+  return run
+}
+
 export async function callAI(
   systemPrompt: string,
   userPrompt: string,
