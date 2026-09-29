@@ -1369,3 +1369,95 @@ describe('P1.6 main.ts IPC wiring (models:save / models:add / models:delete)', (
     expect(mainSrc).toMatch(/resetModelHealthByIds/)
   })
 })
+
+// The app runs LLM work from two directions: the queue processor, and
+// IPC handlers that call the scorers/tailorers directly (Recompute Fit,
+// Tailor, Verify). Those are separate call sites, so a serial queue loop
+// did not stop the two from running at once — the user could kick off a
+// recompute while the queue was mid-item. Every request now passes
+// through one gate, so only one is ever in flight.
+describe('AI request serialization', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resetModelHealth()
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 'm1', name: 'a', enabled: true, base_url: 'https://openrouter.ai', model: 'a', api_key: 'k' } as any
+    ])
+    // Distinct prompts defeat callAI's identical-request coalescing, so
+    // each call is genuinely separate work.
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      await new Promise((r) => setTimeout(r, 10))
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 })
+    }))
+  })
+
+  function trackConcurrency() {
+    const state = { inFlight: 0, max: 0, order: [] as number[] }
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string)
+      state.inFlight++
+      state.max = Math.max(state.max, state.inFlight)
+      state.order.push(body.messages?.[1]?.content ?? '')
+      await new Promise((r) => setTimeout(r, 10))
+      state.inFlight--
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 })
+    }))
+    return state
+  }
+
+  it('never has more than one request in flight', async () => {
+    const state = trackConcurrency()
+    await Promise.all([
+      callAI('sys', 'a'),
+      callAI('sys', 'b'),
+      callAI('sys', 'c')
+    ])
+    expect(state.max).toBe(1)
+  })
+
+  it('still runs every queued request', async () => {
+    const state = trackConcurrency()
+    await Promise.all([callAI('sys', 'a'), callAI('sys', 'b'), callAI('sys', 'c')])
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3)
+  })
+
+  it('processes them in the order they were requested', async () => {
+    const state = trackConcurrency()
+    await Promise.all([callAI('sys', 'first'), callAI('sys', 'second'), callAI('sys', 'third')])
+    expect(state.order).toEqual(['first', 'second', 'third'])
+  })
+
+  it('does not let a failure wedge the queue for later calls', async () => {
+    // The gate must release on rejection, or one bad call would block
+    // every LLM call in the app for the rest of the session.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 500 })))
+    await expect(callAI('sys', 'boom')).rejects.toThrow()
+
+    // The 500 puts the model on cooldown, which would fail the next call
+    // for an unrelated reason. Clear it so this measures the gate, not
+    // the health tracker.
+    resetModelHealth()
+    const state = trackConcurrency()
+    await expect(callAI('sys', 'after')).resolves.toBeDefined()
+    expect(state.max).toBe(1)
+  })
+
+  it('keeps identical-request coalescing working', async () => {
+    // Coalescing returns the in-flight promise. If the gate were applied
+    // to the shared promise rather than the dispatch, this would
+    // self-deadlock.
+    const state = trackConcurrency()
+    const [x, y] = await Promise.all([callAI('sys', 'same'), callAI('sys', 'same')])
+    expect(x.content).toBe('ok')
+    expect(y.content).toBe('ok')
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1)
+    expect(state.max).toBe(1)
+  })
+
+  it('serializes concurrent queue work and a direct IPC call together', async () => {
+    const state = trackConcurrency()
+    await Promise.all([callAI('sys', 'from-queue'), callAI('sys', 'from-renderer')])
+    expect(state.max).toBe(1)
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2)
+  })
+})
