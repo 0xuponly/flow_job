@@ -495,9 +495,17 @@ export function clearQueue(): { removed: number; queue: AIQueueItem[] } {
  */
 export function enqueue(item: Omit<AIQueueItem, 'id' | 'createdAt' | 'nextRetryAt' | 'attempts' | 'status'>): AIQueueItem | null {
   const norm = (v: number | string | undefined | null): number | string | null => v ?? null
+  // Matches PENDING AND PROCESSING. `processing` is the state the
+  // processor puts an item in before its LLM call, and it is a long
+  // window — a scan finishing, the startup backlog pass, or the
+  // fit-auto-score timer can all land inside it. Guarding on `pending`
+  // alone let every one of those add a second row for work already in
+  // flight, which is how the panel came to show three score_fit entries
+  // for one job. `failed` is deliberately NOT matched: that work is not
+  // in flight, and re-queueing it is the recovery path.
   const existing = getAIQueue().find(
     (q) =>
-      q.status === 'pending' &&
+      (q.status === 'pending' || q.status === 'processing') &&
       q.type === item.type &&
       q.jobId === item.jobId &&
       norm(q.documentId) === norm(item.documentId) &&

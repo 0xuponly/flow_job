@@ -99,6 +99,7 @@ function defaultStore(): Store {
       title_casing_normalized_v2: '',
       statuses_recomputed: '',
       statuses_manual_v2: '',
+      queue_dedup_v1: '',
       backup_path: '',      backup_last_success_at: '',
       backup_last_error: '',
       passphrase: '',
@@ -2242,6 +2243,66 @@ export function updateAIQueueItem(id: number, updates: Partial<AIQueueItem>): bo
   s.ai_queue[idx] = { ...s.ai_queue[idx], ...updates }
   persistStore()
   return true
+}
+
+/**
+ * Collapse queue rows that describe the same piece of work.
+ *
+ * `enqueue()`'s duplicate guard only matched `pending`, so an enqueue
+ * landing while an identical item was mid-`processing` created a second
+ * row. Two creation paths (the startup backlog and the fit-auto-score
+ * timer) plus the processor's own retry cycle produced three `score_fit`
+ * rows for one job, which the Queue panel then showed verbatim.
+ *
+ * The guard is widened to cover `processing`, so this cannot recur — but
+ * rows already written stay written. This is the one-shot repair for
+ * them, gated on `queue_dedup_v1`.
+ *
+ * The survivor is chosen to preserve the most work: the item furthest
+ * along its retry budget wins, and `processing` beats `pending` beats
+ * `failed` at equal attempts, so a duplicate pair does not throw away an
+ * in-flight request. Nothing is merged — a single row is kept as-is and
+ * the rest are dropped, because inventing an attempt count or status
+ * for the survivor would be a guess.
+ */
+export function dedupeAIQueueItems(): { removed: number } {
+  const s = loadStore()
+  if (s.settings.queue_dedup_v1 === '1') return { removed: 0 }
+
+  const rank = (q: AIQueueItem): number =>
+    q.status === 'processing' ? 2 : q.status === 'pending' ? 1 : 0
+  const sameWork = (a: AIQueueItem, b: AIQueueItem): boolean =>
+    a.type === b.type &&
+    a.jobId === b.jobId &&
+    (a.documentId ?? null) === (b.documentId ?? null) &&
+    (a.sectionName ?? null) === (b.sectionName ?? null)
+
+  const groups = new Map<string, AIQueueItem[]>()
+  for (const q of s.ai_queue) {
+    const key = `${q.type}|${q.jobId}|${q.documentId ?? ''}|${q.sectionName ?? ''}`
+    const bucket = groups.get(key)
+    if (bucket) bucket.push(q)
+    else groups.set(key, [q])
+  }
+
+  let removed = 0
+  const keep: AIQueueItem[] = []
+  for (const bucket of groups.values()) {
+    if (bucket.length === 1) {
+      keep.push(bucket[0])
+      continue
+    }
+    const winner = [...bucket].sort(
+      (a, b) => rank(b) - rank(a) || b.attempts - a.attempts || a.id - b.id
+    )[0]
+    keep.push(winner)
+    removed += bucket.length - 1
+  }
+
+  s.ai_queue = keep
+  s.settings.queue_dedup_v1 = '1'
+  persistStore()
+  return { removed }
 }
 
 export function removeAIQueueItem(id: number): void {

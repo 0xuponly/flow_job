@@ -1156,3 +1156,56 @@ describe('listQueueInPickOrder job enrichment', () => {
     expect(mockedUpdate).not.toHaveBeenCalled()
   })
 })
+
+// The Queue panel showed three score_fit rows for the same job. Two
+// creation paths (enqueueScoreFitBacklog and the fit-auto-score timer)
+// raced the processor, and enqueue()'s duplicate guard only matched
+// `pending` — so any enqueue landing while an identical item was
+// mid-`processing` created a second row, and a third pass a third.
+describe('duplicate suppression covers in-flight work', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('refuses to duplicate an item that is processing', () => {
+    // The window the bug lived in: the processor sets `processing`
+    // before its LLM call, so a scan or startup backlog pass landing in
+    // that window saw no `pending` twin and added another row.
+    mockedGetQueue.mockReturnValue([queueItem({ type: 'score_fit', jobId: 42, status: 'processing' })])
+    expect(enqueue({ type: 'score_fit', jobId: 42 })).toBeNull()
+    expect(mockedAdd).not.toHaveBeenCalled()
+  })
+
+  it('refuses to duplicate an item that is pending', () => {
+    mockedGetQueue.mockReturnValue([queueItem({ type: 'score_fit', jobId: 42, status: 'pending' })])
+    expect(enqueue({ type: 'score_fit', jobId: 42 })).toBeNull()
+    expect(mockedAdd).not.toHaveBeenCalled()
+  })
+
+  it('still allows a genuinely new item alongside an in-flight one for another job', () => {
+    mockedGetQueue.mockReturnValue([queueItem({ type: 'score_fit', jobId: 42, status: 'processing' })])
+    expect(enqueue({ type: 'score_fit', jobId: 43 })).not.toBeNull()
+  })
+
+  it('still allows retrying a failed item to be re-queued', () => {
+    // `failed` means the work is not in flight, so re-queueing it is
+    // the recovery path, not a duplicate.
+    mockedGetQueue.mockReturnValue([queueItem({ type: 'score_fit', jobId: 42, status: 'failed' })])
+    expect(enqueue({ type: 'score_fit', jobId: 42 })).not.toBeNull()
+  })
+
+  it('does not treat two items for the same job as duplicates across types', () => {
+    mockedGetQueue.mockReturnValue([queueItem({ type: 'tailor_job_docs', jobId: 42, status: 'processing' })])
+    expect(enqueue({ type: 'verify', jobId: 42, documentId: 9 })).not.toBeNull()
+  })
+
+  it('applies the same rule to every queue type', () => {
+    const types: AIQueueItem['type'][] = [
+      'generate_cv', 'generate_cover_letter', 'verify', 'tailor_job_docs', 'score_fit'
+    ]
+    for (const type of types) {
+      mockedGetQueue.mockReturnValue([queueItem({ type, jobId: 42, status: 'processing' })])
+      expect(enqueue({ type, jobId: 42 } as never), type).toBeNull()
+    }
+  })
+})
