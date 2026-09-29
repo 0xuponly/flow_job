@@ -52,7 +52,7 @@ function stripHmac(manifest: Record<string, unknown>): Record<string, unknown> {
   return manifest
 }
 import { formatLocation } from './utils'
-import { startQueueProcessor, stopQueueProcessor, enqueue } from './aiQueue'
+import { startQueueProcessor, stopQueueProcessor, enqueue, listQueueInPickOrder, retryQueueItem, clearQueue } from './aiQueue'
 import { scheduleNextAutoScan, cancelAutoScan, markScanStarted, markScanCompleted, restartAutoScanTimer } from './autoScan'
 import { scheduleNextFitAutoScore, restartFitAutoScoreTimer } from './fitAutoScore'
 import {
@@ -1048,7 +1048,10 @@ function registerIpc(): void {
   ipcMain.handle('security:status', () => db.encryptionStatus())
 
   // AI Queue
-  ipcMain.handle('aiQueue:list', () => db.getAIQueue())
+  // Returns the queue in pick order (score_fit first, then fit DESC)
+  // rather than raw store order, so the renderer's Queue panel shows
+  // the order the processor will actually use.
+  ipcMain.handle('aiQueue:list', () => listQueueInPickOrder())
 
   ipcMain.handle('boards:list', () => {
     // Per-board enabled flag, sourced from settings.disabled_boards.
@@ -1062,14 +1065,13 @@ function registerIpc(): void {
   })
   ipcMain.handle('boards:health', () => db.getBoardHealth())
   ipcMain.handle('boards:scanEstimate', (_e, boardNames: string[]) => computeScanEstimate(boardNames))
-  ipcMain.handle('aiQueue:retry', (_e, id: number) => {
-    db.updateAIQueueItem(id, { status: 'pending', nextRetryAt: Date.now(), lastError: undefined })
-    return db.getAIQueue()
-  })
+  ipcMain.handle('aiQueue:retry', (_e, id: number) => retryQueueItem(id))
   ipcMain.handle('aiQueue:remove', (_e, id: number) => {
     db.removeAIQueueItem(id)
     return db.getAIQueue()
   })
+  // Irreversible. The renderer confirms with the user before calling.
+  ipcMain.handle('aiQueue:clear', () => clearQueue())
 
   ipcMain.handle('shell:openExternal', (_e, url: string) => {
     if (typeof url !== 'string') return

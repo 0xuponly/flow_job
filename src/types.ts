@@ -152,6 +152,11 @@ export interface Settings {
   disabled_boards: string[]
   auto_tailor_on_scan: boolean
   auto_tailor_min_fit: number
+  // P1.7 (BRIEF5 §4): fit-score threshold (0-100) at or above which a
+  // job auto-enqueues document generation + AI review once its fit
+  // score lands. Distinct from auto_tailor_min_fit, which only gates
+  // the opt-in scan-time auto-tailor.
+  auto_doc_min_fit: number
   quick_apply_shortcut: string | null
   // Optional proxy URL for the browser scraper. Format: "http://user:pass@host:port"
   // or "socks5://host:port". When empty, no proxy is used.
@@ -267,11 +272,31 @@ export interface ScanStatus {
   startedAt: number | null
 }
 
-export type AIQueueItemType = 'generate_cv' | 'generate_cover_letter' | 'regenerate_section' | 'verify'
+// Mirrors electron/types.ts. `tailor_job_docs` and `score_fit` were
+// missing here even though the main process has emitted them since
+// P1.7, which made this union a lie the queue UI could not render.
+export type AIQueueItemType = 'generate_cv' | 'generate_cover_letter' | 'regenerate_section' | 'verify' | 'tailor_job_docs' | 'score_fit'
+
+/**
+ * Mirrors AUTO_REVIVE_MAX in electron/types.ts. The renderer needs it
+ * only to decide whether a failed task still has automatic recovery
+ * left, so it can say "retrying automatically" instead of "needs
+ * attention". Kept as a literal rather than shared over IPC because
+ * duplicating one integer is cheaper than a round trip.
+ */
+export const AUTO_REVIVE_MAX = 3
 export type AIQueueItemStatus = 'pending' | 'processing' | 'failed'
 
 export interface AIQueueItem {
   id: number
+  /**
+   * Job title/company, resolved by the main process at list time rather
+   * than stored: a job can be renamed or deleted at any moment, so
+   * persisting these onto the queue row would leave the panel showing
+   * stale text. Null once the job is gone.
+   */
+  jobTitle?: string | null
+  jobCompany?: string | null
   type: AIQueueItemType
   jobId: number
   documentId?: number
@@ -280,6 +305,8 @@ export interface AIQueueItem {
   status: AIQueueItemStatus
   attempts: number
   lastError?: string
+  /** Times this item has been revived from `failed` by the auto-recovery loop. */
+  autoRevives?: number
   createdAt: number
   nextRetryAt: number
 }

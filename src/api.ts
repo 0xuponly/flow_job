@@ -97,6 +97,7 @@ export interface Api {
   getBoardHealth: () => Promise<Record<string, number[]>>
   retryAIQueueItem: (id: number) => Promise<AIQueueItem[]>
   removeAIQueueItem: (id: number) => Promise<AIQueueItem[]>
+  clearAIQueue: () => Promise<{ removed: number; queue: AIQueueItem[] }>
   listBlacklistedCompanies: () => Promise<string[]>
   addBlacklistedCompany: (name: string) => Promise<string[]>
   removeBlacklistedCompany: (name: string) => Promise<string[]>

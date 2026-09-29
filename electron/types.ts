@@ -83,6 +83,14 @@ export interface Document {
   model_used: string | null
   verification_score: number | null
   verification_feedback: string | null
+  // P1.7 (BRIEF5 §2): how many times the auto review→regenerate loop
+  // has rebuilt this document. Capped at AUTO_REGEN_MAX (5); once the
+  // cap is hit the document is flagged for manual attention — its
+  // verification_score stays < 80 and no further regeneration is
+  // auto-queued. Optional because legacy rows (and the
+  // writeDocuments/createDocument construction sites) predate the
+  // field; readers must treat undefined as 0.
+  auto_regen_attempts?: number
   created_at: string
   updated_at: string
 }
@@ -244,6 +252,12 @@ export interface Settings {
   disabled_boards: string[]
   auto_tailor_on_scan: boolean
   auto_tailor_min_fit: number
+  // P1.7 (BRIEF5 §4): fit-score threshold (0-100) at or above which a
+  // job auto-enqueues document generation + AI review. Distinct from
+  // auto_tailor_min_fit, which only gates the *scan-time* auto-tailor
+  // opt-in; this one gates the fit-landing trigger so a job added
+  // before the CV was configured still gets docs once it scores.
+  auto_doc_min_fit: number
   quick_apply_shortcut: string | null
   // One-shot gates for status migrations. 'statuses_recomputed' backfilled
   // the original doc-derived rule; 'statuses_manual_v2' demotes jobs that
@@ -362,6 +376,63 @@ export interface ScanStatus {
 export type AIQueueItemType = 'generate_cv' | 'generate_cover_letter' | 'regenerate_section' | 'verify' | 'tailor_job_docs' | 'score_fit'
 export type AIQueueItemStatus = 'pending' | 'processing' | 'failed'
 
+/**
+ * P1.7 (BRIEF5 §2): auto review→regenerate loop bounds.
+ * A document whose AI review scores below PASSING_REVIEW_SCORE is
+ * rebuilt up to AUTO_REGEN_MAX times. After the cap, the document is
+ * flagged for manual attention (its verification_score stays below the
+ * pass bar and the user regenerates by hand).
+ */
+export const PASSING_REVIEW_SCORE = 80
+export const AUTO_REGEN_MAX = 5
+
+/**
+ * P1.8: self-healing for capped queue items.
+ *
+ * A task that exhausts its retry budget used to become permanently
+ * `failed` — the processor only ever picks `status === 'pending'`, so
+ * nothing revived it and the job silently lost its fit score or its
+ * documents until the user noticed and clicked Retry by hand. That is
+ * the wrong default for failures whose cause is almost always
+ * external (quota exhausted, provider down, network blip): the right
+ * behaviour is to wait and try again on our own.
+ *
+ * `AUTO_REVIVE_COOLDOWN_MS` (4h) is deliberately far longer than the
+ * per-attempt backoff cap (30m). Backoff is for a request that might
+ * succeed on the next poll; revival is for a task that already failed
+ * its whole budget, so it waits out a real quota window rather than
+ * just the next tick. 4h covers the reset schedules the providers
+ * actually use — daily caps on Claude Pro and the per-window limits on
+ * API tiers commonly reset on a multi-hour cycle — so a task usually
+ * wakes up to a budget that has genuinely replenished rather than
+ * waking to the same exhausted quota and burning another full attempt
+ * budget against it.
+ *
+ * `AUTO_REVIVE_MAX` bounds the loop. Without it, a task that can never
+ * succeed (malformed job, permanently rejected prompt) would cycle
+ * forever and keep spending LLM calls. After this many revivals the
+ * item stays `failed` and is left for the user, which is the correct
+ * outcome for something genuinely broken. Note the interaction with the
+ * cooldown: 3 revivals at 4h apart means a task that is failing for
+ * real reasons takes up to 12h to reach its final failed state.
+ */
+export const AUTO_REVIVE_COOLDOWN_MS = 4 * 60 * 60 * 1000
+export const AUTO_REVIVE_MAX = 3
+
+/**
+ * A queue row as the Queue panel consumes it: the stored item plus the
+ * job's title and company, resolved at list time.
+ *
+ * Deliberately NOT persisted. A job can be renamed or deleted at any
+ * moment, so writing these onto the queue row would leave the panel
+ * showing stale text indefinitely. Both are null when the job is gone,
+ * and the panel falls back to the job id in that case.
+ */
+export type QueueItemView = AIQueueItem & {
+  jobTitle: string | null
+  jobCompany: string | null
+}
+
 export interface AIQueueItem {
   id: number
   type: AIQueueItemType
@@ -372,8 +443,22 @@ export interface AIQueueItem {
   status: AIQueueItemStatus
   attempts: number
   lastError?: string
+  /**
+   * How many times this item has been revived from `failed` back to
+   * `pending` by the automatic recovery loop. Absent on rows written
+   * before auto-revival existed; treat undefined as 0 so legacy rows
+   * still get a chance to recover.
+   */
+  autoRevives?: number
   createdAt: number
   nextRetryAt: number
+  // P1.7 (BRIEF5 §3): fit-score snapshot at enqueue time. This is a
+  // HINT for ordering only and is intentionally NOT the source of
+  // truth — the pick-time sort re-reads job.score so a score that
+  // lands (or changes) after this item was enqueued is reflected
+  // immediately. Storing the snapshot lets the renderer show a
+  // stable "queued at fit N" label without a second job lookup.
+  fitScoreSnapshot?: number | null
 }
 
 export interface DeletedJobRecord {

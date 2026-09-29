@@ -104,6 +104,8 @@ function defaultStore(): Store {
       passphrase: '',
       auto_tailor_on_scan: false,
       auto_tailor_min_fit: 90,
+      // P1.7 (BRIEF5 §4): fit threshold for auto document generation.
+      auto_doc_min_fit: 40,
       quick_apply_shortcut: null
     },
     api_models: [],
@@ -271,6 +273,14 @@ export function loadStore(): Store {
       // scale. The threshold is "<= 1" so the new defaults (90) and any
       // user-set value in 0-100 are untouched.
       store.settings.auto_tailor_min_fit = Math.round(store.settings.auto_tailor_min_fit * 100)
+    }
+    // P1.7 (BRIEF5 §4): backfill the auto-doc generation threshold.
+    // Same 0-1 → 0-100 normalization as auto_tailor_min_fit so a
+    // hand-edited store with the fractional scale still works.
+    if (typeof store.settings.auto_doc_min_fit !== 'number') {
+      store.settings.auto_doc_min_fit = 40
+    } else if (store.settings.auto_doc_min_fit > 0 && store.settings.auto_doc_min_fit <= 1) {
+      store.settings.auto_doc_min_fit = Math.round(store.settings.auto_doc_min_fit * 100)
     }
     if (typeof store.settings.quick_apply_shortcut !== 'string' && store.settings.quick_apply_shortcut !== null) {
       store.settings.quick_apply_shortcut = null
@@ -1108,6 +1118,33 @@ export function updateDocumentVerification(
   }
   persistStore()
   return s.documents[idx]
+}
+
+// P1.7 (BRIEF5 §2): auto review→regenerate loop bookkeeping.
+// `getDocumentAutoRegenAttempts` reads the current count for a document
+// (legacy rows without the field read as 0). `bumpDocumentAutoRegenAttempts`
+// increments it and returns the new value, so the caller can compare
+// against AUTO_REGEN_MAX to decide whether to keep looping or stop and
+// flag the document for manual attention.
+//
+// The counter lives on the document (not the queue item) because the
+// loop spans multiple queue items: generation -> verify -> regeneration
+// -> verify -> ... Each verify item is created and destroyed inside one
+// pass, so a queue-item-local counter would reset every cycle.
+export function getDocumentAutoRegenAttempts(id: number): number {
+  const s = loadStore()
+  const doc = s.documents.find((d) => d.id === id)
+  return doc?.auto_regen_attempts ?? 0
+}
+
+export function bumpDocumentAutoRegenAttempts(id: number): number {
+  const s = loadStore()
+  const idx = s.documents.findIndex((d) => d.id === id)
+  if (idx === -1) return 0
+  const next = (s.documents[idx].auto_regen_attempts ?? 0) + 1
+  s.documents[idx] = { ...s.documents[idx], auto_regen_attempts: next }
+  persistStore()
+  return next
 }
 
 // Recompute a job's status from its current documents. Called whenever
@@ -2188,18 +2225,50 @@ export function getAIQueue(): AIQueueItem[] {
   return loadStore().ai_queue ?? []
 }
 
-export function updateAIQueueItem(id: number, updates: Partial<AIQueueItem>): void {
+/**
+ * Apply a patch to one queue row.
+ *
+ * Returns whether the row was found and updated. A `false` means the
+ * item no longer exists — which the queue processor treats as "this
+ * work was cleared out from under us, stop". The return value is what
+ * makes that detectable: the write was previously a silent no-op, so a
+ * pass holding a stale snapshot would carry on issuing LLM calls for
+ * rows that were already gone.
+ */
+export function updateAIQueueItem(id: number, updates: Partial<AIQueueItem>): boolean {
   const s = loadStore()
   const idx = s.ai_queue.findIndex((q) => q.id === id)
-  if (idx === -1) return
+  if (idx === -1) return false
   s.ai_queue[idx] = { ...s.ai_queue[idx], ...updates }
   persistStore()
+  return true
 }
 
 export function removeAIQueueItem(id: number): void {
   const s = loadStore()
   s.ai_queue = s.ai_queue.filter((q) => q.id !== id)
   persistStore()
+}
+
+/**
+ * Drop every queued task, whatever its status.
+ *
+ * Deliberately unconditional: the caller is responsible for confirming
+ * with the user first, because there is no undo and a queue can hold
+ * hundreds of pending fit scores and document generations.
+ *
+ * A task that is mid-flight is not cancelled — the LLM call already in
+ * progress runs to completion, and its `removeAIQueueItem` afterwards is
+ * a no-op on a row that is no longer there. That is the safe direction
+ * to err: work already paid for still completes rather than being
+ * thrown away mid-request.
+ */
+export function clearAIQueue(): number {
+  const s = loadStore()
+  const removed = (s.ai_queue ?? []).length
+  s.ai_queue = []
+  persistStore()
+  return removed
 }
 
 /**

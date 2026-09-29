@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
-import type { AIQueueItem, Document } from '../types'
+import type { Document } from '../types'
 import { STATUS_LABELS } from '../types'
 import { notify } from '../components/Notifications'
-import Modal from '../components/Modal'
 
 const SECTION_HEADERS = new Set([
   'professional summary', 'summary', 'profile',
@@ -37,21 +36,16 @@ export default function DocumentsPage() {
   const [selectedSection, setSelectedSection] = useState('')
   const [regeneratingSection, setRegeneratingSection] = useState<string | null>(null)
   const [regenContext, setRegenContext] = useState('')
-  const [queue, setQueue] = useState<AIQueueItem[]>([])
-  const [showQueue, setShowQueue] = useState(false)
   const [bulkSelected, setBulkSelected] = useState<Set<number>>(new Set())
   const [bulkDeleting, setBulkDeleting] = useState(false)
 
   useEffect(() => {
     load()
-    loadQueue()
-    const interval = setInterval(loadQueue, 10000)
-    return () => clearInterval(interval)
   }, [])
 
-  // Sidebar refresh button: re-fetch docs and queue
+  // Sidebar refresh button: re-fetch docs
   useEffect(() => {
-    const onRefresh = () => { load(); loadQueue() }
+    const onRefresh = () => { load() }
     window.addEventListener('app:refresh', onRefresh)
     return () => window.removeEventListener('app:refresh', onRefresh)
   }, [])
@@ -62,38 +56,6 @@ export default function DocumentsPage() {
     if (docs.length > 0 && !selected) {
       selectDoc(docs[0])
     }
-  }
-
-  async function loadQueue() {
-    setQueue(await api.listAIQueue())
-  }
-
-  async function handleRetry(id: number) {
-    setQueue(await api.retryAIQueueItem(id))
-    notify('Queued task retried.', 'info')
-  }
-
-  async function handleRemoveQueue(id: number) {
-    setQueue(await api.removeAIQueueItem(id))
-  }
-
-  function queueLabel(item: AIQueueItem): string {
-    switch (item.type) {
-      case 'generate_cv': return 'Generate CV'
-      case 'generate_cover_letter': return 'Generate Cover Letter'
-      case 'regenerate_section': return `Regenerate section: ${item.sectionName}`
-      case 'verify': return 'Verify document'
-    }
-  }
-
-  function queueStatusText(item: AIQueueItem): string {
-    if (item.status === 'processing') return 'Processing…'
-    if (item.status === 'failed') return `Failed (${item.attempts} attempts)`
-    if (item.attempts > 0) {
-      const wait = Math.max(0, Math.ceil((item.nextRetryAt - Date.now()) / 1000))
-      return `Retry in ${wait}s (attempt ${item.attempts})`
-    }
-    return 'Pending'
   }
 
   function selectDoc(doc: Document) {
@@ -243,42 +205,6 @@ export default function DocumentsPage() {
         <h1>Documents</h1>
         <p>View and edit tailored CVs and cover letters</p>
       </div>
-
-      {queue.length > 0 && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '6px 16px', maxWidth: 800, marginBottom: 16, background: 'var(--bg-secondary)', borderRadius: 8, fontSize: 13 }}>
-          <span style={{ color: 'var(--text-muted)' }}>
-            {queue.length} task{queue.length > 1 ? 's' : ''} queued
-          </span>
-          <button className="btn btn-secondary btn-sm" onClick={() => setShowQueue(true)}>View queue</button>
-        </div>
-      )}
-
-      <Modal open={showQueue} title="AI Queue" onClose={() => setShowQueue(false)}>
-        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
-          Rate-limited requests are automatically retried with backoff. Tasks persist across app restarts.
-        </p>
-        {queue.length === 0 ? (
-          <p style={{ fontSize: 13, color: 'var(--text-muted)', fontStyle: 'italic' }}>No tasks queued.</p>
-        ) : (
-          queue.map((item) => (
-            <div key={item.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 500 }}>{queueLabel(item)}</div>
-                <div style={{ fontSize: 11, color: item.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)' }}>
-                  {queueStatusText(item)}
-                  {item.lastError && item.status === 'failed' && ` — ${item.lastError.slice(0, 80)}`}
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                {item.status === 'failed' && (
-                  <button className="btn btn-primary btn-sm" onClick={() => handleRetry(item.id)}>Retry</button>
-                )}
-                <button className="btn btn-secondary btn-sm" onClick={() => handleRemoveQueue(item.id)}>Remove</button>
-              </div>
-            </div>
-          ))
-        )}
-      </Modal>
 
       {documents.length === 0 ? (
         <div className="empty-state">
