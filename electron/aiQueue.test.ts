@@ -975,6 +975,10 @@ describe('clearQueue', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockedClear.mockReturnValue(3)
+    // Own store: mock implementations survive vi.clearAllMocks(), so
+    // without this these cases inherit whatever the previous test left
+    // behind and assert on rows they did not set up.
+    mockedGetQueue.mockReturnValue([])
   })
 
   it('delegates the delete to the store exactly once', () => {
@@ -1093,5 +1097,62 @@ describe('clearing while a pass is mid-flight', () => {
     expect(fired).toBe(true)
     expect(mockedAdd).not.toHaveBeenCalled()
     expect(read()).toHaveLength(0)
+  })
+})
+
+// The Queue panel shows "{title} - {company}" so a task is traceable
+// without hunting for a job id. A deleted job has no title, so the
+// enrichment has to tolerate getJob returning null rather than render
+// "null - null".
+describe('listQueueInPickOrder job enrichment', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockedGetJob.mockImplementation((id: number) =>
+      ({ id, score: 0.5, title: `Engineer ${id}`, company: `Acme ${id}` }) as Job
+    )
+  })
+
+  it('attaches the job title and company to each item', () => {
+    mockedGetQueue.mockReturnValue([queueItem({ id: 1, jobId: 42 })])
+    const [row] = listQueueInPickOrder()
+    expect(row.jobTitle).toBe('Engineer 42')
+    expect(row.jobCompany).toBe('Acme 42')
+  })
+
+  it('leaves the fields null for a deleted job', () => {
+    mockedGetJob.mockImplementation((id: number) =>
+      (id === 42 ? null : ({ id, score: 0.5, title: 'x', company: 'y' }) as Job)
+    )
+    mockedGetQueue.mockReturnValue([queueItem({ id: 1, jobId: 42 })])
+    const [row] = listQueueInPickOrder()
+    expect(row.jobTitle).toBeNull()
+    expect(row.jobCompany).toBeNull()
+  })
+
+  it('enriches every item, not just the first', () => {
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 1, jobId: 1 }),
+      queueItem({ id: 2, jobId: 2 })
+    ])
+    expect(listQueueInPickOrder().map((r) => r.jobTitle)).toEqual(['Engineer 1', 'Engineer 2'])
+  })
+
+  it('still orders by the same rules after enrichment', () => {
+    mockedGetJob.mockImplementation((id: number) =>
+      ({ id, score: id === 1 ? 0.9 : 0.2, title: `T${id}`, company: `C${id}` }) as Job
+    )
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 1, jobId: 1, type: 'verify' }),
+      queueItem({ id: 2, jobId: 2, type: 'verify' })
+    ])
+    expect(listQueueInPickOrder().map((r) => r.id)).toEqual([1, 2])
+  })
+
+  it('does not persist the display fields into the store', () => {
+    mockedGetQueue.mockReturnValue([queueItem({ id: 1, jobId: 42 })])
+    listQueueInPickOrder()
+    // Enrichment is a read-time view. Writing title/company onto the row
+    // would stale them the moment a job is renamed.
+    expect(mockedUpdate).not.toHaveBeenCalled()
   })
 })

@@ -289,6 +289,14 @@ export type AIQueueItemStatus = 'pending' | 'processing' | 'failed'
 
 export interface AIQueueItem {
   id: number
+  /**
+   * Job title/company, resolved by the main process at list time rather
+   * than stored: a job can be renamed or deleted at any moment, so
+   * persisting these onto the queue row would leave the panel showing
+   * stale text. Null once the job is gone.
+   */
+  jobTitle?: string | null
+  jobCompany?: string | null
   type: AIQueueItemType
   jobId: number
   documentId?: number

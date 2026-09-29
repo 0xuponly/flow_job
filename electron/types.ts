@@ -419,6 +419,20 @@ export const AUTO_REGEN_MAX = 5
 export const AUTO_REVIVE_COOLDOWN_MS = 4 * 60 * 60 * 1000
 export const AUTO_REVIVE_MAX = 3
 
+/**
+ * A queue row as the Queue panel consumes it: the stored item plus the
+ * job's title and company, resolved at list time.
+ *
+ * Deliberately NOT persisted. A job can be renamed or deleted at any
+ * moment, so writing these onto the queue row would leave the panel
+ * showing stale text indefinitely. Both are null when the job is gone,
+ * and the panel falls back to the job id in that case.
+ */
+export type QueueItemView = AIQueueItem & {
+  jobTitle: string | null
+  jobCompany: string | null
+}
+
 export interface AIQueueItem {
   id: number
   type: AIQueueItemType

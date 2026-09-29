@@ -1,7 +1,7 @@
 import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, clearAIQueue, getDocument, getJob, listDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
 import { log } from './logger'
 import { tailorDocument, regenerateSection, verifyDocumentContent, RateLimitError } from './ai'
-import type { AIQueueItem } from './types'
+import type { AIQueueItem, Job, QueueItemView } from './types'
 import { AUTO_REGEN_MAX, AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX, PASSING_REVIEW_SCORE } from './types'
 
 function backoffMs(item: AIQueueItem): number {
@@ -39,21 +39,38 @@ function priorityTier(type: AIQueueItem['type']): number {
 }
 
 /**
- * The full queue in the order the processor will actually pick it.
+ * The full queue in the order the processor will actually pick it,
+ * with each row carrying the job's title and company for display.
  *
- * The renderer's Queue panel displays this so the user sees the true
- * upcoming order rather than raw store order — a high-fit generation
- * item is picked ahead of a lower-fit one, and every `score_fit` item
- * is picked first. Reuses `pickOrder` instead of re-deriving the sort
- * in the renderer, so the displayed order cannot drift from the
- * executed order.
+ * `jobTitle` / `jobCompany` are a read-time view, not stored state: a
+ * job can be renamed or deleted at any time, so persisting them onto
+ * the queue row would leave the panel showing stale text forever. They
+ * are resolved here, on every list, and are null for a deleted job.
+ *
+ * Returns pick order (score_fit first, then fit DESC) so the renderer's
+ * Queue panel shows the true upcoming order rather than raw store
+ * order — a high-fit generation item is picked ahead of a lower-fit
+ * one, and in store order it would sit wherever it was enqueued.
+ * Reuses `pickOrder` rather than re-deriving the sort in the renderer,
+ * so the displayed order cannot drift from the executed order.
  *
  * Unlike `processQueue` this does not mutate any item's status: it is
  * a read-only view for display. Ordering re-reads `job.score` on each
  * call, so a fit that lands between polls is reflected on the next one.
  */
-export function listQueueInPickOrder(): AIQueueItem[] {
-  return pickOrder(getAIQueue())
+export function listQueueInPickOrder(): QueueItemView[] {
+  const rows = pickOrder(getAIQueue())
+  // One job lookup per distinct job, shared across the rows that
+  // reference it (a generation item and its review items routinely do).
+  const jobs = new Map<number, Job | null>()
+  const jobFor = (jobId: number): Job | null => {
+    if (!jobs.has(jobId)) jobs.set(jobId, getJob(jobId))
+    return jobs.get(jobId) ?? null
+  }
+  return rows.map((item) => {
+    const job = jobFor(item.jobId)
+    return { ...item, jobTitle: job?.title ?? null, jobCompany: job?.company ?? null }
+  })
 }
 
 function pickOrder(items: AIQueueItem[]): AIQueueItem[] {
@@ -435,7 +452,7 @@ function reviveInMemory(item: AIQueueItem): AIQueueItem {
  * Returns the queue in pick order so the caller can hand the refreshed
  * list straight back to the renderer.
  */
-export function retryQueueItem(id: number): AIQueueItem[] {
+export function retryQueueItem(id: number): QueueItemView[] {
   updateAIQueueItem(id, {
     status: 'pending',
     nextRetryAt: Date.now(),

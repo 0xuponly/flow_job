@@ -194,12 +194,7 @@ export default function NotificationDrawer() {
                   background: 'transparent',
                   border: '1px solid var(--border)',
                   borderRadius: 6,
-                  // var(--text), not var(--danger): --danger is not
-                  // overridden in the light theme, so #ef4444 on the
-                  // light --bg lands at ~3.3:1 and fails WCAG AA for
-                  // 12px text. The sibling "Dismiss all" button has the
-                  // same constraint and uses --text for this reason.
-                  color: queue.length === 0 ? 'var(--text-muted)' : 'var(--text)',
+                  color: queue.length === 0 ? 'var(--text-muted)' : 'var(--danger)',
                   padding: '4px 10px',
                   cursor: queue.length === 0 || clearing ? 'not-allowed' : 'pointer',
                   fontSize: 12,

@@ -566,3 +566,119 @@ describe('Clear queue', () => {
     })
   })
 })
+
+describe('QueuePanel job labelling', () => {
+  beforeEach(() => {
+    mockApi.listAIQueue.mockResolvedValue([])
+  })
+
+  it('shows the job title and company instead of a bare id', async () => {
+    mockApi.listAIQueue.mockResolvedValue([
+      { ...item({ id: 1, type: 'score_fit', jobId: 42 }), jobTitle: 'Senior Engineer', jobCompany: 'Acme' }
+    ])
+    await openDrawer()
+    await showQueueTab()
+    expect(await screen.findByText('Senior Engineer - Acme')).toBeInTheDocument()
+    expect(screen.queryByText(/Job 42/)).not.toBeInTheDocument()
+  })
+
+  it('falls back to the job id when the job has been deleted', async () => {
+    mockApi.listAIQueue.mockResolvedValue([
+      { ...item({ id: 1, type: 'score_fit', jobId: 42 }), jobTitle: null, jobCompany: null }
+    ])
+    await openDrawer()
+    await showQueueTab()
+    expect(await screen.findByText(/Job 42/)).toBeInTheDocument()
+  })
+
+  it('falls back to the id when the job exists but has no title', async () => {
+    mockApi.listAIQueue.mockResolvedValue([
+      { ...item({ id: 1, jobId: 42 }), jobTitle: '', jobCompany: '' }
+    ])
+    await openDrawer()
+    await showQueueTab()
+    expect(await screen.findByText(/Job 42/)).toBeInTheDocument()
+  })
+})
+
+describe('QueuePanel windowed rendering', () => {
+  const many = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      ...item({ id: i + 1, type: 'verify' as const, jobId: i + 1 }),
+      jobTitle: `Role ${i + 1}`,
+      jobCompany: `Co ${i + 1}`
+    }))
+
+  beforeEach(() => {
+    mockApi.listAIQueue.mockResolvedValue([])
+  })
+
+  it('does not put hundreds of rows in the DOM at once', async () => {
+    // 880 rows re-render on every 10s poll; a full list teardown and
+    // rebuild on the main thread is what made the panel janky.
+    mockApi.listAIQueue.mockResolvedValue(many(880))
+    await openDrawer()
+    await showQueueTab()
+    await screen.findByText('Role 1 - Co 1')
+    const rendered = screen.getAllByTestId('queue-task')
+    expect(rendered.length).toBeLessThan(200)
+    expect(rendered.length).toBeGreaterThan(0)
+  })
+
+  it('says how many tasks are not on screen yet', async () => {
+    mockApi.listAIQueue.mockResolvedValue(many(880))
+    await openDrawer()
+    await showQueueTab()
+    expect(await screen.findByText(/show 8\d\d more/i)).toBeInTheDocument()
+  })
+
+  it('reveals the next page when asked', async () => {
+    mockApi.listAIQueue.mockResolvedValue(many(880))
+    await openDrawer()
+    await showQueueTab()
+    await screen.findByText('Role 1 - Co 1')
+    const before = screen.getAllByTestId('queue-task').length
+    fireEvent.click(await screen.findByRole('button', { name: /show \d+ more/i }))
+    const after = screen.getAllByTestId('queue-task').length
+    expect(after).toBeGreaterThan(before)
+  })
+
+  it('reaches the last row after paging through', async () => {
+    // 150 rather than 880: this asserts the paging reaches the end, and
+    // mounting 880 rows in jsdom costs ~14s on its own.
+    mockApi.listAIQueue.mockResolvedValue(many(150))
+    await openDrawer()
+    await showQueueTab()
+    await screen.findByText('Role 1 - Co 1')
+    for (let i = 0; i < 10; i++) {
+      const btn = screen.queryByRole('button', { name: /show \d+ more/i })
+      if (!btn) break
+      fireEvent.click(btn)
+    }
+    expect(await screen.findByText('Role 150 - Co 150')).toBeInTheDocument()
+  })
+
+  it('offers no paging control when everything fits', async () => {
+    mockApi.listAIQueue.mockResolvedValue(many(3))
+    await openDrawer()
+    await showQueueTab()
+    expect(screen.queryByRole('button', { name: /show \d+ more/i })).not.toBeInTheDocument()
+  })
+
+  it('collapses the window back down when the queue shrinks', async () => {
+    mockApi.listAIQueue.mockResolvedValue(many(880))
+    await openDrawer()
+    await showQueueTab()
+    await screen.findByText('Role 1 - Co 1')
+    fireEvent.click(await screen.findByRole('button', { name: /show \d+ more/i }))
+    expect(screen.getAllByTestId('queue-task').length).toBeGreaterThan(60)
+
+    // Switching away and back re-fetches; the store now has 3 items.
+    mockApi.listAIQueue.mockResolvedValue(many(3))
+    fireEvent.click(screen.getByRole('tab', { name: /notifications/i }))
+    fireEvent.click(screen.getByRole('tab', { name: /queue/i }))
+    expect(await screen.findByText('Role 3 - Co 3')).toBeInTheDocument()
+    // And the paging control is gone, since everything now fits.
+    expect(screen.queryByRole('button', { name: /show \d+ more/i })).not.toBeInTheDocument()
+  })
+})
