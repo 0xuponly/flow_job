@@ -149,4 +149,20 @@ describe('SettingsPage API key inheritance', () => {
     expect(inputs).toHaveLength(2)
     expect(inputs[1]).toHaveValue('')
   })
+
+  it('fills the key when the saved model uses a different spelling of the same provider URL', async () => {
+    // Regression: the user's own config typed the OpenRouter path without
+    // `/v1`, so exact-string matching never found the sibling key.
+    vi.mocked(api.listApiModels).mockResolvedValue([
+      { id: '1', name: 'My Router Model', base_url: 'https://openrouter.ai/api', api_key: 'sk-or-secret', model: 'some/other:free' }
+    ])
+    await openModelsTab()
+
+    const preset = PRESETS[PRESETS.length - 1]
+    fireEvent.click(await screen.findByText(preset.name))
+
+    const inputs = keyInputs()
+    expect(inputs).toHaveLength(2)
+    expect(inputs[1]).toHaveValue('sk-or-secret')
+  })
 })

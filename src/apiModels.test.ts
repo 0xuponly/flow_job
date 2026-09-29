@@ -67,4 +67,51 @@ describe('inheritProviderApiKey', () => {
       model: 'big-pickle'
     })
   })
+
+  describe('tolerates different spellings of the same provider URL', () => {
+    it('inherits when the path differs but the host matches', () => {
+      const existing = [model({ base_url: 'https://openrouter.ai/api', api_key: 'sk-or-secret' })]
+      const incoming = model({ id: '', base_url: ROUTER })
+      expect(inheritProviderApiKey(incoming, existing).api_key).toBe('sk-or-secret')
+    })
+
+    it('inherits when the existing URL is the one with the longer path', () => {
+      const existing = [model({ base_url: ROUTER, api_key: 'sk-or-secret' })]
+      const incoming = model({ id: '', base_url: 'https://openrouter.ai/api' })
+      expect(inheritProviderApiKey(incoming, existing).api_key).toBe('sk-or-secret')
+    })
+
+    it('inherits when the host differs only in case', () => {
+      const existing = [model({ base_url: 'https://OpenRouter.ai/api/v1', api_key: 'sk-or-secret' })]
+      const incoming = model({ id: '', base_url: ROUTER })
+      expect(inheritProviderApiKey(incoming, existing).api_key).toBe('sk-or-secret')
+    })
+
+    it('inherits when a default port is written out explicitly', () => {
+      const existing = [model({ base_url: 'https://openrouter.ai:443/api/v1', api_key: 'sk-or-secret' })]
+      const incoming = model({ id: '', base_url: ROUTER })
+      expect(inheritProviderApiKey(incoming, existing).api_key).toBe('sk-or-secret')
+    })
+
+    it('does not inherit across different hosts on the same path', () => {
+      const existing = [model({ base_url: 'https://evil.example.com/api/v1', api_key: 'sk-other' })]
+      const incoming = model({ id: '', base_url: ROUTER })
+      expect(inheritProviderApiKey(incoming, existing).api_key).toBe('')
+    })
+
+    it('does not inherit across different ports on the same host', () => {
+      const existing = [model({ base_url: 'https://openrouter.ai:8443/api/v1', api_key: 'sk-other' })]
+      const incoming = model({ id: '', base_url: ROUTER })
+      expect(inheritProviderApiKey(incoming, existing).api_key).toBe('')
+    })
+
+    it('prefers an exact URL match over a looser same-host match', () => {
+      const existing = [
+        model({ id: 'a', base_url: 'https://openrouter.ai/api', api_key: 'sk-loose' }),
+        model({ id: 'b', base_url: ROUTER, api_key: 'sk-exact' })
+      ]
+      const incoming = model({ id: '', base_url: ROUTER })
+      expect(inheritProviderApiKey(incoming, existing).api_key).toBe('sk-exact')
+    })
+  })
 })
