@@ -637,6 +637,28 @@ async function tryModels(
  * — callAI documents this as a per-call-site guarantee, not a
  * process-wide one.
  */
+/**
+ * One LLM request at a time, app-wide.
+ *
+ * Callers enqueue by chaining onto `requestChain`; each waits for its
+ * turn and hands the chain to the next. Two properties matter and both
+ * come from chaining on the settled (not the raw) promise:
+ *
+ *   - FIFO, so requests go out in the order work was requested.
+ *   - releases on rejection, so a failed or throwing call does not
+ *     block every later call for the life of the process.
+ */
+let requestChain: Promise<unknown> = Promise.resolve()
+
+function serializeRequest<T>(fn: () => Promise<T>): Promise<T> {
+  const run = requestChain.then(fn, fn)
+  requestChain = run.then(
+    () => undefined,
+    () => undefined
+  )
+  return run
+}
+
 export async function callAI(
   systemPrompt: string,
   userPrompt: string,
@@ -676,7 +698,20 @@ export async function callAI(
     }
   }
 
-  const promise = tryModels(models, systemPrompt, userPrompt, temperature, timeoutMs, externalSignal, validateResponse, excludeModelIds)
+  // Every real request passes through one gate, so exactly one is ever
+  // in flight app-wide. The queue processor is already serial, but five
+  // IPC handlers call the scorers/tailorers directly (Recompute Fit,
+  // Tailor, Verify), and those used to run alongside a queue item — two
+  // concurrent requests against the same provider, which is the last
+  // thing that helps when the provider is already rate limiting.
+  //
+  // A promise chain, not a counter: it is FIFO by construction and it
+  // releases on rejection, so one failed call cannot wedge every later
+  // call for the rest of the session. Coalescing is unaffected — that
+  // returns the already-in-flight promise above and never enters here.
+  const promise = serializeRequest(() =>
+    tryModels(models, systemPrompt, userPrompt, temperature, timeoutMs, externalSignal, validateResponse, excludeModelIds)
+  )
   inFlightRequests.set(key, promise)
   promise.then(
     () => inFlightRequests.delete(key),
