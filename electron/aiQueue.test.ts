@@ -45,6 +45,7 @@ vi.mock('./database', () => ({
 }))
 
 import { AUTO_REGEN_MAX, AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX } from './types'
+import { withAiOperation } from './ai'
 import { processQueue, enqueue, listQueueInPickOrder, retryQueueItem, clearQueue, reclaimInterruptedItems, startQueueProcessor, stopQueueProcessor } from './aiQueue'
 import { scoreOneJobInBackground } from './fitScorer'
 import { tailorJobDocsForJob } from './tailorJobDocs'
@@ -1207,5 +1208,88 @@ describe('duplicate suppression covers in-flight work', () => {
       mockedGetQueue.mockReturnValue([queueItem({ type, jobId: 42, status: 'processing' })])
       expect(enqueue({ type, jobId: 42 } as never), type).toBeNull()
     }
+  })
+})
+
+// A queue item and a direct renderer action (Recompute Fit / Tailor /
+// Verify) are separate entry points into the same AI layer. Each must
+// hold the AI slot for its WHOLE duration, so an item that makes several
+// requests cannot have a competing action interleaved with it.
+describe('queue items hold the AI operation slot', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // mockReset, not mockReturnValue: earlier blocks install their own
+    // updateAIQueueItem implementations (vi.clearAllMocks does not remove
+    // those), and a leaked one reports "row not found" for an id it does
+    // not know about, which makes processItem bail before doing any work.
+    mockedUpdate.mockReset().mockReturnValue(true)
+  })
+
+  it('does not interleave a direct operation with a multi-request queue item', async () => {
+    const order: string[] = []
+    // generate_cv and generate_cover_letter are two items, but a job's
+    // tailor_job_docs enqueues both; simulate the item making two
+    // sequential calls the way tailorJobDocsForJob does.
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 1, type: 'generate_cv', jobId: 1, status: 'pending' })
+    ] as never)
+    mockedTailor.mockImplementation(async ({ document_type }: { document_type: string }) => {
+      order.push(`queue-${document_type}`)
+      await new Promise((r) => setTimeout(r, 10))
+      return { content: 'x', document_id: 1 } as never
+    })
+
+    const competing = withAiOperation(async () => {
+      order.push('direct-begin')
+      await new Promise((r) => setTimeout(r, 30))
+      order.push('direct-end')
+    })
+
+    await processQueue()
+    await competing
+
+    // The competing operation must be entirely before or entirely after
+    // the queue item's work, never inside it.
+    const directAt = order.indexOf('direct-begin')
+    const queueAt = order.findIndex((o) => o.startsWith('queue-'))
+    expect(directAt === -1 || queueAt === -1 || directAt < queueAt || directAt > queueAt).toBe(true)
+  })
+
+  it('completes a queue item without deadlocking on the slot', async () => {
+    // Regression guard: processItem calls the AI functions that the IPC
+    // handlers also call. If both layers were wrapped in the same
+    // non-reentrant gate, the queue would wait on a slot it already
+    // holds and never return.
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 1, type: 'score_fit', jobId: 42, status: 'pending' })
+    ] as never)
+    mockedScore.mockResolvedValue({ score: 0.9 } as never)
+    await processQueue()
+    expect(mockedScore).toHaveBeenCalledWith(42, expect.any(Function))
+    // id: 1 in the fixture above, so the row removed is 1.
+    expect(mockedRemove).toHaveBeenCalledWith(1)
+  })
+
+  it('lets a queued direct operation run after the item releases the slot', async () => {
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 1, type: 'score_fit', jobId: 42, status: 'pending' })
+    ] as never)
+    let releaseScore!: () => void
+    mockedScore.mockImplementation(async () => {
+      await new Promise<void>((r) => { releaseScore = r })
+      return { score: 0.9 } as never
+    })
+
+    const pass = processQueue()
+    await new Promise((r) => setTimeout(r, 5))
+    let directRan = false
+    const direct = withAiOperation(async () => { directRan = true })
+    await new Promise((r) => setTimeout(r, 5))
+    // Still blocked: the queue item owns the slot.
+    expect(directRan).toBe(false)
+    releaseScore()
+    await pass
+    await direct
+    expect(directRan).toBe(true)
   })
 })

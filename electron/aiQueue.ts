@@ -1,5 +1,6 @@
 import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, clearAIQueue, getDocument, getJob, listDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
 import { log } from './logger'
+import { withAiOperation } from './ai'
 import { tailorDocument, regenerateSection, verifyDocumentContent, RateLimitError } from './ai'
 import type { AIQueueItem, Job, QueueItemView } from './types'
 import { AUTO_REGEN_MAX, AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX, PASSING_REVIEW_SCORE } from './types'
@@ -111,7 +112,14 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
     // the item enqueue its follow-up work back into the cleared queue.
     if (!updateAIQueueItem(item.id, { status: 'processing' })) return
 
-    switch (item.type) {
+    // One queue item is one operation and holds the AI slot for its
+    // whole duration, so it cannot interleave with a direct renderer
+    // action (Recompute Fit / Tailor / Verify) part-way through. The
+    // `switch` body is left ungated deliberately: processItem calls the
+    // AI functions that the IPC handlers also call, and wrapping both
+    // layers would deadlock on a re-entrant acquire.
+    await withAiOperation(async () => {
+      switch (item.type) {
       case 'generate_cv':
       case 'generate_cover_letter': {
         const docType = item.type === 'generate_cv' ? 'cv' : 'cover_letter'
@@ -220,7 +228,8 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
         }
         break
       }
-    }
+      }
+    })
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error'
     const isRateLimit = err instanceof RateLimitError
