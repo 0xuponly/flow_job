@@ -1,12 +1,66 @@
-import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, getDocument } from './database'
+import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, getDocument, getJob, listDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
 import { tailorDocument, regenerateSection, verifyDocumentContent, RateLimitError } from './ai'
 import type { AIQueueItem } from './types'
+import { AUTO_REGEN_MAX, PASSING_REVIEW_SCORE } from './types'
 
 function backoffMs(item: AIQueueItem): number {
-  // exponential backoff: 30s, 60s, 2m, 4m, 8m, 16m, 30m cap
+  // exponential backoff: 30s, 60s, 2m, 4m, 8m, 16s, 30m cap
   const base = 30000
   const max = 1800000
   return Math.min(base * Math.pow(2, item.attempts), max)
+}
+
+/**
+ * P1.7 (BRIEF5 §3): pick-time priority key.
+ *
+ * Two tiers, management-specified:
+ *   tier 0 — every `score_fit` item. Fit scoring has absolute
+ *            priority: nothing is generated or reviewed until the
+ *            scores the ordering depends on have landed.
+ *   tier 1 — generation / review / regeneration items, ordered by the
+ *            job's fit score DESC (a 95-fit job ships before a 60-fit
+ *            job).
+ *
+ * The fit score is re-read from the job row on EVERY pick, never taken
+ * from a frozen enqueue-time snapshot. That is what makes the ordering
+ * live: if a job's fit rises from 60 to 95 after its item was queued,
+ * the very next `processQueue()` sorts it ahead of the queued 60-item
+ * with no re-enqueue and no priority field mutation.
+ *
+ * `fitScoreSnapshot` on the queue item is a display hint only — the
+ * sort deliberately ignores it.
+ *
+ * Tie-break: ascending `id` (enqueue order), so a queue with equal fit
+ * scores is processed deterministically across runs.
+ */
+function priorityTier(type: AIQueueItem['type']): number {
+  return type === 'score_fit' ? 0 : 1
+}
+
+function pickOrder(items: AIQueueItem[]): AIQueueItem[] {
+  // Cache job lookups: several items can reference the same job (a
+  // generation item and its review item), and getJob() re-reads the
+  // decrypted store.
+  const scoreCache = new Map<number, number | null>()
+  const fitOf = (jobId: number): number | null => {
+    if (scoreCache.has(jobId)) return scoreCache.get(jobId) ?? null
+    const job = getJob(jobId)
+    const score = job?.score ?? null
+    scoreCache.set(jobId, score)
+    return score
+  }
+  return [...items].sort((a, b) => {
+    const tier = priorityTier(a.type) - priorityTier(b.type)
+    if (tier !== 0) return tier
+    // Within a tier, higher fit first. A null score sorts last (the
+    // job has not been scored yet, so it cannot be prioritised).
+    const scoreA = fitOf(a.jobId)
+    const scoreB = fitOf(b.jobId)
+    if (scoreA === null && scoreB !== null) return 1
+    if (scoreA !== null && scoreB === null) return -1
+    if (scoreA !== null && scoreB !== null && scoreA !== scoreB) return scoreB - scoreA
+    return a.id - b.id
+  })
 }
 
 async function processItem(item: AIQueueItem): Promise<void> {
@@ -40,8 +94,30 @@ async function processItem(item: AIQueueItem): Promise<void> {
           removeAIQueueItem(item.id)
           return
         }
-        await verifyDocumentContent(item.jobId, item.documentId, doc.type)
+        const result = await verifyDocumentContent(item.jobId, item.documentId, doc.type)
         removeAIQueueItem(item.id)
+        // P1.7 §2: review < PASSING_REVIEW_SCORE triggers one
+        // auto-regeneration of the SAME doc type, bounded by
+        // AUTO_REGEN_MAX attempts. A `skip` result (deleted document,
+        // parse failure, rate-limited) is NOT a failing review and
+        // must not feed the loop — callers already treat skip as
+        // "no review happened".
+        if (result.kind === 'review' && result.score < PASSING_REVIEW_SCORE) {
+          const attemptsSoFar = getDocumentAutoRegenAttempts(item.documentId)
+          if (attemptsSoFar >= AUTO_REGEN_MAX) {
+            // Cap reached: stop auto-looping. The document keeps its
+            // sub-80 verification_score, which is already what the
+            // user sees, so it is flagged for manual attention
+            // without needing a separate flag column.
+            return
+          }
+          const next = bumpDocumentAutoRegenAttempts(item.documentId)
+          if (next > AUTO_REGEN_MAX) return
+          enqueue({
+            type: doc.type === 'cv' ? 'generate_cv' : 'generate_cover_letter',
+            jobId: item.jobId
+          })
+        }
         break
       }
       case 'score_fit': {
@@ -81,6 +157,15 @@ async function processItem(item: AIQueueItem): Promise<void> {
         const { recomputeJobStatusFromDocs } = await import('./database')
         recomputeJobStatusFromDocs(item.jobId)
         removeAIQueueItem(item.id)
+        // P1.7 §1: enqueue the AI review for the documents we just
+        // generated. Doing it HERE (not at auto-enqueue time) is what
+        // makes generation and review sequential per job: the review
+        // item does not exist until generation has finished, so the
+        // queue cannot start reviewing a document that is still being
+        // written. Different jobs' items may still interleave.
+        for (const doc of listDocuments(item.jobId)) {
+          enqueue({ type: 'verify', jobId: item.jobId, documentId: doc.id })
+        }
         break
       }
     }
@@ -140,23 +225,35 @@ export async function processQueue(): Promise<void> {
   const pending = queue.filter(
     (q) => q.status === 'pending' && q.nextRetryAt <= now
   )
-  for (const item of pending) {
+  // P1.7: re-sort on every pass so the ordering reflects the live fit
+  // scores, not the order items happened to be enqueued in.
+  for (const item of pickOrder(pending)) {
     await processItem(item)
   }
 }
 
 /**
- * Enqueue a task. If a duplicate is already pending (same type + jobId + documentId + sectionName),
- * skip to avoid piling up identical retries.
+ * Enqueue a task. If an identical item is already pending (same type +
+ * jobId + documentId + sectionName), skip so repeated triggers (fit
+ * lands, then a re-scan, then the 4h autoscore tick) do not stack
+ * duplicate work.
+ *
+ * `documentId` / `sectionName` are compared with a null-normalising
+ * helper: rows created before those fields existed store them as
+ * `null`, while a fresh `enqueue({...})` call simply omits them
+ * (`undefined`). Without normalisation the two spellings of "no
+ * document" would not match and the duplicate guard would silently
+ * stop working.
  */
 export function enqueue(item: Omit<AIQueueItem, 'id' | 'createdAt' | 'nextRetryAt' | 'attempts' | 'status'>): AIQueueItem | null {
+  const norm = (v: number | string | undefined | null): number | string | null => v ?? null
   const existing = getAIQueue().find(
     (q) =>
       q.status === 'pending' &&
       q.type === item.type &&
       q.jobId === item.jobId &&
-      q.documentId === item.documentId &&
-      q.sectionName === item.sectionName
+      norm(q.documentId) === norm(item.documentId) &&
+      norm(q.sectionName) === norm(item.sectionName)
   )
   if (existing) return null
   return addAIQueueItem(item)

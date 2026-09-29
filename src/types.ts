@@ -152,6 +152,11 @@ export interface Settings {
   disabled_boards: string[]
   auto_tailor_on_scan: boolean
   auto_tailor_min_fit: number
+  // P1.7 (BRIEF5 §4): fit-score threshold (0-100) at or above which a
+  // job auto-enqueues document generation + AI review once its fit
+  // score lands. Distinct from auto_tailor_min_fit, which only gates
+  // the opt-in scan-time auto-tailor.
+  auto_doc_min_fit: number
   quick_apply_shortcut: string | null
   // Optional proxy URL for the browser scraper. Format: "http://user:pass@host:port"
   // or "socks5://host:port". When empty, no proxy is used.

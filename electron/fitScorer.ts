@@ -18,7 +18,68 @@ import { BrowserWindow } from 'electron'
 import { log } from './logger'
 import * as db from './database'
 import { scoreJobFit } from './ai'
+import { enqueue } from './aiQueue'
+import { PASSING_REVIEW_SCORE } from './types'
 import type { Job } from './types'
+
+/**
+ * P1.7 (BRIEF5 §1/§4): auto-queue document generation when a job's
+ * fit score lands at or above `auto_doc_min_fit` (default 40).
+ *
+ * Called from `scoreOneJobInBackground` after a real score is
+ * persisted, so every fit-landing path (manual recompute, the queue's
+ * score_fit item, jobs:create, jobs:importFromUrl) gets the trigger
+ * from one place.
+ *
+ * Returns true when a generation item was enqueued, false otherwise
+ * (below threshold, no score, job gone, already queued, or docs
+ * already good enough).
+ *
+ * Skip rules (BRIEF5 §1: "Don't re-generate a job's docs if they
+ * already exist with a passing AI review"):
+ *   - A job whose documents all carry verification_score >= 80 is
+ *     already in a shippable state; regenerating would burn LLM calls
+ *     and could make a good CV worse.
+ *   - A `tailor_job_docs` item that is still pending/processing means
+ *     generation is already scheduled; enqueueing again would stack
+ *     duplicate work.
+ */
+export function maybeAutoEnqueueDocs(jobId: number): boolean {
+  const job = db.getJob(jobId)
+  if (!job) return false
+  if (job.score === null) return false
+
+  const settings = db.getSettings()
+  const minFit = settings.auto_doc_min_fit ?? 40
+  // `score` is stored 0-1; the setting is 0-100 (same scale as
+  // auto_tailor_min_fit, normalized on migration).
+  if (job.score * 100 < minFit) return false
+
+  // Already shipped-ready: every document for this job reviewed at or
+  // above the pass bar. `every` on an empty list is true, so guard the
+  // "has any docs" case explicitly.
+  const docs = db.listDocuments(jobId)
+  if (docs.length > 0 && docs.every((d) => (d.verification_score ?? 0) >= PASSING_REVIEW_SCORE)) {
+    return false
+  }
+
+  // Generation already scheduled (pending or in flight). `enqueue`
+  // only dedupes against `pending`, so a `processing` item has to be
+  // checked here or a re-trigger mid-generation would queue a second
+  // run.
+  const alreadyQueued = db
+    .getAIQueue()
+    .some(
+      (q) =>
+        q.type === 'tailor_job_docs' &&
+        q.jobId === jobId &&
+        (q.status === 'pending' || q.status === 'processing')
+    )
+  if (alreadyQueued) return false
+
+  enqueue({ type: 'tailor_job_docs', jobId })
+  return true
+}
 
 /**
  * Send a 'job:scoreUpdated' notification to every live renderer. The
@@ -106,6 +167,19 @@ export async function scoreOneJobInBackground(jobId: number): Promise<Job | null
         fit_source: 'llm',
         fit_last_error: null
       })
+      // P1.7 §1: a real score just landed — if it clears
+      // `auto_doc_min_fit`, queue document generation (the queue then
+      // chains generation -> AI review sequentially for this job).
+      // Fire-and-forget: a failure here must not lose the score we
+      // just persisted.
+      try {
+        maybeAutoEnqueueDocs(jobId)
+      } catch (enqueueErr) {
+        log.fit.warn(
+          `auto-doc enqueue failed for job ${jobId}:`,
+          enqueueErr instanceof Error ? enqueueErr.message : String(enqueueErr)
+        )
+      }
       emitJobScoreUpdatedModule(jobId)
       return updated
     } catch (err) {

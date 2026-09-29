@@ -655,6 +655,26 @@ export default function SettingsPage() {
                 <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>%</span>
               </div>
             </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, marginLeft: 24 }}>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                Auto-generate documents when a job&apos;s fit score reaches
+              </span>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                style={{ width: 80 }}
+                value={settings.auto_doc_min_fit}
+                onChange={(e) => {
+                  const n = parseFloat(e.target.value)
+                  if (!isNaN(n) && n >= 0 && n <= 100) update('auto_doc_min_fit', n)
+                }}
+              />
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                % (generation + AI review, auto-regenerates up to 5x if the review scores below 80)
+              </span>
+            </div>
           </div>
         </>
       )}
