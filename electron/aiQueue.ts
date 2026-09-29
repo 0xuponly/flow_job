@@ -1,4 +1,4 @@
-import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, getDocument, getJob, listDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
+import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, clearAIQueue, getDocument, getJob, listDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
 import { log } from './logger'
 import { tailorDocument, regenerateSection, verifyDocumentContent, RateLimitError } from './ai'
 import type { AIQueueItem } from './types'
@@ -82,12 +82,17 @@ function pickOrder(items: AIQueueItem[]): AIQueueItem[] {
   })
 }
 
-async function processItem(item: AIQueueItem): Promise<void> {
+async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
   try {
     // Inside the try: if this write throws there is nothing useful to
     // record for the item, and letting it escape would abort the whole
     // pass for every other item in it.
-    updateAIQueueItem(item.id, { status: 'processing' })
+    //
+    // A false return means the row is gone — the user cleared the queue
+    // after this pass snapshotted it. Doing the LLM work anyway would
+    // spend a request on a job the user just cancelled, and would let
+    // the item enqueue its follow-up work back into the cleared queue.
+    if (!updateAIQueueItem(item.id, { status: 'processing' })) return
 
     switch (item.type) {
       case 'generate_cv':
@@ -135,6 +140,7 @@ async function processItem(item: AIQueueItem): Promise<void> {
           }
           const next = bumpDocumentAutoRegenAttempts(item.documentId)
           if (next > AUTO_REGEN_MAX) return
+          if (epoch !== clearEpoch) return
           enqueue({
             type: doc.type === 'cv' ? 'generate_cv' : 'generate_cover_letter',
             jobId: item.jobId
@@ -154,7 +160,13 @@ async function processItem(item: AIQueueItem): Promise<void> {
         // scorer failed and the heuristic fallback stamped no score —
         // throw so the caller's backoff path retries it later.
         const { scoreOneJobInBackground } = await import('./fitScorer')
-        const updated = await scoreOneJobInBackground(item.jobId)
+        // `maybeAutoEnqueueDocs` runs *inside* the call below, so a
+        // check after the await would be too late to stop it queueing
+        // document generation into a queue the user just cleared.
+        const updated = await scoreOneJobInBackground(
+          item.jobId,
+          () => epoch !== clearEpoch
+        )
         if (!updated) {
           removeAIQueueItem(item.id)
           return
@@ -185,6 +197,7 @@ async function processItem(item: AIQueueItem): Promise<void> {
         // item does not exist until generation has finished, so the
         // queue cannot start reviewing a document that is still being
         // written. Different jobs' items may still interleave.
+        if (epoch !== clearEpoch) return
         for (const doc of listDocuments(item.jobId)) {
           enqueue({ type: 'verify', jobId: item.jobId, documentId: doc.id })
         }
@@ -276,6 +289,19 @@ let processorTimer: ReturnType<typeof setInterval> | null = null
 let passInFlight = false
 
 /**
+ * Bumped every time the user clears the queue.
+ *
+ * A pass reads the queue once and then works through a snapshot, so a
+ * clear landing mid-pass is invisible to it: the in-flight item finishes
+ * and would otherwise enqueue its follow-up work (verify, regeneration,
+ * tailor_job_docs) straight back into the queue the user just emptied,
+ * rebuilding the whole chain. The epoch is the invalidation signal for
+ * that: a pass captures it on entry and abandons its work the moment it
+ * moves.
+ */
+let clearEpoch = 0
+
+/**
  * Return rows abandoned mid-run by a previous process to the queue.
  *
  * `processItem` marks an item `processing` before doing its work, so a
@@ -364,8 +390,11 @@ async function runPass(): Promise<void> {
   }
   // P1.7: re-sort on every pass so the ordering reflects the live fit
   // scores, not the order items happened to be enqueued in.
+  const epoch = clearEpoch
   for (const item of pickOrder(due)) {
-    await processItem(item)
+    // A clear mid-pass invalidates everything this pass snapshotted.
+    if (epoch !== clearEpoch) return
+    await processItem(item, epoch)
   }
 }
 
@@ -414,6 +443,24 @@ export function retryQueueItem(id: number): AIQueueItem[] {
     lastError: undefined
   })
   return listQueueInPickOrder()
+}
+
+/**
+ * Drop every queued task, whatever its status.
+ *
+ * Returns how many were removed so the caller can report it, and the
+ * (now empty) queue in pick order so the renderer can refresh from the
+ * same shape `aiQueue:list` returns.
+ *
+ * Irreversible by design — the UI confirms with the user first. Items
+ * the processor is currently working on are not interrupted; they
+ * finish and then find their row already gone, which is preferable to
+ * discarding an LLM call that has already been paid for.
+ */
+export function clearQueue(): { removed: number; queue: AIQueueItem[] } {
+  clearEpoch++
+  const removed = clearAIQueue()
+  return { removed, queue: listQueueInPickOrder() }
 }
 
 /**

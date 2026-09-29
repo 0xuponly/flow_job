@@ -33,9 +33,10 @@ vi.mock('./ai', async (importOriginal) => {
 
 vi.mock('./database', () => ({
   getAIQueue: vi.fn(() => []),
-  updateAIQueueItem: vi.fn(),
+  updateAIQueueItem: vi.fn(() => true),
   removeAIQueueItem: vi.fn(),
   addAIQueueItem: vi.fn(),
+  clearAIQueue: vi.fn(() => 0),
   getDocument: vi.fn(),
   getJob: vi.fn(),
   listDocuments: vi.fn(() => []),
@@ -44,10 +45,10 @@ vi.mock('./database', () => ({
 }))
 
 import { AUTO_REGEN_MAX, AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX } from './types'
-import { processQueue, enqueue, listQueueInPickOrder, retryQueueItem, reclaimInterruptedItems, startQueueProcessor, stopQueueProcessor } from './aiQueue'
+import { processQueue, enqueue, listQueueInPickOrder, retryQueueItem, clearQueue, reclaimInterruptedItems, startQueueProcessor, stopQueueProcessor } from './aiQueue'
 import { scoreOneJobInBackground } from './fitScorer'
 import { tailorJobDocsForJob } from './tailorJobDocs'
-import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, getJob, getDocument, listDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
+import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, clearAIQueue, getJob, getDocument, listDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
 import { RateLimitError, verifyDocumentContent } from './ai'
 
 const mockedScore = vi.mocked(scoreOneJobInBackground)
@@ -55,9 +56,11 @@ const mockedGetQueue = vi.mocked(getAIQueue)
 const mockedUpdate = vi.mocked(updateAIQueueItem)
 const mockedRemove = vi.mocked(removeAIQueueItem)
 const mockedAdd = vi.mocked(addAIQueueItem)
+const mockedClear = vi.mocked(clearAIQueue)
 const mockedGetJob = vi.mocked(getJob)
 const mockedTailor = vi.mocked(tailorJobDocsForJob)
 const mockedGetDocument = vi.mocked(getDocument)
+const mockedVerify = vi.mocked(verifyDocumentContent)
 const mockedListDocuments = vi.mocked(listDocuments)
 const mockedGetRegen = vi.mocked(getDocumentAutoRegenAttempts)
 const mockedBumpRegen = vi.mocked(bumpDocumentAutoRegenAttempts)
@@ -104,7 +107,7 @@ describe('score_fit queue processing', () => {
     mockedGetQueue.mockReturnValue([queueItem({})])
     mockedScore.mockResolvedValue(scoredJob({ score: 0.82, fit_score_version: 3 }))
     await processQueue()
-    expect(mockedScore).toHaveBeenCalledWith(42)
+    expect(mockedScore).toHaveBeenCalledWith(42, expect.any(Function))
     expect(mockedRemove).toHaveBeenCalledWith('q1')
   })
 
@@ -664,7 +667,7 @@ describe('automatic revival of capped items', () => {
 
     await processQueue()
 
-    expect(mockedScore).toHaveBeenCalledWith(42)
+    expect(mockedScore).toHaveBeenCalledWith(42, expect.any(Function))
   })
 
   it('treats a legacy failed row with no revive bookkeeping as revivable', async () => {
@@ -676,7 +679,7 @@ describe('automatic revival of capped items', () => {
 
     await processQueue()
 
-    expect(mockedScore).toHaveBeenCalledWith(42)
+    expect(mockedScore).toHaveBeenCalledWith(42, expect.any(Function))
   })
 })
 
@@ -734,7 +737,7 @@ describe('reclaiming interrupted items', () => {
     vi.mocked(updateAIQueueItem).mockClear()
     mockedGetQueue.mockReturnValue([queueItem({ id: 7, type: 'score_fit', jobId: 42, status: 'pending' })])
     await processQueue()
-    expect(mockedScore).toHaveBeenCalledWith(42)
+    expect(mockedScore).toHaveBeenCalledWith(42, expect.any(Function))
     expect(mockedRemove).toHaveBeenCalledWith(7)
   })
 
@@ -778,8 +781,11 @@ describe('overlapping passes', () => {
     )
     let store = rows
     vi.mocked(getAIQueue).mockImplementation(() => store)
+    // Must return true: the processor now treats a falsy result as
+    // "this row is gone" and skips the work.
     vi.mocked(updateAIQueueItem).mockImplementation((id: unknown, p: Partial<AIQueueItem>) => {
       store = store.map((r) => (r.id === id ? { ...r, ...p } : r))
+      return true
     })
     vi.mocked(removeAIQueueItem).mockImplementation((id: unknown) => {
       store = store.filter((r) => r.id !== id)
@@ -901,6 +907,7 @@ describe('lifecycle: quota outage then recovery, unattended', () => {
     // updateAIQueueItem merge does.
     vi.mocked(updateAIQueueItem).mockImplementation((id: any, p: any) => {
       row = { ...row, ...p }
+      return true
     })
     vi.mocked(removeAIQueueItem).mockImplementation(() => { row = null })
     // Provider is down: every attempt returns a null score.
@@ -958,5 +965,133 @@ describe('cooldown and revive budget together', () => {
     // A revival shorter than the backoff cap would be pointless: the
     // item would wake before the backoff it already served.
     expect(AUTO_REVIVE_COOLDOWN_MS).toBeGreaterThan(30 * 60 * 1000)
+  })
+})
+
+// Clearing is irreversible, so the shape matters as much as the action:
+// the caller needs a count to confirm/announce with, and the refreshed
+// queue to avoid a second round trip that could race a re-enqueue.
+describe('clearQueue', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockedClear.mockReturnValue(3)
+  })
+
+  it('delegates the delete to the store exactly once', () => {
+    // toHaveBeenCalledTimes, not toHaveBeenCalled: a double delete would
+    // report a count that no longer matches anything.
+    clearQueue()
+    expect(mockedClear).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports how many tasks were removed', () => {
+    expect(clearQueue().removed).toBe(3)
+  })
+
+  it('returns the refreshed queue in pick order, not raw store order', () => {
+    // Store order is deliberately wrong (verify before score_fit).
+    // Sorting an empty array would pass either way, so the rows matter.
+    mockedClear.mockReturnValue(0)
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 2, type: 'verify', jobId: 2 }),
+      queueItem({ id: 1, type: 'score_fit', jobId: 1 })
+    ])
+    mockedGetJob.mockImplementation((id) => ({ id, score: 0.5 }) as Job)
+    expect(clearQueue().queue.map((i) => i.id)).toEqual([1, 2])
+  })
+
+  it('reports zero rather than failing on an already-empty queue', () => {
+    mockedClear.mockReturnValue(0)
+    expect(clearQueue().removed).toBe(0)
+  })
+})
+
+// A pass snapshots the queue and then works through it item by item, so
+// a clear landing mid-pass used to be invisible to it: every remaining
+// item was still processed (spending a real LLM call on work the user
+// had just cancelled), and the in-flight item would enqueue its
+// follow-up straight back into the emptied queue, rebuilding the
+// score_fit -> tailor_job_docs -> verify -> generate chain.
+//
+// The store model here matches the real one: clearAIQueue REASSIGNS the
+// array rather than mutating it, so the pass keeps holding the old rows.
+describe('clearing while a pass is mid-flight', () => {
+  function racingStore(rows: Partial<AIQueueItem>[]) {
+    let aiQueue: AIQueueItem[] = rows.map((r, i) =>
+      queueItem({ id: i + 1, documentId: 50 + i, status: 'pending', ...r })
+    )
+    vi.mocked(getAIQueue).mockImplementation(() => aiQueue)
+    vi.mocked(updateAIQueueItem).mockImplementation((id: number, p: Partial<AIQueueItem>) => {
+      const before = aiQueue
+      aiQueue = aiQueue.map((r) => (r.id === id ? { ...r, ...p } : r))
+      return before.some((r) => r.id === id)
+    })
+    vi.mocked(removeAIQueueItem).mockImplementation((id: number) => {
+      aiQueue = aiQueue.filter((r) => r.id !== id)
+    })
+    vi.mocked(clearAIQueue).mockImplementation(() => {
+      const n = aiQueue.length
+      aiQueue = []
+      return n
+    })
+    vi.mocked(addAIQueueItem).mockImplementation((item: never) => {
+      const row = { ...(item as object), id: 900 + aiQueue.length } as AIQueueItem
+      aiQueue = [...aiQueue, row]
+      return row
+    })
+    return () => aiQueue
+  }
+
+  it('abandons the rest of the snapshot instead of starting cleared work', async () => {
+    // The clear fires from inside item 1's LLM call — the exact moment
+    // a real clear races the pass.
+    racingStore([{ type: 'verify', jobId: 1 }, { type: 'verify', jobId: 2 }, { type: 'verify', jobId: 3 }])
+    mockedGetDocument.mockReturnValue({ id: 50, job_id: 1, type: 'cv' } as never)
+    let fired = false
+    mockedVerify.mockImplementation(async () => {
+      if (!fired) { fired = true; clearQueue() }
+      return { kind: 'review', score: 90, passed: true, feedback: '', rules: [] } as never
+    })
+
+    await processQueue()
+
+    // Only the in-flight item ran. Items 2 and 3 were never touched.
+    expect(mockedVerify).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not resurrect follow-up work enqueued after the clear', async () => {
+    // A failing review normally drives the regen loop, which enqueues a
+    // fresh generate_cv. After a clear it must enqueue nothing.
+    const read = racingStore([{ type: 'verify', jobId: 1 }])
+    mockedGetDocument.mockReturnValue({ id: 50, job_id: 1, type: 'cv' } as never)
+    let fired = false
+    mockedVerify.mockImplementation(async () => {
+      if (!fired) { fired = true; clearQueue() }
+      return { kind: 'review', score: 10, passed: false, feedback: 'bad', rules: [] } as never
+    })
+
+    await processQueue()
+
+    expect(read()).toHaveLength(0)
+    expect(mockedAdd).not.toHaveBeenCalled()
+  })
+
+  it('does not queue document generation for a fit scored after the clear', async () => {
+    // The auto-enqueue for score_fit runs *inside*
+    // scoreOneJobInBackground, so the staleness probe is what stops it.
+    const read = racingStore([{ type: 'score_fit', jobId: 1 }])
+    let fired = false
+    mockedScore.mockImplementation(async (_jobId: number, isStale?: () => boolean) => {
+      clearQueue()
+      expect(isStale?.()).toBe(true)
+      fired = true
+      return { score: 0.9 } as never
+    })
+
+    await processQueue()
+
+    expect(fired).toBe(true)
+    expect(mockedAdd).not.toHaveBeenCalled()
+    expect(read()).toHaveLength(0)
   })
 })

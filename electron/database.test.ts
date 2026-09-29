@@ -29,7 +29,7 @@ vi.mock('electron', () => ({
 // Load the database AFTER the electron override above is in place.
 import { existsSync, unlinkSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import { createJob, updateJob, getJob, listJobs, reloadStore } from './database'
+import { createJob, updateJob, getJob, listJobs, reloadStore, addAIQueueItem, updateAIQueueItem, getAIQueue, clearAIQueue } from './database'
 import type { CreateJobInput } from './types'
 
 const baseInput: CreateJobInput = {
@@ -160,5 +160,62 @@ describe('scan-created job stays unscored until real scoring lands', () => {
     const { job } = createJob(baseInput)
     const fetched = getJob(job.id)
     expect(fetched?.score).toBeNull()
+  })
+})
+// The queue is wiped by the Clear Queue button, and the count it
+// returns is what the success toast tells the user. Nothing else
+// exercises the real delete — aiQueue.test.ts mocks ./database
+// wholesale — so without this a `clearAIQueue` that returned 0 without
+// emptying anything would pass the entire suite.
+describe('clearAIQueue (real store)', () => {
+  function seed() {
+    const pending = addAIQueueItem({ type: 'score_fit', jobId: 1 })
+    addAIQueueItem({ type: 'verify', jobId: 2 })
+    const failed = addAIQueueItem({ type: 'tailor_job_docs', jobId: 3 })
+    updateAIQueueItem(failed.id, { status: 'failed', attempts: 3 })
+    const running = addAIQueueItem({ type: 'verify', jobId: 4 })
+    updateAIQueueItem(running.id, { status: 'processing' })
+    return { pending, failed, running }
+  }
+
+  it('removes rows in every status, not just pending ones', () => {
+    seed()
+    expect(getAIQueue()).toHaveLength(4)
+    clearAIQueue()
+    // "Whatever its status" is the documented contract; a
+    // pending-only clear would leave the other three behind.
+    expect(getAIQueue()).toEqual([])
+  })
+
+  it('reports the number of rows it removed', () => {
+    seed()
+    expect(clearAIQueue()).toBe(4)
+  })
+
+  it('reports zero and does not throw on an already-empty queue', () => {
+    expect(clearAIQueue()).toBe(0)
+    expect(getAIQueue()).toEqual([])
+  })
+
+  it('leaves a queue that is repopulated afterwards intact', () => {
+    seed()
+    clearAIQueue()
+    addAIQueueItem({ type: 'score_fit', jobId: 9 })
+    expect(getAIQueue()).toHaveLength(1)
+  })
+})
+
+describe('updateAIQueueItem reports whether the row existed', () => {
+  it('returns true when the row was patched', () => {
+    const row = addAIQueueItem({ type: 'score_fit', jobId: 1 })
+    expect(updateAIQueueItem(row.id, { status: 'processing' })).toBe(true)
+  })
+
+  it('returns false for a row that no longer exists', () => {
+    // This is the signal the processor uses to detect work that was
+    // cleared out from under a mid-flight pass.
+    const row = addAIQueueItem({ type: 'score_fit', jobId: 1 })
+    clearAIQueue()
+    expect(updateAIQueueItem(row.id, { status: 'processing' })).toBe(false)
   })
 })

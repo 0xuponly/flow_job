@@ -44,7 +44,15 @@ import type { Job } from './types'
  *     generation is already scheduled; enqueueing again would stack
  *     duplicate work.
  */
-export function maybeAutoEnqueueDocs(jobId: number): boolean {
+export function maybeAutoEnqueueDocs(
+  jobId: number,
+  isStale?: () => boolean
+): boolean {
+  // The caller (the queue processor) can tell us the work it was doing
+  // has since been cancelled — the user cleared the queue while this
+  // LLM call was in flight. Re-queueing document generation at that
+  // point would rebuild the pipeline the user just emptied.
+  if (isStale?.()) return false
   const job = db.getJob(jobId)
   if (!job) return false
   if (job.score === null) return false
@@ -105,7 +113,10 @@ export function emitJobScoreUpdatedModule(jobId: number): void {
  * Returns the post-update row, or null if the job was deleted between
  * the call and the read.
  */
-export async function scoreOneJobInBackground(jobId: number): Promise<Job | null> {
+export async function scoreOneJobInBackground(
+  jobId: number,
+  isStale?: () => boolean
+): Promise<Job | null> {
   const job = db.getJob(jobId)
   if (!job) return null
   const settings = db.getSettings()
@@ -173,7 +184,7 @@ export async function scoreOneJobInBackground(jobId: number): Promise<Job | null
       // Fire-and-forget: a failure here must not lose the score we
       // just persisted.
       try {
-        maybeAutoEnqueueDocs(jobId)
+        maybeAutoEnqueueDocs(jobId, isStale)
       } catch (enqueueErr) {
         log.fit.warn(
           `auto-doc enqueue failed for job ${jobId}:`,
