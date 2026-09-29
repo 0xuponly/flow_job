@@ -907,21 +907,56 @@ describe('lifecycle: quota outage then recovery, unattended', () => {
     vi.mocked(scoreOneJobInBackground).mockResolvedValue({ score: null, fit_last_error: '429' } as never)
 
     const timeline: string[] = []
-    // Poll every 30s across 2 hours of simulated outage.
-    for (let i = 0; i < 240; i++) {
+    // Derive the simulated span from the constants instead of hardcoding
+    // a pass count. A fixed count silently under-waits whenever the
+    // cooldown grows, and the test would then only pass because the
+    // recovery loop force-zeroed nextRetryAt — hiding the very timing
+    // this is meant to cover.
+    const POLL_MS = 30_000
+    const advance = () => { if (row && row.nextRetryAt > 0) row.nextRetryAt -= POLL_MS }
+
+    // Outage long enough to exhaust a full attempt budget and go round
+    // the revival loop twice. Deliberately shorter than
+    // AUTO_REVIVE_MAX cooldowns: an item that keeps failing for that
+    // long is meant to reach its final failed state, so an outage
+    // spanning the entire budget would (correctly) never recover.
+    const outagePasses = Math.ceil((AUTO_REVIVE_COOLDOWN_MS * 2) / POLL_MS)
+    for (let i = 0; i < outagePasses; i++) {
       const before = row ? `${row.status}/${row.attempts}/r${row.autoRevives}` : 'gone'
       await processQueue()
       const after = row ? `${row.status}/${row.attempts}/r${row.autoRevives}` : 'gone'
       if (before !== after) timeline.push(after)
-      if (row && row.nextRetryAt > 0) row.nextRetryAt -= 30_000  // advance the clock
+      advance()
     }
-    // Provider recovers.
+
+    // Quota resets. Keep the app running and the clock moving — no
+    // force-reset — so the item can only finish via a scheduled
+    // revival actually coming due.
     vi.mocked(scoreOneJobInBackground).mockResolvedValue({ score: 0.8 } as never)
-    for (let i = 0; i < 10 && row; i++) { await processQueue(); if (row?.nextRetryAt) row.nextRetryAt = 0 }
+    const recoveryPasses = Math.ceil(AUTO_REVIVE_COOLDOWN_MS / POLL_MS) + 100
+    for (let i = 0; i < recoveryPasses && row; i++) { await processQueue(); advance() }
 
     expect(row, 'item should have completed and been removed').toBeNull()
     expect(vi.mocked(removeAIQueueItem)).toHaveBeenCalledWith(1)
     expect(timeline.some((t) => t.startsWith('pending/0/r1')), 'should have auto-revived').toBe(true)
     expect(timeline.filter((t) => t.startsWith('failed')).length, 'should never sit terminally failed').toBe(0)
+  })
+})
+
+// A separate guard on the interaction between the two constants. At 3
+// revivals 4h apart, a task failing for real reasons takes up to 12h to
+// reach its final failed state — that is the intended trade, but it
+// should be a deliberate one, so it is asserted rather than discovered
+// later when a queue looks stuck for half a day.
+describe('cooldown and revive budget together', () => {
+  it('gives up after roughly MAX cooldowns of continuous failure', () => {
+    const spanMs = AUTO_REVIVE_MAX * AUTO_REVIVE_COOLDOWN_MS
+    expect(spanMs).toBe(12 * 60 * 60 * 1000)
+  })
+
+  it('keeps the cooldown well past the per-attempt backoff cap', () => {
+    // A revival shorter than the backoff cap would be pointless: the
+    // item would wake before the backoff it already served.
+    expect(AUTO_REVIVE_COOLDOWN_MS).toBeGreaterThan(30 * 60 * 1000)
   })
 })

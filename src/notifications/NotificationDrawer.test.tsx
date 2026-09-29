@@ -380,3 +380,26 @@ describe('queue task automatic recovery', () => {
     expect(text).toMatch(/retrying automatically…/i)
   })
 })
+
+describe('queue task wait formatting at real cooldowns', () => {
+  const now = 1_700_000_000_000
+  const failed = (extra: Partial<AIQueueItem>) =>
+    item({ status: 'failed', attempts: 5, autoRevives: 0, nextRetryAt: now, ...extra })
+
+  it('shows a four-hour cooldown in hours, not seconds', () => {
+    // 4h as "14400s" was the failure mode when the cooldown was tuned;
+    // formatWait has to scale with whatever the constant becomes.
+    const text = queueItemStatusText(failed({ nextRetryAt: now + 4 * 60 * 60 * 1000 }), now)
+    expect(text).toBe('Retrying automatically in 4h')
+  })
+
+  it('shows a one-hour cooldown in hours', () => {
+    expect(queueItemStatusText(failed({ nextRetryAt: now + 60 * 60 * 1000 }), now))
+      .toBe('Retrying automatically in 1h')
+  })
+
+  it('rounds a partial hour up so it never reads as already due', () => {
+    expect(queueItemStatusText(failed({ nextRetryAt: now + 90 * 60 * 1000 }), now))
+      .toBe('Retrying automatically in 2h')
+  })
+})

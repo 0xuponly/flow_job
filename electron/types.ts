@@ -397,19 +397,26 @@ export const AUTO_REGEN_MAX = 5
  * external (quota exhausted, provider down, network blip): the right
  * behaviour is to wait and try again on our own.
  *
- * `AUTO_REVIVE_COOLDOWN_MS` is deliberately far longer than the
+ * `AUTO_REVIVE_COOLDOWN_MS` (4h) is deliberately far longer than the
  * per-attempt backoff cap (30m). Backoff is for a request that might
  * succeed on the next poll; revival is for a task that already failed
  * its whole budget, so it waits out a real quota window rather than
- * just the next tick.
+ * just the next tick. 4h covers the reset schedules the providers
+ * actually use — daily caps on Claude Pro and the per-window limits on
+ * API tiers commonly reset on a multi-hour cycle — so a task usually
+ * wakes up to a budget that has genuinely replenished rather than
+ * waking to the same exhausted quota and burning another full attempt
+ * budget against it.
  *
  * `AUTO_REVIVE_MAX` bounds the loop. Without it, a task that can never
  * succeed (malformed job, permanently rejected prompt) would cycle
  * forever and keep spending LLM calls. After this many revivals the
  * item stays `failed` and is left for the user, which is the correct
- * outcome for something genuinely broken.
+ * outcome for something genuinely broken. Note the interaction with the
+ * cooldown: 3 revivals at 4h apart means a task that is failing for
+ * real reasons takes up to 12h to reach its final failed state.
  */
-export const AUTO_REVIVE_COOLDOWN_MS = 60 * 60 * 1000
+export const AUTO_REVIVE_COOLDOWN_MS = 4 * 60 * 60 * 1000
 export const AUTO_REVIVE_MAX = 3
 
 export interface AIQueueItem {
