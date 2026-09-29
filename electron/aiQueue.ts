@@ -37,6 +37,24 @@ function priorityTier(type: AIQueueItem['type']): number {
   return type === 'score_fit' ? 0 : 1
 }
 
+/**
+ * The full queue in the order the processor will actually pick it.
+ *
+ * The renderer's Queue panel displays this so the user sees the true
+ * upcoming order rather than raw store order — a high-fit generation
+ * item is picked ahead of a lower-fit one, and every `score_fit` item
+ * is picked first. Reuses `pickOrder` instead of re-deriving the sort
+ * in the renderer, so the displayed order cannot drift from the
+ * executed order.
+ *
+ * Unlike `processQueue` this does not mutate any item's status: it is
+ * a read-only view for display. Ordering re-reads `job.score` on each
+ * call, so a fit that lands between polls is reflected on the next one.
+ */
+export function listQueueInPickOrder(): AIQueueItem[] {
+  return pickOrder(getAIQueue())
+}
+
 function pickOrder(items: AIQueueItem[]): AIQueueItem[] {
   // Cache job lookups: several items can reference the same job (a
   // generation item and its review item), and getJob() re-reads the

@@ -52,7 +52,7 @@ function stripHmac(manifest: Record<string, unknown>): Record<string, unknown> {
   return manifest
 }
 import { formatLocation } from './utils'
-import { startQueueProcessor, stopQueueProcessor, enqueue } from './aiQueue'
+import { startQueueProcessor, stopQueueProcessor, enqueue, listQueueInPickOrder } from './aiQueue'
 import { scheduleNextAutoScan, cancelAutoScan, markScanStarted, markScanCompleted, restartAutoScanTimer } from './autoScan'
 import { scheduleNextFitAutoScore, restartFitAutoScoreTimer } from './fitAutoScore'
 import {
@@ -1048,7 +1048,10 @@ function registerIpc(): void {
   ipcMain.handle('security:status', () => db.encryptionStatus())
 
   // AI Queue
-  ipcMain.handle('aiQueue:list', () => db.getAIQueue())
+  // Returns the queue in pick order (score_fit first, then fit DESC)
+  // rather than raw store order, so the renderer's Queue panel shows
+  // the order the processor will actually use.
+  ipcMain.handle('aiQueue:list', () => listQueueInPickOrder())
 
   ipcMain.handle('boards:list', () => {
     // Per-board enabled flag, sourced from settings.disabled_boards.

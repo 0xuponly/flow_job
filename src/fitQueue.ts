@@ -21,7 +21,7 @@
  */
 import { api } from './api'
 import { notify } from './components/Notifications'
-import type { Job } from './types'
+import type { AIQueueItem, Job } from './types'
 
 const MAX_QUEUED = 10
 
@@ -140,6 +140,41 @@ if (typeof window !== 'undefined') {
  * fires once per enqueue, with the resolved Job on success or the
  * error message on failure.
  */
+/**
+ * Human-readable label for an AI queue task.
+ *
+ * Lives here rather than in each consumer because the queue is now
+ * rendered in two places (the Documents page modal and the
+ * notification center's Queue panel) and a task with no label would
+ * render as a blank row. Extracted from DocumentsPage for that reason.
+ */
+export function queueItemLabel(item: AIQueueItem): string {
+  switch (item.type) {
+    case 'generate_cv': return 'Generate CV'
+    case 'generate_cover_letter': return 'Generate Cover Letter'
+    case 'regenerate_section': return `Regenerate section: ${item.sectionName}`
+    case 'verify': return 'Verify document'
+    case 'tailor_job_docs': return 'Generate CV + cover letter'
+    case 'score_fit': return 'Score fit'
+  }
+}
+
+/**
+ * One-line status for a queue task: where it is now, or when it will
+ * next be attempted. A pending item with a future `nextRetryAt` is
+ * waiting out a rate-limit backoff, so the countdown is the useful
+ * thing to show.
+ */
+export function queueItemStatusText(item: AIQueueItem, now: number = Date.now()): string {
+  if (item.status === 'processing') return 'Processing…'
+  if (item.status === 'failed') return `Failed (${item.attempts} attempts)`
+  if (item.attempts > 0) {
+    const wait = Math.max(0, Math.ceil((item.nextRetryAt - now) / 1000))
+    return `Retry in ${wait}s (attempt ${item.attempts})`
+  }
+  return 'Pending'
+}
+
 export function enqueueFitRecompute(jobId: number, onResult: OnResult): boolean {
   // Cap is on QUEUED items, not the running count: 10 items can be
   // waiting behind the in-flight call. The in-flight call itself is

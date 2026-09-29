@@ -272,7 +272,10 @@ export interface ScanStatus {
   startedAt: number | null
 }
 
-export type AIQueueItemType = 'generate_cv' | 'generate_cover_letter' | 'regenerate_section' | 'verify'
+// Mirrors electron/types.ts. `tailor_job_docs` and `score_fit` were
+// missing here even though the main process has emitted them since
+// P1.7, which made this union a lie the queue UI could not render.
+export type AIQueueItemType = 'generate_cv' | 'generate_cover_letter' | 'regenerate_section' | 'verify' | 'tailor_job_docs' | 'score_fit'
 export type AIQueueItemStatus = 'pending' | 'processing' | 'failed'
 
 export interface AIQueueItem {

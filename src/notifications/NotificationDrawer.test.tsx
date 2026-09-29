@@ -1,7 +1,9 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { NotificationsProvider, useNotifications } from './NotificationsProvider'
 import NotificationDrawer from './NotificationDrawer'
+import { queueItemLabel, queueItemStatusText } from '../fitQueue'
+import type { AIQueueItem } from '../types'
 
 const mockApi = {
   notificationsList: vi.fn(),
@@ -9,25 +11,51 @@ const mockApi = {
   notificationsDismiss: vi.fn(),
   notificationsDismissAll: vi.fn(),
   notificationsPurgeOldDismissed: vi.fn(),
+  listAIQueue: vi.fn(),
+  retryAIQueueItem: vi.fn(),
+  removeAIQueueItem: vi.fn(),
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
   mockApi.notificationsList.mockResolvedValue({ rows: [] })
   mockApi.notificationsPurgeOldDismissed.mockResolvedValue({ deleted: 0 })
+  mockApi.listAIQueue.mockResolvedValue([])
   // @ts-expect-error - test mock
   globalThis.window.api = mockApi
 })
+
+function item(overrides: Partial<AIQueueItem> = {}): AIQueueItem {
+  return {
+    id: 1,
+    type: 'verify',
+    jobId: 7,
+    status: 'pending',
+    attempts: 0,
+    createdAt: 1,
+    nextRetryAt: 0,
+    ...overrides,
+  }
+}
 
 function OpenButton() {
   const { open } = useNotifications()
   return <button onClick={open}>open</button>
 }
 
+async function openDrawer() {
+  render(<NotificationsProvider><OpenButton /><NotificationDrawer /></NotificationsProvider>)
+  fireEvent.click(screen.getByText('open'))
+  return screen.findByTestId('notif-backdrop')
+}
+
+async function showQueueTab() {
+  fireEvent.click(await screen.findByRole('tab', { name: /queue/i }))
+}
+
 describe('NotificationDrawer', () => {
   it('renders the empty state when the list is empty', async () => {
-    render(<NotificationsProvider><OpenButton /><NotificationDrawer /></NotificationsProvider>)
-    fireEvent.click(screen.getByText('open'))
+    await openDrawer()
     expect(await screen.findByText(/no notifications/i)).toBeInTheDocument()
   })
 
@@ -36,8 +64,7 @@ describe('NotificationDrawer', () => {
       { id: 1, type: 'info', source: 'app', message: 'alpha', full_message: 'alpha long', created_at: 1, dismissed_at: null },
       { id: 2, type: 'error', source: 'ai', message: 'beta', full_message: 'beta long', created_at: 2, dismissed_at: null },
     ]})
-    render(<NotificationsProvider><OpenButton /><NotificationDrawer /></NotificationsProvider>)
-    fireEvent.click(screen.getByText('open'))
+    await openDrawer()
     expect(await screen.findByText('alpha')).toBeInTheDocument()
     expect(await screen.findByText('beta')).toBeInTheDocument()
   })
@@ -46,10 +73,8 @@ describe('NotificationDrawer', () => {
     mockApi.notificationsList.mockResolvedValue({ rows: [
       { id: 1, type: 'info', source: 'app', message: 'short', full_message: 'this is the long version', created_at: 1, dismissed_at: null },
     ]})
-    render(<NotificationsProvider><OpenButton /><NotificationDrawer /></NotificationsProvider>)
-    fireEvent.click(screen.getByText('open'))
+    await openDrawer()
     const body = await screen.findByText('short')
-    // The full message is hidden by default
     expect(screen.queryByText('this is the long version')).not.toBeInTheDocument()
     fireEvent.click(body)
     expect(screen.getByText('this is the long version')).toBeInTheDocument()
@@ -60,26 +85,253 @@ describe('NotificationDrawer', () => {
       { id: 42, type: 'info', source: 'app', message: 'a', full_message: 'a', created_at: 1, dismissed_at: null },
     ]})
     mockApi.notificationsDismiss.mockResolvedValue({ ok: true })
-    render(<NotificationsProvider><OpenButton /><NotificationDrawer /></NotificationsProvider>)
-    fireEvent.click(screen.getByText('open'))
-    const dismissBtn = await screen.findByRole('button', { name: /dismiss/i })
-    fireEvent.click(dismissBtn)
+    await openDrawer()
+    fireEvent.click(await screen.findByRole('button', { name: /dismiss/i }))
     expect(mockApi.notificationsDismiss).toHaveBeenCalledWith({ id: 42 })
   })
 
   it('clicking the backdrop calls close', async () => {
-    render(<NotificationsProvider><OpenButton /><NotificationDrawer /></NotificationsProvider>)
-    fireEvent.click(screen.getByText('open'))
-    const backdrop = await screen.findByTestId('notif-backdrop')
-    fireEvent.click(backdrop)
+    await openDrawer()
+    fireEvent.click(await screen.findByTestId('notif-backdrop'))
     expect(screen.queryByTestId('notif-backdrop')).not.toBeInTheDocument()
   })
 
   it('pressing Esc calls close', async () => {
-    render(<NotificationsProvider><OpenButton /><NotificationDrawer /></NotificationsProvider>)
-    fireEvent.click(screen.getByText('open'))
+    await openDrawer()
     expect(await screen.findByTestId('notif-backdrop')).toBeInTheDocument()
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByTestId('notif-backdrop')).not.toBeInTheDocument()
+  })
+})
+
+describe('NotificationDrawer panel tabs', () => {
+  it('opens on the notifications panel', async () => {
+    await openDrawer()
+    expect(screen.getByRole('tab', { name: /notifications/i })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('shows the queue panel only after clicking the Queue tab', async () => {
+    mockApi.listAIQueue.mockResolvedValue([item({ id: 1, type: 'score_fit', jobId: 7 })])
+    await openDrawer()
+    // Notifications is the default view; the queue is not rendered yet.
+    expect(screen.queryByText('Score fit')).not.toBeInTheDocument()
+    expect(mockApi.listAIQueue).not.toHaveBeenCalled()
+
+    await showQueueTab()
+    expect(await screen.findByText('Score fit')).toBeInTheDocument()
+    expect(mockApi.listAIQueue).toHaveBeenCalled()
+  })
+
+  it('switches back to the notifications panel', async () => {
+    mockApi.notificationsList.mockResolvedValue({ rows: [
+      { id: 1, type: 'info', source: 'app', message: 'a notification', full_message: 'a notification', created_at: 1, dismissed_at: null },
+    ]})
+    await openDrawer()
+    await showQueueTab()
+    await screen.findByText(/no queued tasks/i)
+
+    fireEvent.click(screen.getByRole('tab', { name: /notifications/i }))
+    expect(await screen.findByText('a notification')).toBeInTheDocument()
+  })
+
+  it('renders queued tasks in the order returned by the main process', async () => {
+    // The main process already applies pick order (score_fit first,
+    // then fit DESC). The panel must not re-sort — doing so in the
+    // renderer is exactly the drift this design avoids.
+    mockApi.listAIQueue.mockResolvedValue([
+      item({ id: 1, type: 'score_fit', jobId: 7 }),
+      item({ id: 2, type: 'verify', jobId: 8 }),
+      item({ id: 3, type: 'tailor_job_docs', jobId: 9 }),
+    ])
+    await openDrawer()
+    await showQueueTab()
+    const labels = await screen.findAllByTestId('queue-task-label')
+    expect(labels.map((el) => el.textContent)).toEqual([
+      'Score fit',
+      'Verify document',
+      'Generate CV + cover letter',
+    ])
+  })
+
+  it('shows the job id so a task can be traced back to its job', async () => {
+    mockApi.listAIQueue.mockResolvedValue([item({ id: 1, type: 'verify', jobId: 42 })])
+    await openDrawer()
+    await showQueueTab()
+    expect(await screen.findByText(/job 42/i)).toBeInTheDocument()
+  })
+
+  it('shows the empty state when nothing is queued', async () => {
+    mockApi.listAIQueue.mockResolvedValue([])
+    await openDrawer()
+    await showQueueTab()
+    expect(await screen.findByText(/no queued tasks/i)).toBeInTheDocument()
+  })
+
+  it('shows a queued task count in the Queue tab', async () => {
+    mockApi.listAIQueue.mockResolvedValue([
+      item({ id: 1, type: 'score_fit', jobId: 7 }),
+      item({ id: 2, type: 'verify', jobId: 8 }),
+    ])
+    await openDrawer()
+    await showQueueTab()
+    await screen.findByText('Score fit')
+    expect(screen.getByRole('tab', { name: /queue/i })).toHaveTextContent('2')
+  })
+
+  it('shows the status line for a processing task', async () => {
+    mockApi.listAIQueue.mockResolvedValue([item({ id: 1, status: 'processing' })])
+    await openDrawer()
+    await showQueueTab()
+    expect(await screen.findByText(/processing/i)).toBeInTheDocument()
+  })
+
+  it('shows the failure reason for a failed task', async () => {
+    mockApi.listAIQueue.mockResolvedValue([
+      item({ id: 1, status: 'failed', attempts: 3, lastError: 'rate limited' })
+    ])
+    await openDrawer()
+    await showQueueTab()
+    expect(await screen.findByText(/failed \(3 attempts\)/i)).toBeInTheDocument()
+    expect(screen.getByText(/rate limited/i)).toBeInTheDocument()
+  })
+
+  it('only offers Retry for a failed task', async () => {
+    mockApi.listAIQueue.mockResolvedValue([
+      item({ id: 1, type: 'verify', jobId: 1, status: 'failed' }),
+      item({ id: 2, type: 'verify', jobId: 2, status: 'pending' }),
+    ])
+    await openDrawer()
+    await showQueueTab()
+    await screen.findByText(/failed/i)
+    expect(screen.getAllByRole('button', { name: /retry/i })).toHaveLength(1)
+  })
+
+  it('retrying a failed task calls the retry API and refreshes the list', async () => {
+    const retried = [item({ id: 1, type: 'verify', jobId: 1, status: 'pending' })]
+    mockApi.listAIQueue.mockResolvedValue([item({ id: 1, type: 'verify', jobId: 1, status: 'failed' })])
+    mockApi.retryAIQueueItem.mockResolvedValue(retried)
+    await openDrawer()
+    await showQueueTab()
+    fireEvent.click(await screen.findByRole('button', { name: /retry/i }))
+    expect(mockApi.retryAIQueueItem).toHaveBeenCalledWith(1)
+    // The response replaces the list — the task is no longer failed.
+    await waitFor(() => {
+      expect(screen.queryByText(/failed/i)).not.toBeInTheDocument()
+    })
+  })
+
+  it('removing a task calls the remove API', async () => {
+    mockApi.listAIQueue.mockResolvedValue([item({ id: 5, type: 'verify', jobId: 1 })])
+    mockApi.removeAIQueueItem.mockResolvedValue([])
+    await openDrawer()
+    await showQueueTab()
+    fireEvent.click(await screen.findByRole('button', { name: /remove/i }))
+    expect(mockApi.removeAIQueueItem).toHaveBeenCalledWith(5)
+    await waitFor(() => {
+      expect(screen.getByText(/no queued tasks/i)).toBeInTheDocument()
+    })
+  })
+
+  it('surfaces an error when a queue call fails', async () => {
+    mockApi.listAIQueue.mockResolvedValue([item({ id: 1, type: 'verify', jobId: 1, status: 'failed' })])
+    mockApi.retryAIQueueItem.mockResolvedValue({ error: 'boom' })
+    await openDrawer()
+    await showQueueTab()
+    fireEvent.click(await screen.findByRole('button', { name: /retry/i }))
+    // The failed row survives the rejected call rather than vanishing.
+    expect(await screen.findByText(/failed/i)).toBeInTheDocument()
+  })
+
+  it('hides the notifications-only Dismiss all control on the Queue tab', async () => {
+    await openDrawer()
+    expect(screen.getByRole('button', { name: /clear all notifications/i })).toBeInTheDocument()
+    await showQueueTab()
+    expect(screen.queryByRole('button', { name: /clear all notifications/i })).not.toBeInTheDocument()
+  })
+
+  it('closes on Escape from the Queue tab', async () => {
+    mockApi.listAIQueue.mockResolvedValue([item({ id: 1, type: 'verify', jobId: 1 })])
+    await openDrawer()
+    await showQueueTab()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByTestId('notif-backdrop')).not.toBeInTheDocument()
+  })
+})
+
+describe('NotificationDrawer queue polling', () => {
+  beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }))
+  afterEach(() => vi.useRealTimers())
+
+  it('refreshes the queue periodically while the panel is open', async () => {
+    mockApi.listAIQueue.mockResolvedValue([item({ id: 1, type: 'score_fit', jobId: 7 })])
+    await openDrawer()
+    await showQueueTab()
+    await screen.findByText('Score fit')
+    const callsAfterOpen = mockApi.listAIQueue.mock.calls.length
+
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(mockApi.listAIQueue.mock.calls.length).toBeGreaterThan(callsAfterOpen)
+  })
+
+  it('does not poll before the Queue tab is opened', async () => {
+    mockApi.listAIQueue.mockResolvedValue([item({ id: 1, type: 'score_fit', jobId: 7 })])
+    await openDrawer()
+    await vi.advanceTimersByTimeAsync(30000)
+    expect(mockApi.listAIQueue).not.toHaveBeenCalled()
+  })
+
+  it('stops polling once the drawer is closed', async () => {
+    mockApi.listAIQueue.mockResolvedValue([item({ id: 1, type: 'score_fit', jobId: 7 })])
+    await openDrawer()
+    await showQueueTab()
+    await screen.findByText('Score fit')
+    const calls = mockApi.listAIQueue.mock.calls.length
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await vi.advanceTimersByTimeAsync(30000)
+    expect(mockApi.listAIQueue.mock.calls.length).toBe(calls)
+  })
+})
+
+describe('queue task formatting', () => {
+  it('labels every queue type the main process can emit', () => {
+    const types: AIQueueItem['type'][] = [
+      'generate_cv', 'generate_cover_letter', 'regenerate_section',
+      'verify', 'tailor_job_docs', 'score_fit',
+    ]
+    for (const type of types) {
+      const label = queueItemLabel(item({ type, sectionName: 'summary' }))
+      expect(label, `type ${type} needs a label`).toBeTruthy()
+      expect(label).not.toMatch(/undefined/)
+    }
+  })
+
+  it('includes the section name for a section regeneration', () => {
+    expect(queueItemLabel(item({ type: 'regenerate_section', sectionName: 'summary' })))
+      .toContain('summary')
+  })
+
+  it('describes a pending task as pending', () => {
+    expect(queueItemStatusText(item())).toBe('Pending')
+  })
+
+  it('describes an in-flight task as processing', () => {
+    expect(queueItemStatusText(item({ status: 'processing' }))).toMatch(/processing/i)
+  })
+
+  it('reports the attempt count for a failed task', () => {
+    expect(queueItemStatusText(item({ status: 'failed', attempts: 4 }))).toBe('Failed (4 attempts)')
+  })
+
+  it('counts down to the next retry for a backing-off task', () => {
+    const now = 1_000_000
+    const text = queueItemStatusText(item({ attempts: 2, nextRetryAt: now + 30_000 }), now)
+    expect(text).toBe('Retry in 30s (attempt 2)')
+  })
+
+  it('never reports a negative wait for a task whose retry time has passed', () => {
+    const now = 1_000_000
+    const text = queueItemStatusText(item({ attempts: 1, nextRetryAt: now - 5_000 }), now)
+    expect(text).toBe('Retry in 0s (attempt 1)')
   })
 })

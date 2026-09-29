@@ -43,16 +43,17 @@ vi.mock('./database', () => ({
   bumpDocumentAutoRegenAttempts: vi.fn(() => 1)
 }))
 
-import { processQueue, enqueue } from './aiQueue'
+import { processQueue, enqueue, listQueueInPickOrder } from './aiQueue'
 import { scoreOneJobInBackground } from './fitScorer'
 import { tailorJobDocsForJob } from './tailorJobDocs'
-import { getAIQueue, updateAIQueueItem, removeAIQueueItem, getJob, getDocument, listDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
+import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, getJob, getDocument, listDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
 import { RateLimitError, verifyDocumentContent } from './ai'
 
 const mockedScore = vi.mocked(scoreOneJobInBackground)
 const mockedGetQueue = vi.mocked(getAIQueue)
 const mockedUpdate = vi.mocked(updateAIQueueItem)
 const mockedRemove = vi.mocked(removeAIQueueItem)
+const mockedAdd = vi.mocked(addAIQueueItem)
 const mockedGetJob = vi.mocked(getJob)
 const mockedTailor = vi.mocked(tailorJobDocsForJob)
 const mockedGetDocument = vi.mocked(getDocument)
@@ -469,9 +470,9 @@ describe('P1.7 enqueue() duplicate suppression', () => {
 
   it('creates the item when no identical pending entry exists', () => {
     mockedGetQueue.mockReturnValue([])
-    enqueue({ type: 'tailor_job_docs', jobId: 7 })
-    // The add path is the database layer's addAIQueueItem.
-    expect(mockedGetQueue).toHaveBeenCalled()
+    const result = enqueue({ type: 'tailor_job_docs', jobId: 7 })
+    expect(result).not.toBeNull()
+    expect(mockedAdd).toHaveBeenCalledWith(expect.objectContaining({ type: 'tailor_job_docs', jobId: 7 }))
   })
 
   it('does not collapse a regeneration onto an unrelated generate item for the same job', () => {
@@ -482,5 +483,85 @@ describe('P1.7 enqueue() duplicate suppression', () => {
     ])
     const result = enqueue({ type: 'tailor_job_docs', jobId: 7 })
     expect(result).not.toBeNull()
+  })
+})
+
+// The renderer's Queue panel lists tasks in the order the processor
+// will actually pick them, so the ordering rule has to be reachable
+// without running the processor (which would mutate status). This
+// reuses pickOrder() rather than re-deriving the sort in the renderer,
+// so the displayed order cannot drift from the executed order.
+describe('listQueueInPickOrder (Queue panel ordering)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('returns an empty array when the queue is empty', () => {
+    mockedGetQueue.mockReturnValue([])
+    expect(listQueueInPickOrder()).toEqual([])
+  })
+
+  it('puts every score_fit item ahead of higher-fit generation items', () => {
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 1, type: 'tailor_job_docs', jobId: 1 }),
+      queueItem({ id: 2, type: 'score_fit', jobId: 2 })
+    ])
+    mockedGetJob.mockImplementation((id) => ({ id, score: 0.9 }) as Job)
+    expect(listQueueInPickOrder().map((i) => i.id)).toEqual([2, 1])
+  })
+
+  it('orders generation items by fit score descending', () => {
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 1, type: 'verify', jobId: 1 }),
+      queueItem({ id: 2, type: 'verify', jobId: 2 }),
+      queueItem({ id: 3, type: 'verify', jobId: 3 })
+    ])
+    const scores: Record<number, number> = { 1: 0.6, 2: 0.95, 3: 0.75 }
+    mockedGetJob.mockImplementation((id) => ({ id, score: scores[id] }) as Job)
+    expect(listQueueInPickOrder().map((i) => i.jobId)).toEqual([2, 3, 1])
+  })
+
+  it('sorts a null fit score last within its tier', () => {
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 1, type: 'verify', jobId: 1 }),
+      queueItem({ id: 2, type: 'verify', jobId: 2 })
+    ])
+    mockedGetJob.mockImplementation((id) => (id === 1 ? ({ id, score: 0.4 } as Job) : null))
+    expect(listQueueInPickOrder().map((i) => i.jobId)).toEqual([1, 2])
+  })
+
+  it('ties equal fit scores by ascending queue id', () => {
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 30, type: 'verify', jobId: 1 }),
+      queueItem({ id: 10, type: 'verify', jobId: 2 }),
+      queueItem({ id: 20, type: 'verify', jobId: 3 })
+    ])
+    mockedGetJob.mockImplementation((id) => ({ id, score: 0.5 }) as Job)
+    expect(listQueueInPickOrder().map((i) => i.id)).toEqual([10, 20, 30])
+  })
+
+  it('reflects a fit score that changed after the item was enqueued', () => {
+    // The panel must not show a stale order: same rows, no re-enqueue,
+    // but job 2's fit has since risen above job 1's.
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 1, type: 'verify', jobId: 1 }),
+      queueItem({ id: 2, type: 'verify', jobId: 2 })
+    ])
+    const scores: Record<number, number> = { 1: 0.6, 2: 0.5 }
+    mockedGetJob.mockImplementation((id) => ({ id, score: scores[id] }) as Job)
+    expect(listQueueInPickOrder().map((i) => i.jobId)).toEqual([1, 2])
+    scores[2] = 0.95
+    expect(listQueueInPickOrder().map((i) => i.jobId)).toEqual([2, 1])
+  })
+
+  it('does not mutate the array returned by the store', () => {
+    const rows = [
+      queueItem({ id: 2, type: 'verify', jobId: 2 }),
+      queueItem({ id: 1, type: 'verify', jobId: 1 })
+    ]
+    mockedGetQueue.mockReturnValue(rows)
+    mockedGetJob.mockImplementation((id) => ({ id, score: 0.1 }) as Job)
+    listQueueInPickOrder()
+    expect(rows.map((i) => i.id)).toEqual([2, 1])
   })
 })

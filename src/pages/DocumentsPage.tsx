@@ -3,6 +3,7 @@ import { api } from '../api'
 import type { AIQueueItem, Document } from '../types'
 import { STATUS_LABELS } from '../types'
 import { notify } from '../components/Notifications'
+import { queueItemLabel, queueItemStatusText } from '../fitQueue'
 import Modal from '../components/Modal'
 
 const SECTION_HEADERS = new Set([
@@ -75,25 +76,6 @@ export default function DocumentsPage() {
 
   async function handleRemoveQueue(id: number) {
     setQueue(await api.removeAIQueueItem(id))
-  }
-
-  function queueLabel(item: AIQueueItem): string {
-    switch (item.type) {
-      case 'generate_cv': return 'Generate CV'
-      case 'generate_cover_letter': return 'Generate Cover Letter'
-      case 'regenerate_section': return `Regenerate section: ${item.sectionName}`
-      case 'verify': return 'Verify document'
-    }
-  }
-
-  function queueStatusText(item: AIQueueItem): string {
-    if (item.status === 'processing') return 'Processing…'
-    if (item.status === 'failed') return `Failed (${item.attempts} attempts)`
-    if (item.attempts > 0) {
-      const wait = Math.max(0, Math.ceil((item.nextRetryAt - Date.now()) / 1000))
-      return `Retry in ${wait}s (attempt ${item.attempts})`
-    }
-    return 'Pending'
   }
 
   function selectDoc(doc: Document) {
@@ -263,9 +245,9 @@ export default function DocumentsPage() {
           queue.map((item) => (
             <div key={item.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 500 }}>{queueLabel(item)}</div>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>{queueItemLabel(item)}</div>
                 <div style={{ fontSize: 11, color: item.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)' }}>
-                  {queueStatusText(item)}
+                  {queueItemStatusText(item)}
                   {item.lastError && item.status === 'failed' && ` — ${item.lastError.slice(0, 80)}`}
                 </div>
               </div>
