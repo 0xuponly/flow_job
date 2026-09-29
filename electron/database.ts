@@ -99,11 +99,14 @@ function defaultStore(): Store {
       title_casing_normalized_v2: '',
       statuses_recomputed: '',
       statuses_manual_v2: '',
+      queue_dedup_v1: '',
       backup_path: '',      backup_last_success_at: '',
       backup_last_error: '',
       passphrase: '',
       auto_tailor_on_scan: false,
       auto_tailor_min_fit: 90,
+      // P1.7 (BRIEF5 §4): fit threshold for auto document generation.
+      auto_doc_min_fit: 40,
       quick_apply_shortcut: null
     },
     api_models: [],
@@ -271,6 +274,14 @@ export function loadStore(): Store {
       // scale. The threshold is "<= 1" so the new defaults (90) and any
       // user-set value in 0-100 are untouched.
       store.settings.auto_tailor_min_fit = Math.round(store.settings.auto_tailor_min_fit * 100)
+    }
+    // P1.7 (BRIEF5 §4): backfill the auto-doc generation threshold.
+    // Same 0-1 → 0-100 normalization as auto_tailor_min_fit so a
+    // hand-edited store with the fractional scale still works.
+    if (typeof store.settings.auto_doc_min_fit !== 'number') {
+      store.settings.auto_doc_min_fit = 40
+    } else if (store.settings.auto_doc_min_fit > 0 && store.settings.auto_doc_min_fit <= 1) {
+      store.settings.auto_doc_min_fit = Math.round(store.settings.auto_doc_min_fit * 100)
     }
     if (typeof store.settings.quick_apply_shortcut !== 'string' && store.settings.quick_apply_shortcut !== null) {
       store.settings.quick_apply_shortcut = null
@@ -1108,6 +1119,33 @@ export function updateDocumentVerification(
   }
   persistStore()
   return s.documents[idx]
+}
+
+// P1.7 (BRIEF5 §2): auto review→regenerate loop bookkeeping.
+// `getDocumentAutoRegenAttempts` reads the current count for a document
+// (legacy rows without the field read as 0). `bumpDocumentAutoRegenAttempts`
+// increments it and returns the new value, so the caller can compare
+// against AUTO_REGEN_MAX to decide whether to keep looping or stop and
+// flag the document for manual attention.
+//
+// The counter lives on the document (not the queue item) because the
+// loop spans multiple queue items: generation -> verify -> regeneration
+// -> verify -> ... Each verify item is created and destroyed inside one
+// pass, so a queue-item-local counter would reset every cycle.
+export function getDocumentAutoRegenAttempts(id: number): number {
+  const s = loadStore()
+  const doc = s.documents.find((d) => d.id === id)
+  return doc?.auto_regen_attempts ?? 0
+}
+
+export function bumpDocumentAutoRegenAttempts(id: number): number {
+  const s = loadStore()
+  const idx = s.documents.findIndex((d) => d.id === id)
+  if (idx === -1) return 0
+  const next = (s.documents[idx].auto_regen_attempts ?? 0) + 1
+  s.documents[idx] = { ...s.documents[idx], auto_regen_attempts: next }
+  persistStore()
+  return next
 }
 
 // Recompute a job's status from its current documents. Called whenever
@@ -2188,18 +2226,110 @@ export function getAIQueue(): AIQueueItem[] {
   return loadStore().ai_queue ?? []
 }
 
-export function updateAIQueueItem(id: number, updates: Partial<AIQueueItem>): void {
+/**
+ * Apply a patch to one queue row.
+ *
+ * Returns whether the row was found and updated. A `false` means the
+ * item no longer exists — which the queue processor treats as "this
+ * work was cleared out from under us, stop". The return value is what
+ * makes that detectable: the write was previously a silent no-op, so a
+ * pass holding a stale snapshot would carry on issuing LLM calls for
+ * rows that were already gone.
+ */
+export function updateAIQueueItem(id: number, updates: Partial<AIQueueItem>): boolean {
   const s = loadStore()
   const idx = s.ai_queue.findIndex((q) => q.id === id)
-  if (idx === -1) return
+  if (idx === -1) return false
   s.ai_queue[idx] = { ...s.ai_queue[idx], ...updates }
   persistStore()
+  return true
+}
+
+/**
+ * Collapse queue rows that describe the same piece of work.
+ *
+ * `enqueue()`'s duplicate guard only matched `pending`, so an enqueue
+ * landing while an identical item was mid-`processing` created a second
+ * row. Two creation paths (the startup backlog and the fit-auto-score
+ * timer) plus the processor's own retry cycle produced three `score_fit`
+ * rows for one job, which the Queue panel then showed verbatim.
+ *
+ * The guard is widened to cover `processing`, so this cannot recur — but
+ * rows already written stay written. This is the one-shot repair for
+ * them, gated on `queue_dedup_v1`.
+ *
+ * The survivor is chosen to preserve the most work: the item furthest
+ * along its retry budget wins, and `processing` beats `pending` beats
+ * `failed` at equal attempts, so a duplicate pair does not throw away an
+ * in-flight request. Nothing is merged — a single row is kept as-is and
+ * the rest are dropped, because inventing an attempt count or status
+ * for the survivor would be a guess.
+ */
+export function dedupeAIQueueItems(): { removed: number } {
+  const s = loadStore()
+  if (s.settings.queue_dedup_v1 === '1') return { removed: 0 }
+
+  const rank = (q: AIQueueItem): number =>
+    q.status === 'processing' ? 2 : q.status === 'pending' ? 1 : 0
+  const sameWork = (a: AIQueueItem, b: AIQueueItem): boolean =>
+    a.type === b.type &&
+    a.jobId === b.jobId &&
+    (a.documentId ?? null) === (b.documentId ?? null) &&
+    (a.sectionName ?? null) === (b.sectionName ?? null)
+
+  const groups = new Map<string, AIQueueItem[]>()
+  for (const q of s.ai_queue) {
+    const key = `${q.type}|${q.jobId}|${q.documentId ?? ''}|${q.sectionName ?? ''}`
+    const bucket = groups.get(key)
+    if (bucket) bucket.push(q)
+    else groups.set(key, [q])
+  }
+
+  let removed = 0
+  const keep: AIQueueItem[] = []
+  for (const bucket of groups.values()) {
+    if (bucket.length === 1) {
+      keep.push(bucket[0])
+      continue
+    }
+    const winner = [...bucket].sort(
+      (a, b) => rank(b) - rank(a) || b.attempts - a.attempts || a.id - b.id
+    )[0]
+    keep.push(winner)
+    removed += bucket.length - 1
+  }
+
+  s.ai_queue = keep
+  s.settings.queue_dedup_v1 = '1'
+  persistStore()
+  return { removed }
 }
 
 export function removeAIQueueItem(id: number): void {
   const s = loadStore()
   s.ai_queue = s.ai_queue.filter((q) => q.id !== id)
   persistStore()
+}
+
+/**
+ * Drop every queued task, whatever its status.
+ *
+ * Deliberately unconditional: the caller is responsible for confirming
+ * with the user first, because there is no undo and a queue can hold
+ * hundreds of pending fit scores and document generations.
+ *
+ * A task that is mid-flight is not cancelled — the LLM call already in
+ * progress runs to completion, and its `removeAIQueueItem` afterwards is
+ * a no-op on a row that is no longer there. That is the safe direction
+ * to err: work already paid for still completes rather than being
+ * thrown away mid-request.
+ */
+export function clearAIQueue(): number {
+  const s = loadStore()
+  const removed = (s.ai_queue ?? []).length
+  s.ai_queue = []
+  persistStore()
+  return removed
 }
 
 /**

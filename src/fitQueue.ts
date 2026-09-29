@@ -21,7 +21,8 @@
  */
 import { api } from './api'
 import { notify } from './components/Notifications'
-import type { Job } from './types'
+import { AUTO_REVIVE_MAX } from './types'
+import type { AIQueueItem, Job } from './types'
 
 const MAX_QUEUED = 10
 
@@ -140,6 +141,65 @@ if (typeof window !== 'undefined') {
  * fires once per enqueue, with the resolved Job on success or the
  * error message on failure.
  */
+/**
+ * Human-readable label for an AI queue task.
+ *
+ * Lives here rather than in each consumer because the queue is now
+ * rendered in two places (the Documents page modal and the
+ * notification center's Queue panel) and a task with no label would
+ * render as a blank row. Extracted from DocumentsPage for that reason.
+ */
+export function queueItemLabel(item: AIQueueItem): string {
+  switch (item.type) {
+    case 'generate_cv': return 'Generate CV'
+    case 'generate_cover_letter': return 'Generate Cover Letter'
+    case 'regenerate_section': return `Regenerate section: ${item.sectionName}`
+    case 'verify': return 'Verify document'
+    case 'tailor_job_docs': return 'Generate CV + cover letter'
+    case 'score_fit': return 'Score fit'
+  }
+}
+
+/**
+ * One-line status for a queue task: where it is now, or when it will
+ * next be attempted. A pending item with a future `nextRetryAt` is
+ * waiting out a rate-limit backoff, so the countdown is the useful
+ * thing to show.
+ */
+export function queueItemStatusText(item: AIQueueItem, now: number = Date.now()): string {
+  if (item.status === 'processing') return 'Processing…'
+  if (item.status === 'failed') {
+    // A failed item with revive budget left is not stranded — the
+    // processor will bring it back on its own. Saying so stops a task
+    // that is waiting out a quota window from looking abandoned.
+    const revives = item.autoRevives ?? 0
+    if (revives < AUTO_REVIVE_MAX) {
+      const wait = Math.max(0, Math.ceil((item.nextRetryAt - now) / 1000))
+      return wait > 0
+        ? `Retrying automatically in ${formatWait(wait)}`
+        : 'Retrying automatically…'
+    }
+    return `Failed (${item.attempts} attempts) — needs attention`
+  }
+  if ((item.autoRevives ?? 0) > 0) {
+    // Revived and re-queued: a plain "Pending" hides that this task
+    // already failed a full round and came back.
+    return `Recovered, retrying (round ${(item.autoRevives ?? 0) + 1})`
+  }
+  if (item.attempts > 0) {
+    const wait = Math.max(0, Math.ceil((item.nextRetryAt - now) / 1000))
+    return `Retry in ${formatWait(wait)} (attempt ${item.attempts})`
+  }
+  return 'Pending'
+}
+
+function formatWait(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.ceil(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  return `${Math.ceil(minutes / 60)}h`
+}
+
 export function enqueueFitRecompute(jobId: number, onResult: OnResult): boolean {
   // Cap is on QUEUED items, not the running count: 10 items can be
   // waiting behind the in-flight call. The in-flight call itself is

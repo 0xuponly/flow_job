@@ -103,8 +103,14 @@ export function createLogger(category: string, logDir?: string): CategoryLogger 
 // `log.<category>.error(...)` without needing to know the
 // <userData>/logs/ path. The brief prescribes `log.tailor.*` access
 // (e.g. cv_failed, cl_failed, cap_hit, dropped_missing_job); other
-// categories keep their per-module createLogger() pattern.
+// categories keep their per-module createLogger() pattern. main.ts
+// keeps its own registry (scraper/scanner/startup/...) because those
+// categories only fire from the main-process orchestration code;
+// ai.ts reaches back here so scoreJobFit / verifyDocumentContent can
+// write to fit.log just like the per-module createLogger('fit')
+// pattern in fitAutoScore.ts.
 export const log = {
   tailor: createLogger('tailor'),
-  ai: createLogger('ai')
+  ai: createLogger('ai'),
+  fit: createLogger('fit')
 }

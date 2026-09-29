@@ -43,7 +43,7 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     aggregator_jobicy_enabled: false, aggregator_himalayas_enabled: false,
     ats_boards: [], disabled_boards: [], auto_tailor_on_scan: false,
     auto_tailor_min_fit: 90, quick_apply_shortcut: null, statuses_recomputed: '',
-    statuses_manual_v2: '', ...overrides
+    statuses_manual_v2: '', queue_dedup_v1: '', ...overrides
   }
 }
 
@@ -191,5 +191,61 @@ describe('runFitAutoScoreBacklog', () => {
     expect(count).toBe(2)
     expect(mockedAddAIQueueItem).toHaveBeenCalledWith({ type: 'score_fit', jobId: 1 })
     expect(mockedUpdateAIQueueItem).toHaveBeenCalledWith(11, expect.objectContaining({ status: 'pending' }))
+  })
+})
+
+// The duplicate bug lived at the boundary between this timer and the
+// processor's `processing` window. These pin the half that lives here.
+describe('runFitAutoScoreBacklog does not stack duplicates', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockedListJobs.mockReturnValue([] as never)
+  })
+
+  it('skips a job whose score_fit item is processing', () => {
+    mockedListJobs.mockReturnValue([makeJob({ id: 1 })] as never)
+    mockedGetAIQueue.mockReturnValue([
+      { id: 1, type: 'score_fit', jobId: 1, status: 'processing', attempts: 1, createdAt: 1, nextRetryAt: 0, lastError: null }
+    ] as never)
+    expect(runFitAutoScoreBacklog()).toBe(0)
+    expect(mockedAddAIQueueItem).not.toHaveBeenCalled()
+  })
+
+  it('skips a job whose score_fit item is pending', () => {
+    mockedListJobs.mockReturnValue([makeJob({ id: 1 })] as never)
+    mockedGetAIQueue.mockReturnValue([
+      { id: 1, type: 'score_fit', jobId: 1, status: 'pending', attempts: 0, createdAt: 1, nextRetryAt: 0, lastError: null }
+    ] as never)
+    expect(runFitAutoScoreBacklog()).toBe(0)
+    expect(mockedAddAIQueueItem).not.toHaveBeenCalled()
+  })
+
+  it('treats ANY in-flight duplicate as in flight, not just the first', () => {
+    // Two rows for one job where the first reads as exhausted. Judging
+    // only the first resurrects it alongside the live one.
+    mockedListJobs.mockReturnValue([makeJob({ id: 1 })] as never)
+    mockedGetAIQueue.mockReturnValue([
+      { id: 1, type: 'score_fit', jobId: 1, status: 'failed', attempts: 5, createdAt: 1, nextRetryAt: 0, lastError: null },
+      { id: 2, type: 'score_fit', jobId: 1, status: 'processing', attempts: 1, createdAt: 1, nextRetryAt: 0, lastError: null }
+    ] as never)
+    expect(runFitAutoScoreBacklog()).toBe(0)
+    expect(mockedUpdateAIQueueItem).not.toHaveBeenCalled()
+    expect(mockedAddAIQueueItem).not.toHaveBeenCalled()
+  })
+
+  it('still resurrects a single exhausted item', () => {
+    mockedListJobs.mockReturnValue([makeJob({ id: 1 })] as never)
+    mockedGetAIQueue.mockReturnValue([
+      { id: 1, type: 'score_fit', jobId: 1, status: 'failed', attempts: 5, createdAt: 1, nextRetryAt: 0, lastError: null }
+    ] as never)
+    expect(runFitAutoScoreBacklog()).toBe(1)
+    expect(mockedUpdateAIQueueItem).toHaveBeenCalledWith(1, expect.objectContaining({ status: 'pending' }))
+  })
+
+  it('still queues a job with no queue row at all', () => {
+    mockedListJobs.mockReturnValue([makeJob({ id: 1 })] as never)
+    mockedGetAIQueue.mockReturnValue([] as never)
+    expect(runFitAutoScoreBacklog()).toBe(1)
+    expect(mockedAddAIQueueItem).toHaveBeenCalledWith({ type: 'score_fit', jobId: 1 })
   })
 })

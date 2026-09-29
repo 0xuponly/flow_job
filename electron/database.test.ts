@@ -29,7 +29,7 @@ vi.mock('electron', () => ({
 // Load the database AFTER the electron override above is in place.
 import { existsSync, unlinkSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import { createJob, updateJob, getJob, listJobs, reloadStore } from './database'
+import { createJob, updateJob, getJob, listJobs, reloadStore, addAIQueueItem, updateAIQueueItem, getAIQueue, clearAIQueue, dedupeAIQueueItems } from './database'
 import type { CreateJobInput } from './types'
 
 const baseInput: CreateJobInput = {
@@ -160,5 +160,139 @@ describe('scan-created job stays unscored until real scoring lands', () => {
     const { job } = createJob(baseInput)
     const fetched = getJob(job.id)
     expect(fetched?.score).toBeNull()
+  })
+})
+// The queue is wiped by the Clear Queue button, and the count it
+// returns is what the success toast tells the user. Nothing else
+// exercises the real delete — aiQueue.test.ts mocks ./database
+// wholesale — so without this a `clearAIQueue` that returned 0 without
+// emptying anything would pass the entire suite.
+describe('clearAIQueue (real store)', () => {
+  function seed() {
+    const pending = addAIQueueItem({ type: 'score_fit', jobId: 1 })
+    addAIQueueItem({ type: 'verify', jobId: 2 })
+    const failed = addAIQueueItem({ type: 'tailor_job_docs', jobId: 3 })
+    updateAIQueueItem(failed.id, { status: 'failed', attempts: 3 })
+    const running = addAIQueueItem({ type: 'verify', jobId: 4 })
+    updateAIQueueItem(running.id, { status: 'processing' })
+    return { pending, failed, running }
+  }
+
+  it('removes rows in every status, not just pending ones', () => {
+    seed()
+    expect(getAIQueue()).toHaveLength(4)
+    clearAIQueue()
+    // "Whatever its status" is the documented contract; a
+    // pending-only clear would leave the other three behind.
+    expect(getAIQueue()).toEqual([])
+  })
+
+  it('reports the number of rows it removed', () => {
+    seed()
+    expect(clearAIQueue()).toBe(4)
+  })
+
+  it('reports zero and does not throw on an already-empty queue', () => {
+    expect(clearAIQueue()).toBe(0)
+    expect(getAIQueue()).toEqual([])
+  })
+
+  it('leaves a queue that is repopulated afterwards intact', () => {
+    seed()
+    clearAIQueue()
+    addAIQueueItem({ type: 'score_fit', jobId: 9 })
+    expect(getAIQueue()).toHaveLength(1)
+  })
+})
+
+describe('updateAIQueueItem reports whether the row existed', () => {
+  it('returns true when the row was patched', () => {
+    const row = addAIQueueItem({ type: 'score_fit', jobId: 1 })
+    expect(updateAIQueueItem(row.id, { status: 'processing' })).toBe(true)
+  })
+
+  it('returns false for a row that no longer exists', () => {
+    // This is the signal the processor uses to detect work that was
+    // cleared out from under a mid-flight pass.
+    const row = addAIQueueItem({ type: 'score_fit', jobId: 1 })
+    clearAIQueue()
+    expect(updateAIQueueItem(row.id, { status: 'processing' })).toBe(false)
+  })
+})
+
+// The Queue panel showed three score_fit rows for one job: enqueue()'s
+// guard only matched `pending`, so an enqueue landing while an identical
+// item was `processing` added another row. The guard is now widened, but
+// rows already written stay written — this is the one-shot repair.
+describe('dedupeAIQueueItems (real store)', () => {
+  function seed() {
+    const a = addAIQueueItem({ type: 'score_fit', jobId: 1 })
+    const b = addAIQueueItem({ type: 'score_fit', jobId: 1 })
+    const c = addAIQueueItem({ type: 'score_fit', jobId: 1 })
+    addAIQueueItem({ type: 'score_fit', jobId: 2 })
+    addAIQueueItem({ type: 'verify', jobId: 1, documentId: 9 })
+    return { a, b, c }
+  }
+
+  it('collapses three rows of the same work down to one', () => {
+    seed()
+    expect(getAIQueue()).toHaveLength(5)
+    dedupeAIQueueItems()
+    expect(getAIQueue()).toHaveLength(3)
+  })
+
+  it('removes exactly the redundant count', () => {
+    seed()
+    expect(dedupeAIQueueItems().removed).toBe(2)
+  })
+
+  it('leaves distinct work alone', () => {
+    seed()
+    dedupeAIQueueItems()
+    const remaining = getAIQueue()
+    // job 2's score_fit, and the verify for a document.
+    expect(remaining.some((q) => q.type === 'score_fit' && q.jobId === 2)).toBe(true)
+    expect(remaining.some((q) => q.type === 'verify' && q.jobId === 1)).toBe(true)
+  })
+
+  it('keeps the in-flight row rather than a failed one', () => {
+    const { a, b } = seed()
+    updateAIQueueItem(b.id, { status: 'processing' })
+    updateAIQueueItem(a.id, { status: 'failed' })
+    dedupeAIQueueItems()
+    const kept = getAIQueue().filter((q) => q.type === 'score_fit' && q.jobId === 1)
+    expect(kept).toHaveLength(1)
+    // Throwing away the in-flight request would waste work already paid for.
+    expect(kept[0].status).toBe('processing')
+  })
+
+  it('keeps the row with the most attempts when statuses tie', () => {
+    const { a, b } = seed()
+    updateAIQueueItem(a.id, { attempts: 4 })
+    updateAIQueueItem(b.id, { attempts: 1 })
+    dedupeAIQueueItems()
+    const kept = getAIQueue().filter((q) => q.type === 'score_fit' && q.jobId === 1)
+    expect(kept).toHaveLength(1)
+    expect(kept[0].attempts).toBe(4)
+  })
+
+  it('treats different jobIds as different work', () => {
+    addAIQueueItem({ type: 'score_fit', jobId: 1 })
+    addAIQueueItem({ type: 'score_fit', jobId: 2 })
+    expect(dedupeAIQueueItems().removed).toBe(0)
+  })
+
+  it('runs only once, so later legitimate rows are never collapsed', () => {
+    seed()
+    dedupeAIQueueItems()
+    // A fresh duplicate created afterwards must survive a second call.
+    addAIQueueItem({ type: 'score_fit', jobId: 3 })
+    addAIQueueItem({ type: 'score_fit', jobId: 3 })
+    expect(dedupeAIQueueItems().removed).toBe(0)
+  })
+
+  it('does not throw on an empty queue', () => {
+    expect(dedupeAIQueueItems().removed).toBe(0)
+    expect(getAIQueue()).toEqual([])
   })
 })

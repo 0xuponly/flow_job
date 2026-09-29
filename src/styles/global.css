@@ -48,6 +48,11 @@
   --border: #d0d0d0;
   --text: #1a1a1a;
   --text-muted: #666666;
+  /* Overrides the dark-theme #ef4444, which is only 3.3:1 on this
+     theme's --bg and fails WCAG AA (4.5:1) for body-size text. This
+     value computes to ~5.7:1. Any future use of --danger as text in
+     light theme depends on this existing. */
+  --danger: #b91c1c;
   --accent-tint-strong: rgba(99, 102, 241, 0.10);
   --accent-tint-soft: rgba(99, 102, 241, 0.08);
   --warning-tint: rgba(245, 158, 11, 0.10);

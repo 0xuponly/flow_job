@@ -12,7 +12,7 @@ import {
   verifyManifest,
   wrapDekWithPassphrase
 } from './backupCrypto'
-import { tailorDocument, generateFollowUpMessage, regenerateSection, verifyDocumentContent, scoreJobFit, extractJobKeywordsV3, RateLimitError } from './ai'
+import { tailorDocument, generateFollowUpMessage, regenerateSection, verifyDocumentContent, scoreJobFit, extractJobKeywordsV3, RateLimitError, resetModelHealthByIds, withAiOperation } from './ai'
 import { scoreOneJobInBackground } from './fitScorer'
 import { countPdfPages } from '../src/cvOnePage'
 import { buildPdfHtml } from './pdfTemplate'
@@ -52,7 +52,7 @@ function stripHmac(manifest: Record<string, unknown>): Record<string, unknown> {
   return manifest
 }
 import { formatLocation } from './utils'
-import { startQueueProcessor, stopQueueProcessor, enqueue } from './aiQueue'
+import { startQueueProcessor, stopQueueProcessor, enqueue, listQueueInPickOrder, retryQueueItem, clearQueue } from './aiQueue'
 import { scheduleNextAutoScan, cancelAutoScan, markScanStarted, markScanCompleted, restartAutoScanTimer } from './autoScan'
 import { scheduleNextFitAutoScore, restartFitAutoScoreTimer } from './fitAutoScore'
 import {
@@ -222,7 +222,7 @@ function registerIpc(): void {
     // score=null and is updated in place when the LLM call resolves
     // (or falls back to a heuristic). Errors surface as fit_last_error
     // in the row.
-    void scoreOneJobInBackground(job.id)
+    void withAiOperation(() => scoreOneJobInBackground(job.id))
     return { job, wasBlacklisted }
   })
   ipcMain.handle('jobs:update', (_e, id: number, fields: Partial<CreateJobInput & { status: JobStatus }>) =>
@@ -244,7 +244,7 @@ function registerIpc(): void {
       // returned so the renderer can prompt the user to confirm.
       const { job, wasBlacklisted } = db.createJob(input, { skipDuplicateCheck: true, force: true })
       // Fire-and-forget background fit scoring for the imported job.
-      void scoreOneJobInBackground(job.id)
+      void withAiOperation(() => scoreOneJobInBackground(job.id))
       // Notify all renderers that a job was imported so lists can refresh.
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) win.webContents.send('job:imported', job)
@@ -286,7 +286,7 @@ function registerIpc(): void {
     // heuristic-fallback (don't overwrite), the error path, and emits
     // job:scoreUpdated. The handler returns the post-update row so
     // the renderer doesn't have to re-read the store.
-    const updated = await scoreOneJobInBackground(id)
+    const updated = await withAiOperation(() => scoreOneJobInBackground(id))
     if (!updated) {
       throw new Error(`Job ${id} not found`)
     }
@@ -376,7 +376,7 @@ function registerIpc(): void {
   })
   ipcMain.handle('documents:verify', async (_e, jobId: number, documentId: number, docType: 'cv' | 'cover_letter'): Promise<VerificationResult | { queued: true }> => {
     try {
-      const result = await verifyDocumentContent(jobId, documentId, docType)
+      const result = await withAiOperation(() => verifyDocumentContent(jobId, documentId, docType))
       db.recomputeJobStatusFromDocs(jobId)
       return result
     } catch (err) {
@@ -389,7 +389,7 @@ function registerIpc(): void {
   })
   ipcMain.handle('documents:regenerateSection', async (_e, documentId: number, sectionName: string, jobId: number, extraContext?: string) => {
     try {
-      return await regenerateSection(documentId, sectionName, jobId, extraContext)
+      return await withAiOperation(() => regenerateSection(documentId, sectionName, jobId, extraContext))
     } catch (err) {
       if (err instanceof RateLimitError) {
         enqueue({ type: 'regenerate_section', jobId, documentId, sectionName, extraContext })
@@ -527,13 +527,42 @@ function registerIpc(): void {
   ipcMain.handle('settings:reset', () => db.resetSettings())
 
   ipcMain.handle('models:list', () => db.listApiModels())
-  ipcMain.handle('models:save', (_e, models: ApiModelConfig[]) => db.saveApiModels(models))
-  ipcMain.handle('models:add', (_e, model: Omit<ApiModelConfig, 'id'>) => db.addApiModel(model))
-  ipcMain.handle('models:delete', (_e, id: string) => db.deleteApiModel(id))
+  // P1.6: model-health reset. Disabling a model in the Settings UI
+  // leaves its cooldown/circuit-breaker entry in ai.ts's in-memory
+  // modelHealth map; re-enabling would inherit the stale state and the
+  // just-re-enabled model would be silently skipped. After each
+  // model-persistence IPC we call resetModelHealthByIds with the
+  // affected ids so the next callAI rotation tries them again. We
+  // export only the targeted reset from ai.ts (not the map itself) per
+  // the BRIEF, so callers cannot iterate or hand-clear arbitrary
+  // entries.
+  //
+  // Policy chosen for models:save: reset for every id in the new list
+  // (management's preference — a fresh outlook after any user
+  // action). models:add and models:delete reset for the single id
+  // involved. The delete-then-readd-with-same-id case is covered by
+  // models:add (the add reuses the canonical id, and the reset hook
+  // handles "never in the map" as a no-op).
+  ipcMain.handle('models:save', (_e, models: ApiModelConfig[]) => {
+    const saved = db.saveApiModels(models)
+    resetModelHealthByIds(saved.map((m) => m.id).filter((id): id is string => typeof id === 'string'))
+    return saved
+  })
+  ipcMain.handle('models:add', (_e, model: Omit<ApiModelConfig, 'id'>) => {
+    const saved = db.addApiModel(model)
+    const last = saved[saved.length - 1]
+    if (last && typeof last.id === 'string') resetModelHealthByIds([last.id])
+    return saved
+  })
+  ipcMain.handle('models:delete', (_e, id: string) => {
+    const saved = db.deleteApiModel(id)
+    resetModelHealthByIds([id])
+    return saved
+  })
 
   ipcMain.handle('ai:tailor', async (_e, request: TailorRequest) => {
     try {
-      return await tailorDocument(request)
+      return await withAiOperation(() => tailorDocument(request))
     } catch (err) {
       if (err instanceof RateLimitError) {
         enqueue({ type: request.document_type === 'cv' ? 'generate_cv' : 'generate_cover_letter', jobId: request.job_id })
@@ -1019,7 +1048,10 @@ function registerIpc(): void {
   ipcMain.handle('security:status', () => db.encryptionStatus())
 
   // AI Queue
-  ipcMain.handle('aiQueue:list', () => db.getAIQueue())
+  // Returns the queue in pick order (score_fit first, then fit DESC)
+  // rather than raw store order, so the renderer's Queue panel shows
+  // the order the processor will actually use.
+  ipcMain.handle('aiQueue:list', () => listQueueInPickOrder())
 
   ipcMain.handle('boards:list', () => {
     // Per-board enabled flag, sourced from settings.disabled_boards.
@@ -1033,14 +1065,13 @@ function registerIpc(): void {
   })
   ipcMain.handle('boards:health', () => db.getBoardHealth())
   ipcMain.handle('boards:scanEstimate', (_e, boardNames: string[]) => computeScanEstimate(boardNames))
-  ipcMain.handle('aiQueue:retry', (_e, id: number) => {
-    db.updateAIQueueItem(id, { status: 'pending', nextRetryAt: Date.now(), lastError: undefined })
-    return db.getAIQueue()
-  })
+  ipcMain.handle('aiQueue:retry', (_e, id: number) => retryQueueItem(id))
   ipcMain.handle('aiQueue:remove', (_e, id: number) => {
     db.removeAIQueueItem(id)
     return db.getAIQueue()
   })
+  // Irreversible. The renderer confirms with the user before calling.
+  ipcMain.handle('aiQueue:clear', () => clearQueue())
 
   ipcMain.handle('shell:openExternal', (_e, url: string) => {
     if (typeof url !== 'string') return
@@ -1149,6 +1180,22 @@ function enqueueScoreFitBacklog(): void {
 // singleton, so ordering against the renderer’s first data IPC is
 // harmless either way.
 function runDeferredStoreWork(): void {
+  // Before anything reads or writes the queue. A one-shot repair for
+  // duplicate rows left by the old enqueue guard — it must run first so
+  // the backlog re-seed below does not race rows that are about to be
+  // collapsed, and so the processor never picks up a duplicate.
+  try {
+    const dedupe = db.dedupeAIQueueItems()
+    if (dedupe.removed > 0) {
+      log.startup.info(`Collapsed ${dedupe.removed} duplicate AI queue task(s).`)
+    }
+  } catch (err) {
+    log.startup.warn(
+      'AI queue dedupe failed:',
+      err instanceof Error ? err.message : String(err)
+    )
+  }
+
   startQueueProcessor()
   // Re-seed the score_fit backlog on every session start: jobs left
   // score-less by a crashed/killed scan (or by queue items that burned

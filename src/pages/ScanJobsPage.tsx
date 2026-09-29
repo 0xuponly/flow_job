@@ -914,7 +914,7 @@ export default function ScanJobsPage() {
               </button>
             </div>
           </div>
-          <div style={{ fontSize: 12, lineHeight: 1.7, maxHeight: 320, overflowY: 'auto' }}>
+          <div style={{ fontSize: 12, lineHeight: 1.7, maxHeight: 300, overflowY: 'auto' }}>
             {(() => {
               // Show all green (✓) lines + all blue (Scanning) lines, but only the
               // most recent grey line. Each new grey line replaces the previous
