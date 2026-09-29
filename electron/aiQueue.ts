@@ -2,7 +2,7 @@ import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, getDo
 import { log } from './logger'
 import { tailorDocument, regenerateSection, verifyDocumentContent, RateLimitError } from './ai'
 import type { AIQueueItem } from './types'
-import { AUTO_REGEN_MAX, PASSING_REVIEW_SCORE } from './types'
+import { AUTO_REGEN_MAX, AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX, PASSING_REVIEW_SCORE } from './types'
 
 function backoffMs(item: AIQueueItem): number {
   // exponential backoff: 30s, 60s, 2m, 4m, 8m, 16s, 30m cap
@@ -228,11 +228,30 @@ async function processItem(item: AIQueueItem): Promise<void> {
         nextRetryAt: Date.now() + backoffMs({ ...item, attempts })
       })
     } else {
-      updateAIQueueItem(item.id, {
-        status: 'failed',
-        attempts,
-        lastError: msg
-      })
+      // The item has burned its whole retry budget. Rather than leave
+      // it terminally failed — which is how a quota-exhausted job
+      // silently lost its fit score until a human noticed — park it
+      // `pending` on a long cooldown with a fresh attempt count, so it
+      // rejoins the queue on its own once the provider recovers.
+      // Bounded by autoRevives so a genuinely unsatisfiable task
+      // eventually stays failed instead of looping forever.
+      const autoRevives = item.autoRevives ?? 0
+      if (autoRevives < AUTO_REVIVE_MAX) {
+        updateAIQueueItem(item.id, {
+          status: 'pending',
+          attempts: 0,
+          autoRevives: autoRevives + 1,
+          lastError: msg,
+          nextRetryAt: Date.now() + AUTO_REVIVE_COOLDOWN_MS
+        })
+      } else {
+        updateAIQueueItem(item.id, {
+          status: 'failed',
+          attempts,
+          autoRevives,
+          lastError: msg
+        })
+      }
     }
   }
 }
@@ -257,13 +276,54 @@ export { RateLimitError }
 export async function processQueue(): Promise<void> {
   const queue = getAIQueue()
   const now = Date.now()
-  const pending = queue.filter(
-    (q) => q.status === 'pending' && q.nextRetryAt <= now
-  )
+
+  // An item parked by the auto-revival loop is already `pending` with a
+  // future nextRetryAt, so the first clause picks it up once its
+  // cooldown elapses. The second clause covers rows that reached
+  // `failed` some other way (before auto-revival shipped, or via the
+  // retry path) and have no revival scheduled — those are revived here
+  // rather than left stranded.
+  const due: AIQueueItem[] = []
+  for (const q of queue) {
+    if (q.nextRetryAt > now) continue
+    if (q.status === 'pending') {
+      due.push(q)
+    } else if (q.status === 'failed' && revive(q)) {
+      // Reviving writes the fresh counters to the row, then processes
+      // the same shape in memory. Without the in-memory half the item
+      // would be processed with its exhausted `attempts` and fail
+      // straight back to `failed` on its very first attempt.
+      updateAIQueueItem(q.id, {
+        status: 'pending',
+        attempts: 0,
+        autoRevives: (q.autoRevives ?? 0) + 1
+      })
+      due.push(reviveInMemory(q))
+    }
+  }
   // P1.7: re-sort on every pass so the ordering reflects the live fit
   // scores, not the order items happened to be enqueued in.
-  for (const item of pickOrder(pending)) {
+  for (const item of pickOrder(due)) {
     await processItem(item)
+  }
+}
+
+/**
+ * Whether a `failed` item still has automatic-revival budget left.
+ * Rows written before `autoRevives` existed have no counter, so
+ * undefined counts as 0 and they get a chance to recover.
+ */
+function revive(item: AIQueueItem): boolean {
+  return (item.autoRevives ?? 0) < AUTO_REVIVE_MAX
+}
+
+/** The row a revived item will be processed as, mirroring the write. */
+function reviveInMemory(item: AIQueueItem): AIQueueItem {
+  return {
+    ...item,
+    status: 'pending',
+    attempts: 0,
+    autoRevives: (item.autoRevives ?? 0) + 1
   }
 }
 

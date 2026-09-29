@@ -187,7 +187,7 @@ describe('NotificationDrawer panel tabs', () => {
 
   it('shows the failure reason for a failed task', async () => {
     mockApi.listAIQueue.mockResolvedValue([
-      item({ id: 1, status: 'failed', attempts: 3, lastError: 'rate limited' })
+      item({ id: 1, status: 'failed', attempts: 3, autoRevives: 3, lastError: 'rate limited' })
     ])
     await openDrawer()
     await showQueueTab()
@@ -197,7 +197,7 @@ describe('NotificationDrawer panel tabs', () => {
 
   it('only offers Retry for a failed task', async () => {
     mockApi.listAIQueue.mockResolvedValue([
-      item({ id: 1, type: 'verify', jobId: 1, status: 'failed' }),
+      item({ id: 1, type: 'verify', jobId: 1, status: 'failed', autoRevives: 3 }),
       item({ id: 2, type: 'verify', jobId: 2, status: 'pending' }),
     ])
     await openDrawer()
@@ -233,7 +233,7 @@ describe('NotificationDrawer panel tabs', () => {
   })
 
   it('surfaces an error when a queue call fails', async () => {
-    mockApi.listAIQueue.mockResolvedValue([item({ id: 1, type: 'verify', jobId: 1, status: 'failed' })])
+    mockApi.listAIQueue.mockResolvedValue([item({ id: 1, type: 'verify', jobId: 1, status: 'failed', autoRevives: 3 })])
     mockApi.retryAIQueueItem.mockResolvedValue({ error: 'boom' })
     await openDrawer()
     await showQueueTab()
@@ -319,8 +319,9 @@ describe('queue task formatting', () => {
     expect(queueItemStatusText(item({ status: 'processing' }))).toMatch(/processing/i)
   })
 
-  it('reports the attempt count for a failed task', () => {
-    expect(queueItemStatusText(item({ status: 'failed', attempts: 4 }))).toBe('Failed (4 attempts)')
+  it('reports the attempt count for a task with no recovery budget left', () => {
+    expect(queueItemStatusText(item({ status: 'failed', attempts: 4, autoRevives: 3 })))
+      .toContain('Failed (4 attempts)')
   })
 
   it('counts down to the next retry for a backing-off task', () => {
@@ -333,5 +334,49 @@ describe('queue task formatting', () => {
     const now = 1_000_000
     const text = queueItemStatusText(item({ attempts: 1, nextRetryAt: now - 5_000 }), now)
     expect(text).toBe('Retry in 0s (attempt 1)')
+  })
+})
+
+describe('queue task automatic recovery', () => {
+  const now = 1_700_000_000_000
+
+  it('says a failed task with budget left is retrying automatically', () => {
+    const text = queueItemStatusText(
+      item({ status: 'failed', attempts: 5, autoRevives: 0, nextRetryAt: now + 1_800_000 }), now
+    )
+    expect(text).toMatch(/retrying automatically/i)
+    expect(text).toMatch(/30m/)
+  })
+
+  it('flags a task that has spent its revive budget as needing attention', () => {
+    const text = queueItemStatusText(
+      item({ status: 'failed', attempts: 5, autoRevives: 3, nextRetryAt: 0 }), now
+    )
+    expect(text).toMatch(/needs attention/i)
+    expect(text).not.toMatch(/retrying automatically/i)
+  })
+
+  it('shows a revived task as recovered rather than plain pending', () => {
+    const text = queueItemStatusText(item({ attempts: 0, autoRevives: 1 }), now)
+    expect(text).toMatch(/recovered/i)
+    expect(text).toMatch(/round 2/i)
+  })
+
+  it('keeps a fresh task reading as simply pending', () => {
+    expect(queueItemStatusText(item({ attempts: 0 }), now)).toBe('Pending')
+  })
+
+  it('renders an hours-long wait in hours', () => {
+    const text = queueItemStatusText(
+      item({ status: 'failed', attempts: 5, autoRevives: 1, nextRetryAt: now + 7_200_000 }), now
+    )
+    expect(text).toMatch(/2h/)
+  })
+
+  it('renders a due task as retrying imminently', () => {
+    const text = queueItemStatusText(
+      item({ status: 'failed', attempts: 5, autoRevives: 1, nextRetryAt: now - 1 }), now
+    )
+    expect(text).toMatch(/retrying automatically…/i)
   })
 })

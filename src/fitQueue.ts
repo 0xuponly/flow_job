@@ -21,6 +21,7 @@
  */
 import { api } from './api'
 import { notify } from './components/Notifications'
+import { AUTO_REVIVE_MAX } from './types'
 import type { AIQueueItem, Job } from './types'
 
 const MAX_QUEUED = 10
@@ -167,12 +168,36 @@ export function queueItemLabel(item: AIQueueItem): string {
  */
 export function queueItemStatusText(item: AIQueueItem, now: number = Date.now()): string {
   if (item.status === 'processing') return 'Processing…'
-  if (item.status === 'failed') return `Failed (${item.attempts} attempts)`
+  if (item.status === 'failed') {
+    // A failed item with revive budget left is not stranded — the
+    // processor will bring it back on its own. Saying so stops a task
+    // that is waiting out a quota window from looking abandoned.
+    const revives = item.autoRevives ?? 0
+    if (revives < AUTO_REVIVE_MAX) {
+      const wait = Math.max(0, Math.ceil((item.nextRetryAt - now) / 1000))
+      return wait > 0
+        ? `Retrying automatically in ${formatWait(wait)}`
+        : 'Retrying automatically…'
+    }
+    return `Failed (${item.attempts} attempts) — needs attention`
+  }
+  if ((item.autoRevives ?? 0) > 0) {
+    // Revived and re-queued: a plain "Pending" hides that this task
+    // already failed a full round and came back.
+    return `Recovered, retrying (round ${(item.autoRevives ?? 0) + 1})`
+  }
   if (item.attempts > 0) {
     const wait = Math.max(0, Math.ceil((item.nextRetryAt - now) / 1000))
-    return `Retry in ${wait}s (attempt ${item.attempts})`
+    return `Retry in ${formatWait(wait)} (attempt ${item.attempts})`
   }
   return 'Pending'
+}
+
+function formatWait(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.ceil(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  return `${Math.ceil(minutes / 60)}h`
 }
 
 export function enqueueFitRecompute(jobId: number, onResult: OnResult): boolean {

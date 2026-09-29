@@ -386,6 +386,32 @@ export type AIQueueItemStatus = 'pending' | 'processing' | 'failed'
 export const PASSING_REVIEW_SCORE = 80
 export const AUTO_REGEN_MAX = 5
 
+/**
+ * P1.8: self-healing for capped queue items.
+ *
+ * A task that exhausts its retry budget used to become permanently
+ * `failed` — the processor only ever picks `status === 'pending'`, so
+ * nothing revived it and the job silently lost its fit score or its
+ * documents until the user noticed and clicked Retry by hand. That is
+ * the wrong default for failures whose cause is almost always
+ * external (quota exhausted, provider down, network blip): the right
+ * behaviour is to wait and try again on our own.
+ *
+ * `AUTO_REVIVE_COOLDOWN_MS` is deliberately far longer than the
+ * per-attempt backoff cap (30m). Backoff is for a request that might
+ * succeed on the next poll; revival is for a task that already failed
+ * its whole budget, so it waits out a real quota window rather than
+ * just the next tick.
+ *
+ * `AUTO_REVIVE_MAX` bounds the loop. Without it, a task that can never
+ * succeed (malformed job, permanently rejected prompt) would cycle
+ * forever and keep spending LLM calls. After this many revivals the
+ * item stays `failed` and is left for the user, which is the correct
+ * outcome for something genuinely broken.
+ */
+export const AUTO_REVIVE_COOLDOWN_MS = 60 * 60 * 1000
+export const AUTO_REVIVE_MAX = 3
+
 export interface AIQueueItem {
   id: number
   type: AIQueueItemType
@@ -396,6 +422,13 @@ export interface AIQueueItem {
   status: AIQueueItemStatus
   attempts: number
   lastError?: string
+  /**
+   * How many times this item has been revived from `failed` back to
+   * `pending` by the automatic recovery loop. Absent on rows written
+   * before auto-revival existed; treat undefined as 0 so legacy rows
+   * still get a chance to recover.
+   */
+  autoRevives?: number
   createdAt: number
   nextRetryAt: number
   // P1.7 (BRIEF5 §3): fit-score snapshot at enqueue time. This is a

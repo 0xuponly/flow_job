@@ -43,6 +43,7 @@ vi.mock('./database', () => ({
   bumpDocumentAutoRegenAttempts: vi.fn(() => 1)
 }))
 
+import { AUTO_REGEN_MAX, AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX } from './types'
 import { processQueue, enqueue, listQueueInPickOrder, retryQueueItem } from './aiQueue'
 import { scoreOneJobInBackground } from './fitScorer'
 import { tailorJobDocsForJob } from './tailorJobDocs'
@@ -145,13 +146,18 @@ describe('score_fit queue processing', () => {
     )
   })
 
-  it('fails score_fit permanently after 5 non-rate-limit attempts', async () => {
+  it('stops short of a terminal failure at 5 attempts and schedules a revival instead', async () => {
+    // Was "fails score_fit permanently after 5 non-rate-limit
+    // attempts". A capped item is no longer terminal — it parks itself
+    // on a cooldown and comes back on its own, so the user never has to
+    // notice a quota outage and click Retry. It stops after 5 rapid
+    // attempts either way; only the aftermath changed.
     mockedGetQueue.mockReturnValue([queueItem({ attempts: 5, lastError: 'x' })])
     mockedScore.mockRejectedValue(new Error('LLM call failed'))
     await processQueue()
     expect(mockedUpdate).toHaveBeenCalledWith(
       'q1',
-      expect.objectContaining({ status: 'failed', attempts: 6 })
+      expect.objectContaining({ status: 'pending', attempts: 0, autoRevives: 1 })
     )
   })
 
@@ -566,6 +572,114 @@ describe('listQueueInPickOrder (Queue panel ordering)', () => {
   })
 })
 
+// A `failed` queue item used to be terminal. These cover the automatic
+// recovery loop: capped items park themselves on a long cooldown and
+// rejoin the queue on their own, bounded so a genuinely broken task
+// eventually stays failed.
+describe('automatic revival of capped items', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('returns a revived item to the queue when it exhausts its budget', async () => {
+    // A failed item is otherwise terminal: the processor only picks
+    // `status === 'pending'`, so a rate-limited task that burned its
+    // budget would sit dead until the user clicked Retry. It has to
+    // schedule its own return with a fresh attempt count.
+    mockedScore.mockResolvedValue({ score: null, fit_last_error: 'LLM down' } as never)
+    const capped = queueItem({ id: 1, type: 'score_fit', jobId: 42, attempts: 4 })
+    mockedGetQueue.mockReturnValue([capped])
+
+    await processQueue()
+
+    const patch = mockedUpdate.mock.calls.at(-1)?.[1] as Record<string, unknown>
+    expect(patch.status).toBe('pending')
+    expect(patch.attempts).toBe(0)
+    expect(patch.autoRevives).toBe(1)
+  })
+
+  it('schedules the revival far enough out not to hammer a downed provider', async () => {
+    mockedScore.mockResolvedValue({ score: null, fit_last_error: 'LLM down' } as never)
+    const before = Date.now()
+    mockedGetQueue.mockReturnValue([queueItem({ id: 1, type: 'score_fit', jobId: 42, attempts: 4 })])
+
+    await processQueue()
+
+    const patch = mockedUpdate.mock.calls.at(-1)?.[1] as { nextRetryAt: number }
+    expect(patch.nextRetryAt).toBeGreaterThanOrEqual(before + AUTO_REVIVE_COOLDOWN_MS)
+  })
+
+  it('gives an auto-revived item a full attempt budget again', async () => {
+    // The whole point: after reviving, a score_fit failure at attempt 5
+    // must be retried rather than instantly re-failing on the cap.
+    mockedScore.mockResolvedValue({ score: null, fit_last_error: 'LLM down' } as never)
+    const revived = queueItem({
+      id: 1, type: 'score_fit', jobId: 42, status: 'pending',
+      attempts: 0, autoRevives: 1, nextRetryAt: 0
+    })
+    mockedGetQueue.mockReturnValue([revived])
+
+    await processQueue()
+
+    const patch = mockedUpdate.mock.calls.at(-1)?.[1] as { attempts: number; status: string }
+    expect(patch.attempts).toBe(1)
+    expect(patch.status).toBe('pending')
+  })
+
+  it('stops auto-reviving once the revive budget is spent', async () => {
+    // Bounded, or a permanently broken task would loop forever burning
+    // LLM calls. Past the cap it stays failed for the user to act on.
+    mockedScore.mockResolvedValue({ score: null, fit_last_error: 'LLM down' } as never)
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 1, type: 'score_fit', jobId: 42, attempts: 4, autoRevives: AUTO_REVIVE_MAX })
+    ])
+
+    await processQueue()
+
+    const patch = mockedUpdate.mock.calls.at(-1)?.[1] as { status: string }
+    expect(patch.status).toBe('failed')
+  })
+
+  it('leaves a failed item alone until its revival time has passed', async () => {
+    // Failed items must not be picked on every 30s poll, or the whole
+    // failed set would churn through LLM calls continuously.
+    const failed = queueItem({
+      id: 1, type: 'score_fit', jobId: 42, status: 'failed',
+      attempts: 5, autoRevives: 1, nextRetryAt: Date.now() + 60_000
+    })
+    mockedGetQueue.mockReturnValue([failed])
+
+    await processQueue()
+
+    expect(mockedScore).not.toHaveBeenCalled()
+  })
+
+  it('revives a failed item whose revival time has passed', async () => {
+    const failed = queueItem({
+      id: 1, type: 'score_fit', jobId: 42, status: 'failed',
+      attempts: 5, autoRevives: 1, nextRetryAt: Date.now() - 1
+    })
+    mockedGetQueue.mockReturnValue([failed])
+    mockedScore.mockResolvedValue({ score: 0.8 } as never)
+
+    await processQueue()
+
+    expect(mockedScore).toHaveBeenCalledWith(42)
+  })
+
+  it('treats a legacy failed row with no revive bookkeeping as revivable', async () => {
+    // Rows written before autoRevives existed have no counter at all.
+    // They must revive rather than being treated as permanently spent.
+    const legacy = queueItem({ id: 1, type: 'score_fit', jobId: 42, status: 'failed', attempts: 5 })
+    mockedGetQueue.mockReturnValue([legacy])
+    mockedScore.mockResolvedValue({ score: 0.8 } as never)
+
+    await processQueue()
+
+    expect(mockedScore).toHaveBeenCalledWith(42)
+  })
+})
+
 // Retry has to clear `attempts`, not just the status. The catch block
 // gates retries on `attempts < N`, so an item that already burned its
 // budget would otherwise get exactly one more attempt and fail again —
@@ -628,5 +742,39 @@ describe('retryQueueItem', () => {
     // rather than being marked failed on its first attempt.
     expect(after.attempts).toBe(1)
     expect(after.status).toBe('pending')
+  })
+})
+
+describe('lifecycle: quota outage then recovery, unattended', () => {
+  it('carries an item from repeated failure to success with no manual retry', async () => {
+    let row: any = { id: 1, type: 'score_fit', jobId: 42, status: 'pending', attempts: 0,
+      autoRevives: 0, createdAt: 1, nextRetryAt: 0, lastError: null }
+    vi.mocked(getAIQueue).mockImplementation(() => [row])
+    // Persist writes back into the simulated store, like the real
+    // updateAIQueueItem merge does.
+    vi.mocked(updateAIQueueItem).mockImplementation((id: any, p: any) => {
+      row = { ...row, ...p }
+    })
+    vi.mocked(removeAIQueueItem).mockImplementation(() => { row = null })
+    // Provider is down: every attempt returns a null score.
+    vi.mocked(scoreOneJobInBackground).mockResolvedValue({ score: null, fit_last_error: '429' } as never)
+
+    const timeline: string[] = []
+    // Poll every 30s across 2 hours of simulated outage.
+    for (let i = 0; i < 240; i++) {
+      const before = row ? `${row.status}/${row.attempts}/r${row.autoRevives}` : 'gone'
+      await processQueue()
+      const after = row ? `${row.status}/${row.attempts}/r${row.autoRevives}` : 'gone'
+      if (before !== after) timeline.push(after)
+      if (row && row.nextRetryAt > 0) row.nextRetryAt -= 30_000  // advance the clock
+    }
+    // Provider recovers.
+    vi.mocked(scoreOneJobInBackground).mockResolvedValue({ score: 0.8 } as never)
+    for (let i = 0; i < 10 && row; i++) { await processQueue(); if (row?.nextRetryAt) row.nextRetryAt = 0 }
+
+    expect(row, 'item should have completed and been removed').toBeNull()
+    expect(vi.mocked(removeAIQueueItem)).toHaveBeenCalledWith(1)
+    expect(timeline.some((t) => t.startsWith('pending/0/r1')), 'should have auto-revived').toBe(true)
+    expect(timeline.filter((t) => t.startsWith('failed')).length, 'should never sit terminally failed').toBe(0)
   })
 })

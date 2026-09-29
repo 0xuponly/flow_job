@@ -276,6 +276,15 @@ export interface ScanStatus {
 // missing here even though the main process has emitted them since
 // P1.7, which made this union a lie the queue UI could not render.
 export type AIQueueItemType = 'generate_cv' | 'generate_cover_letter' | 'regenerate_section' | 'verify' | 'tailor_job_docs' | 'score_fit'
+
+/**
+ * Mirrors AUTO_REVIVE_MAX in electron/types.ts. The renderer needs it
+ * only to decide whether a failed task still has automatic recovery
+ * left, so it can say "retrying automatically" instead of "needs
+ * attention". Kept as a literal rather than shared over IPC because
+ * duplicating one integer is cheaper than a round trip.
+ */
+export const AUTO_REVIVE_MAX = 3
 export type AIQueueItemStatus = 'pending' | 'processing' | 'failed'
 
 export interface AIQueueItem {
@@ -288,6 +297,8 @@ export interface AIQueueItem {
   status: AIQueueItemStatus
   attempts: number
   lastError?: string
+  /** Times this item has been revived from `failed` by the auto-recovery loop. */
+  autoRevives?: number
   createdAt: number
   nextRetryAt: number
 }
