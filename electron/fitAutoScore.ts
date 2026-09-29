@@ -67,12 +67,24 @@ export function runFitAutoScoreBacklog(): number {
   for (const job of listJobs()) {
     if (job.score !== null || job.fit_score_version === cvVersion) continue
 
-    const existing = queue.find((q) => q.type === 'score_fit' && q.jobId === job.id)
-    if (existing && (existing.status === 'pending' || existing.status === 'processing')) {
+    // Deliberately not the shared `enqueue()`: this path RESURRECTS a
+    // burned-out item rather than adding a new one, which is what
+    // `enqueue` does not do. The pending/processing check below is
+    // duplicated from it deliberately, and must stay in step — when
+    // this checked only `pending` (as `enqueue` once did) both paths
+    // added a row for the same job during a long `processing` window,
+    // which is how the Queue panel came to show three score_fit entries
+    // per job.
+    // Every matching row, not just the first: a job that somehow has
+    // more than one must be judged on whether ANY of them is in flight,
+    // or a duplicate pair reads as "exhausted" and gets resurrected.
+    const matches = queue.filter((q) => q.type === 'score_fit' && q.jobId === job.id)
+    if (matches.some((q) => q.status === 'pending' || q.status === 'processing')) {
       // Already in flight; do not stack duplicates.
       continue
     }
 
+    const existing = matches[0]
     if (existing && existing.status === 'failed') {
       // The item burned its attempts while the app was open. Reset it to
       // pending so the queue processor will try again on the next tick.

@@ -265,6 +265,8 @@ export interface Settings {
   // user-only status).
   statuses_recomputed: string
   statuses_manual_v2: string
+  // Gating flag for the queue-duplicate repair (see dedupeAIQueueItems).
+  queue_dedup_v1: string
 }
 
 export type MatchGrade = 'S' | 'A' | 'B' | 'C' | 'D' | 'F' | null

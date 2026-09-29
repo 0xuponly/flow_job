@@ -1180,6 +1180,22 @@ function enqueueScoreFitBacklog(): void {
 // singleton, so ordering against the renderer’s first data IPC is
 // harmless either way.
 function runDeferredStoreWork(): void {
+  // Before anything reads or writes the queue. A one-shot repair for
+  // duplicate rows left by the old enqueue guard — it must run first so
+  // the backlog re-seed below does not race rows that are about to be
+  // collapsed, and so the processor never picks up a duplicate.
+  try {
+    const dedupe = db.dedupeAIQueueItems()
+    if (dedupe.removed > 0) {
+      log.startup.info(`Collapsed ${dedupe.removed} duplicate AI queue task(s).`)
+    }
+  } catch (err) {
+    log.startup.warn(
+      'AI queue dedupe failed:',
+      err instanceof Error ? err.message : String(err)
+    )
+  }
+
   startQueueProcessor()
   // Re-seed the score_fit backlog on every session start: jobs left
   // score-less by a crashed/killed scan (or by queue items that burned
