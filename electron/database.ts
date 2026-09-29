@@ -2225,18 +2225,50 @@ export function getAIQueue(): AIQueueItem[] {
   return loadStore().ai_queue ?? []
 }
 
-export function updateAIQueueItem(id: number, updates: Partial<AIQueueItem>): void {
+/**
+ * Apply a patch to one queue row.
+ *
+ * Returns whether the row was found and updated. A `false` means the
+ * item no longer exists — which the queue processor treats as "this
+ * work was cleared out from under us, stop". The return value is what
+ * makes that detectable: the write was previously a silent no-op, so a
+ * pass holding a stale snapshot would carry on issuing LLM calls for
+ * rows that were already gone.
+ */
+export function updateAIQueueItem(id: number, updates: Partial<AIQueueItem>): boolean {
   const s = loadStore()
   const idx = s.ai_queue.findIndex((q) => q.id === id)
-  if (idx === -1) return
+  if (idx === -1) return false
   s.ai_queue[idx] = { ...s.ai_queue[idx], ...updates }
   persistStore()
+  return true
 }
 
 export function removeAIQueueItem(id: number): void {
   const s = loadStore()
   s.ai_queue = s.ai_queue.filter((q) => q.id !== id)
   persistStore()
+}
+
+/**
+ * Drop every queued task, whatever its status.
+ *
+ * Deliberately unconditional: the caller is responsible for confirming
+ * with the user first, because there is no undo and a queue can hold
+ * hundreds of pending fit scores and document generations.
+ *
+ * A task that is mid-flight is not cancelled — the LLM call already in
+ * progress runs to completion, and its `removeAIQueueItem` afterwards is
+ * a no-op on a row that is no longer there. That is the safe direction
+ * to err: work already paid for still completes rather than being
+ * thrown away mid-request.
+ */
+export function clearAIQueue(): number {
+  const s = loadStore()
+  const removed = (s.ai_queue ?? []).length
+  s.ai_queue = []
+  persistStore()
+  return removed
 }
 
 /**

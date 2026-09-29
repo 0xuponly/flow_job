@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { NotificationsProvider, useNotifications } from './NotificationsProvider'
+import Notifications from '../components/Notifications'
 import NotificationDrawer from './NotificationDrawer'
 import { queueItemLabel, queueItemStatusText } from '../fitQueue'
 import type { AIQueueItem } from '../types'
@@ -12,6 +13,7 @@ const mockApi = {
   notificationsDismissAll: vi.fn(),
   notificationsPurgeOldDismissed: vi.fn(),
   listAIQueue: vi.fn(),
+  clearAIQueue: vi.fn(),
   retryAIQueueItem: vi.fn(),
   removeAIQueueItem: vi.fn(),
 }
@@ -401,5 +403,166 @@ describe('queue task wait formatting at real cooldowns', () => {
   it('rounds a partial hour up so it never reads as already due', () => {
     expect(queueItemStatusText(failed({ nextRetryAt: now + 90 * 60 * 1000 }), now))
       .toBe('Retrying automatically in 2h')
+  })
+})
+
+describe('Clear queue', () => {
+  const threeTasks = [
+    item({ id: 1, type: 'score_fit', jobId: 7 }),
+    item({ id: 2, type: 'verify', jobId: 8 }),
+    item({ id: 3, type: 'tailor_job_docs', jobId: 9 }),
+  ]
+
+  const realConfirm = window.confirm
+  afterEach(() => {
+    // vi.clearAllMocks() does NOT undo a direct property assignment, so
+    // without this every later test in the file inherited a stubbed
+    // confirm (and the file failed under --sequence.shuffle).
+    window.confirm = realConfirm
+  })
+
+  function stubConfirm(result: boolean) {
+    const spy = vi.fn(() => result)
+    window.confirm = spy as unknown as typeof window.confirm
+    return spy
+  }
+
+  beforeEach(() => {
+    mockApi.clearAIQueue = vi.fn().mockResolvedValue({ removed: 3, queue: [] })
+    // @ts-expect-error - test mock
+    globalThis.window.api = mockApi
+  })
+
+  it('is only offered on the Queue tab', async () => {
+    mockApi.listAIQueue.mockResolvedValue(threeTasks)
+    await openDrawer()
+    expect(screen.queryByRole('button', { name: /clear queue/i })).not.toBeInTheDocument()
+    await showQueueTab()
+    expect(await screen.findByRole('button', { name: /clear queue/i })).toBeInTheDocument()
+  })
+
+  it('does nothing without asking first', async () => {
+    // Stubbed explicitly: without this the test passed only because
+    // jsdom's unimplemented confirm() returns undefined, and it fails
+    // under --sequence.shuffle by inheriting another test's stub.
+    const confirmSpy = stubConfirm(false)
+    mockApi.listAIQueue.mockResolvedValue(threeTasks)
+    await openDrawer()
+    await showQueueTab()
+    fireEvent.click(await screen.findByRole('button', { name: /clear queue/i }))
+    // The dialog is what gates it, and declining is what stops it.
+    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    expect(mockApi.clearAIQueue).not.toHaveBeenCalled()
+    expect(await screen.findByText('Score fit')).toBeInTheDocument()
+  })
+
+  it('states the count so the user confirms a size, not just an action', async () => {
+    mockApi.listAIQueue.mockResolvedValue(threeTasks)
+    const confirmSpy = stubConfirm(false)
+    await openDrawer()
+    await showQueueTab()
+    fireEvent.click(await screen.findByRole('button', { name: /clear queue/i }))
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('3 queued tasks'))
+  })
+
+  it('clears exactly once when confirmed', async () => {
+    mockApi.listAIQueue.mockResolvedValue(threeTasks)
+    stubConfirm(true)
+    await openDrawer()
+    await showQueueTab()
+    fireEvent.click(await screen.findByRole('button', { name: /clear queue/i }))
+    await waitFor(() => expect(mockApi.clearAIQueue).toHaveBeenCalledTimes(1))
+  })
+
+  it('ignores a second click while the clear is in flight', async () => {
+    let resolve!: (v: { removed: number; queue: AIQueueItem[] }) => void
+    mockApi.clearAIQueue = vi.fn(() => new Promise((r) => { resolve = r }))
+    mockApi.listAIQueue.mockResolvedValue(threeTasks)
+    stubConfirm(true)
+    await openDrawer()
+    await showQueueTab()
+    const btn = await screen.findByRole('button', { name: /clear queue/i })
+    fireEvent.click(btn)
+    await waitFor(() => expect(btn).toBeDisabled())
+    fireEvent.click(btn)
+    expect(mockApi.clearAIQueue).toHaveBeenCalledTimes(1)
+    resolve({ removed: 3, queue: [] })
+  })
+
+  it('empties the panel from the response rather than guessing', async () => {
+    mockApi.listAIQueue.mockResolvedValue(threeTasks)
+    stubConfirm(true)
+    await openDrawer()
+    await showQueueTab()
+    fireEvent.click(await screen.findByRole('button', { name: /clear queue/i }))
+    expect(await screen.findByText(/no queued tasks/i)).toBeInTheDocument()
+    expect(screen.queryByText('Score fit')).not.toBeInTheDocument()
+  })
+
+  it('is disabled when there is nothing to clear', async () => {
+    mockApi.listAIQueue.mockResolvedValue([])
+    await openDrawer()
+    await showQueueTab()
+    const btn = await screen.findByRole('button', { name: /clear queue/i })
+    expect(btn).toBeDisabled()
+  })
+
+  it('keeps the queue visible when the clear call fails', async () => {
+    mockApi.listAIQueue.mockResolvedValue(threeTasks)
+    mockApi.clearAIQueue = vi.fn().mockRejectedValue(new Error('ipc down'))
+    stubConfirm(true)
+    await openDrawer()
+    await showQueueTab()
+    fireEvent.click(await screen.findByRole('button', { name: /clear queue/i }))
+    // A failed clear must not blank the panel and imply success.
+    expect(await screen.findByText('Score fit')).toBeInTheDocument()
+  })
+
+  it('tells the user how many tasks were removed, from the main process count', async () => {
+    // The rendered list is polled and can be stale, so the announced
+    // number has to come from the response, not queue.length.
+    mockApi.listAIQueue.mockResolvedValue(threeTasks)
+    mockApi.clearAIQueue = vi.fn().mockResolvedValue({ removed: 1, queue: [] })
+    stubConfirm(true)
+    render(
+      <NotificationsProvider>
+        <Notifications />
+        <OpenButton />
+        <NotificationDrawer />
+      </NotificationsProvider>
+    )
+    fireEvent.click(screen.getByText('open'))
+    await showQueueTab()
+    fireEvent.click(await screen.findByRole('button', { name: /clear queue/i }))
+    expect(await screen.findByText('Cleared 1 queued task.')).toBeInTheDocument()
+  })
+
+  it('reports the failure rather than silently doing nothing', async () => {
+    mockApi.listAIQueue.mockResolvedValue(threeTasks)
+    mockApi.clearAIQueue = vi.fn().mockRejectedValue(new Error('ipc down'))
+    stubConfirm(true)
+    render(
+      <NotificationsProvider>
+        <Notifications />
+        <OpenButton />
+        <NotificationDrawer />
+      </NotificationsProvider>
+    )
+    fireEvent.click(screen.getByText('open'))
+    await showQueueTab()
+    fireEvent.click(await screen.findByRole('button', { name: /clear queue/i }))
+    expect(await screen.findByText('Could not clear the queue')).toBeInTheDocument()
+  })
+
+  it('recovers the button after a failed clear', async () => {
+    mockApi.listAIQueue.mockResolvedValue(threeTasks)
+    mockApi.clearAIQueue = vi.fn().mockRejectedValue(new Error('ipc down'))
+    stubConfirm(true)
+    await openDrawer()
+    await showQueueTab()
+    fireEvent.click(await screen.findByRole('button', { name: /clear queue/i }))
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /clear queue/i })).not.toBeDisabled()
+    })
   })
 })

@@ -52,7 +52,7 @@ function stripHmac(manifest: Record<string, unknown>): Record<string, unknown> {
   return manifest
 }
 import { formatLocation } from './utils'
-import { startQueueProcessor, stopQueueProcessor, enqueue, listQueueInPickOrder, retryQueueItem } from './aiQueue'
+import { startQueueProcessor, stopQueueProcessor, enqueue, listQueueInPickOrder, retryQueueItem, clearQueue } from './aiQueue'
 import { scheduleNextAutoScan, cancelAutoScan, markScanStarted, markScanCompleted, restartAutoScanTimer } from './autoScan'
 import { scheduleNextFitAutoScore, restartFitAutoScoreTimer } from './fitAutoScore'
 import {
@@ -1070,6 +1070,8 @@ function registerIpc(): void {
     db.removeAIQueueItem(id)
     return db.getAIQueue()
   })
+  // Irreversible. The renderer confirms with the user before calling.
+  ipcMain.handle('aiQueue:clear', () => clearQueue())
 
   ipcMain.handle('shell:openExternal', (_e, url: string) => {
     if (typeof url !== 'string') return

@@ -95,6 +95,7 @@ export interface Api {
   getBoardHealth: () => Promise<Record<string, number[]>>
   retryAIQueueItem: (id: number) => Promise<AIQueueItem[]>
   removeAIQueueItem: (id: number) => Promise<AIQueueItem[]>
+  clearAIQueue: () => Promise<{ removed: number; queue: AIQueueItem[] }>
   openExternal: (url: string) => Promise<void>
   getSecurityStatus: () => Promise<{ mode: 'sealed' | 'plaintext-fallback' | 'uninitialized' }>
   listBlacklistedCompanies: () => Promise<string[]>
@@ -222,6 +223,7 @@ const api: Api = {
   getBoardHealth: () => ipcRenderer.invoke('boards:health'),
   retryAIQueueItem: (id) => ipcRenderer.invoke('aiQueue:retry', id),
   removeAIQueueItem: (id) => ipcRenderer.invoke('aiQueue:remove', id),
+  clearAIQueue: () => ipcRenderer.invoke('aiQueue:clear'),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   getSecurityStatus: () => ipcRenderer.invoke('security:status'),
   listBlacklistedCompanies: () => ipcRenderer.invoke('blacklist:list'),

@@ -67,6 +67,7 @@ export default function NotificationDrawer() {
   const [panel, setPanel] = useState<Panel>('notifications')
   const [queue, setQueue] = useState<AIQueueItem[]>([])
   const [busyId, setBusyId] = useState<number | null>(null)
+  const [clearing, setClearing] = useState(false)
 
   useEffect(() => { setMounted(true) }, [])
 
@@ -115,6 +116,41 @@ export default function NotificationDrawer() {
     []
   )
 
+  // Irreversible, and the queue can hold hundreds of pending fit
+  // scores and document generations, so confirm before calling — the
+  // codebase convention for destructive actions (JobsPage, SettingsPage,
+  // DocumentsPage all use window.confirm). The count goes in the prompt
+  // so the user is confirming the size of what they are discarding, not
+  // just its existence.
+  const handleClearQueue = useCallback(async () => {
+    const count = queue.length
+    if (count === 0) return
+    const ok = window.confirm(
+      `Clear all ${count} queued task${count === 1 ? '' : 's'}?\n\n` +
+      'Pending fit scores and document generation will be cancelled. ' +
+      'This list is only refreshed periodically, so the actual number may ' +
+      'differ. This cannot be undone.'
+    )
+    if (!ok) return
+    setClearing(true)
+    try {
+      const result = await api.clearAIQueue()
+      // Validated like runQueueAction above: this codebase uses error
+      // envelopes in its IPC handlers, and trusting the shape blindly
+      // would setQueue(undefined) and crash the drawer on render.
+      if (!result || !Array.isArray(result.queue)) {
+        notify('Could not clear the queue', 'error')
+        return
+      }
+      setQueue(result.queue)
+      notify(`Cleared ${result.removed} queued task${result.removed === 1 ? '' : 's'}.`, 'info')
+    } catch {
+      notify('Could not clear the queue', 'error')
+    } finally {
+      setClearing(false)
+    }
+  }, [queue.length])
+
   if (!mounted || !isOpen) return null
 
   return createPortal(
@@ -148,7 +184,30 @@ export default function NotificationDrawer() {
         <header style={{ padding: 16, borderBottom: '1px solid var(--border)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <h2 style={{ margin: 0, fontSize: 16, color: 'var(--text)' }}>Notification center</h2>
-            {panel === 'notifications' && (
+            {panel === 'queue' ? (
+              <button
+                type="button"
+                aria-label="Clear queue"
+                onClick={handleClearQueue}
+                disabled={queue.length === 0 || clearing}
+                style={{
+                  background: 'transparent',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  // var(--text), not var(--danger): --danger is not
+                  // overridden in the light theme, so #ef4444 on the
+                  // light --bg lands at ~3.3:1 and fails WCAG AA for
+                  // 12px text. The sibling "Dismiss all" button has the
+                  // same constraint and uses --text for this reason.
+                  color: queue.length === 0 ? 'var(--text-muted)' : 'var(--text)',
+                  padding: '4px 10px',
+                  cursor: queue.length === 0 || clearing ? 'not-allowed' : 'pointer',
+                  fontSize: 12,
+                }}
+              >
+                Clear queue
+              </button>
+            ) : (
               <button
                 type="button"
                 aria-label="Clear all notifications"
