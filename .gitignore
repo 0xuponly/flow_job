@@ -18,8 +18,10 @@ CODEBASE_REVIEW.md
 # BRIEF*.md are working documents for a single task; .hermes/ and
 # plans/ are the agent's own run state. None of it belongs in history:
 # they churn per session, and plans/ can contain transcripts or paths
-# that are not meant to be shared. Enforced by .githooks/pre-commit,
-# which is the real guard -- .gitignore only covers the default add.
+# that are not meant to be shared. This file is the whole enforcement --
+# the repo ships no pre-commit hook, see "Git guardrails" in README.md.
+# It only covers the default add, so `git add -f` or a tool that stages
+# paths directly still gets them in: read `git status` before committing.
 .hermes/
 plans/
 BRIEF*.md

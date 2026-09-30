@@ -279,6 +279,27 @@ IPC is via a `preload.ts`-exposed `api` proxy that wraps
 the store is a single encrypted JSON file written with `fsync` to
 guarantee durability across crashes.
 
+## Git guardrails
+
+Some paths are local-only and must never reach history: `.hermes/`,
+`plans/`, `BRIEF*.md`, `.openclaude/`, `CLAUDE.md`, `CODEBASE_REVIEW.md`,
+`docs/*` (except `docs/templates/`), `*.log`, and the `flow_job_backup*`
+folders. They are working state, agent transcripts, and machine-specific
+artifacts; they churn every session and cannot be un-committed usefully
+once they are in.
+
+`.gitignore` is the entire enforcement. This repository ships **no** git
+hook: there is no tracked `.githooks/` directory, `core.hooksPath` is not
+set, and a fresh clone has no `pre-commit` guard at all. An individual
+clone may carry a local one under `.git/hooks/` — that is a personal
+convenience, not part of the repository, and it does not travel with a
+clone or with a worktree.
+
+Because `.gitignore` only governs the default `git add`, an explicit
+`git add -f` or a tool that stages paths directly will still put these
+paths into a commit. Read `git status` before committing, and unstage
+anything local-only with `git restore --staged <path>`.
+
 ## Project layout
 
 ```
