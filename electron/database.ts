@@ -1226,16 +1226,29 @@ export function updateDocumentVerification(
 // loop spans multiple queue items: generation -> verify -> regeneration
 // -> verify -> ... Each verify item is created and destroyed inside one
 // pass, so a queue-item-local counter would reset every cycle.
+//
+// `bumpDocumentAutoRegenAttempts` returns null, NOT 0, for a document
+// that no longer exists. The two are different facts and the caller
+// acts on the difference: 0 means "this document has regenerated zero
+// times, so it has budget left", while null means "there is no
+// document to regenerate". A delete can land while the reviewer's LLM
+// call is in flight, and a caller reading that as 0 sees a fresh budget
+// for a row that has been deleted — restarting a loop that has nothing
+// left to rebuild and re-reviewing a document the user removed.
+// `getDocumentAutoRegenAttempts` cannot report that distinction (it
+// reads one row and has no second place to signal it), which is why the
+// bump — the write that would have been made to a missing row — is the
+// authority on whether the document is still there.
 export function getDocumentAutoRegenAttempts(id: number): number {
   const s = loadStore()
   const doc = s.documents.find((d) => d.id === id)
   return doc?.auto_regen_attempts ?? 0
 }
 
-export function bumpDocumentAutoRegenAttempts(id: number): number {
+export function bumpDocumentAutoRegenAttempts(id: number): number | null {
   const s = loadStore()
   const idx = s.documents.findIndex((d) => d.id === id)
-  if (idx === -1) return 0
+  if (idx === -1) return null
   const next = (s.documents[idx].auto_regen_attempts ?? 0) + 1
   s.documents[idx] = { ...s.documents[idx], auto_regen_attempts: next }
   persistStore()

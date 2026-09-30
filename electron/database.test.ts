@@ -29,7 +29,7 @@ vi.mock('electron', () => ({
 // Load the database AFTER the electron override above is in place.
 import { existsSync, unlinkSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import { createJob, updateJob, getJob, listJobs, reloadStore, addAIQueueItem, updateAIQueueItem, getAIQueue, clearAIQueue, dedupeAIQueueItems } from './database'
+import { createJob, updateJob, getJob, listJobs, reloadStore, addAIQueueItem, updateAIQueueItem, getAIQueue, clearAIQueue, dedupeAIQueueItems, createDocument, deleteDocument, listJobDocuments, bumpDocumentAutoRegenAttempts, getDocumentAutoRegenAttempts } from './database'
 import type { CreateJobInput } from './types'
 
 const baseInput: CreateJobInput = {
@@ -368,5 +368,46 @@ describe('dedupeAIQueueItems groups by field-wise equality, not a string key', (
     addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4 })
     expect(dedupeAIQueueItems().removed).toBe(1)
     expect(getAIQueue().map((q) => q.id)).toEqual([a.id, b.id])
+  })
+})
+
+// The auto review→regenerate budget. `bumpDocumentAutoRegenAttempts`
+// used to answer 0 for a document that is not there, which the loop read
+// as a full budget and rebuilt anyway — a delete landing mid-LLM-call
+// produced a regeneration item pointing at a row the user had removed.
+describe('bumpDocumentAutoRegenAttempts', () => {
+  function seedDoc() {
+    const { job } = createJob(baseInput)
+    return { job, doc: createDocument('cover_letter', 'Cover Letter', 'ORIGINAL', job.id) }
+  }
+
+  it('counts up on an existing document', () => {
+    const { doc } = seedDoc()
+    expect(bumpDocumentAutoRegenAttempts(doc.id)).toBe(1)
+    expect(bumpDocumentAutoRegenAttempts(doc.id)).toBe(2)
+    expect(getDocumentAutoRegenAttempts(doc.id)).toBe(2)
+  })
+
+  it('returns null, not 0, once the document is gone', () => {
+    const { doc } = seedDoc()
+    bumpDocumentAutoRegenAttempts(doc.id)
+    deleteDocument(doc.id)
+    // 0 would read as "no regenerations yet" — a fresh budget — for a
+    // document that no longer exists.
+    expect(bumpDocumentAutoRegenAttempts(doc.id)).toBeNull()
+  })
+
+  it('keeps reporting null for a document that never existed', () => {
+    expect(bumpDocumentAutoRegenAttempts(987654)).toBeNull()
+  })
+
+  it('does not write a counter onto a deleted document', () => {
+    const { job, doc } = seedDoc()
+    expect(listJobDocuments(job.id).map((d) => d.id)).toEqual([doc.id])
+    deleteDocument(doc.id)
+    bumpDocumentAutoRegenAttempts(doc.id)
+    // The bump is a no-op on a missing row: no counter anywhere, and
+    // nothing put back.
+    expect(listJobDocuments(job.id)).toEqual([])
   })
 })

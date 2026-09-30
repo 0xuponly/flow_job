@@ -535,6 +535,30 @@ describe('P1.7 review < 80 -> auto-regenerate (cap 5)', () => {
     expect(mockedGetRegen).toHaveBeenCalledWith(11)
     expect(mockedAdd).not.toHaveBeenCalled()
   })
+
+  // The document vanished between the review and the counter bump (a
+  // delete landing while the LLM call was in flight). `null` means
+  // "unknown document", and the loop has to treat that as a dead end.
+  // It used to arrive as 0 — indistinguishable from "budget fresh" —
+  // and `0 > AUTO_REGEN_MAX` is false, so the loop queued a rebuild of
+  // a row that no longer exists and then re-reviewed it.
+  it('queues nothing when the bump reports the document is gone', async () => {
+    vi.mocked(verifyDocumentContent).mockResolvedValue({
+      kind: 'review', score: 45, passed: false, feedback: 'Weak.', rules: []
+    } as any)
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 'v1', type: 'verify', jobId: 7, documentId: 11 })
+    ])
+    mockedGetDocument.mockReturnValue({ id: 11, job_id: 7, type: 'cv' } as any)
+    mockedGetRegen.mockReturnValue(0)
+    mockedBumpRegen.mockReturnValue(null)
+    await processQueue()
+    // The counter was still consulted — the document was believed to
+    // exist a moment ago — but a missing row ends the loop rather than
+    // restarting its budget.
+    expect(mockedBumpRegen).toHaveBeenCalledWith(11)
+    expect(mockedAdd).not.toHaveBeenCalled()
+  })
 })
 
 // P1.7 §2 — the other half of the loop. A regeneration item names the

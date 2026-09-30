@@ -196,6 +196,12 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
             return
           }
           const next = bumpDocumentAutoRegenAttempts(item.documentId)
+          // null, not 0: the document was deleted while the reviewer's
+          // LLM call was in flight. There is no budget to think about —
+          // there is no document left to rebuild — so the loop ends
+          // here. Reading that as 0 (fresh budget) queued a generation
+          // item for a deleted row, which then re-reviewed it.
+          if (next === null) return
           if (next > AUTO_REGEN_MAX) return
           if (epoch !== clearEpoch) return
           enqueue({
