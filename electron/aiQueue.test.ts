@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type { AIQueueItem, Job } from './types'
+import type { AIQueueItem, Document, Job } from './types'
 
 // The score_fit case lazy-imports ./fitScorer, so mock it before importing
 // the module under test.
@@ -44,7 +44,13 @@ vi.mock('./database', () => ({
   getJob: vi.fn(),
   listJobDocuments: vi.fn(() => []),
   getDocumentAutoRegenAttempts: vi.fn(() => 0),
-  bumpDocumentAutoRegenAttempts: vi.fn(() => 1)
+  bumpDocumentAutoRegenAttempts: vi.fn(() => 1),
+  // The tailor_job_docs case dynamic-imports this from ./database after
+  // generation. It was missing from the mock, so the import yielded
+  // undefined, the call threw, and the review fan-out below it never
+  // ran — which the then-tautological assertions happily reported as
+  // "nothing to assert".
+  recomputeJobStatusFromDocs: vi.fn()
 }))
 
 import { AUTO_REGEN_MAX, AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX } from './types'
@@ -53,7 +59,7 @@ import { processQueue, enqueue, listQueueInPickOrder, retryQueueItem, clearQueue
 import { scoreOneJobInBackground } from './fitScorer'
 import { tailorJobDocsForJob } from './tailorJobDocs'
 import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, clearAIQueue, getJob, getDocument, listJobDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
-import { RateLimitError, verifyDocumentContent } from './ai'
+import { RateLimitError, tailorDocument, verifyDocumentContent } from './ai'
 
 const mockedScore = vi.mocked(scoreOneJobInBackground)
 const mockedGetQueue = vi.mocked(getAIQueue)
@@ -65,6 +71,7 @@ const mockedGetJob = vi.mocked(getJob)
 const mockedTailor = vi.mocked(tailorJobDocsForJob)
 const mockedGetDocument = vi.mocked(getDocument)
 const mockedVerify = vi.mocked(verifyDocumentContent)
+const mockedTailorDoc = vi.mocked(tailorDocument)
 const mockedListDocuments = vi.mocked(listJobDocuments)
 const mockedGetRegen = vi.mocked(getDocumentAutoRegenAttempts)
 const mockedBumpRegen = vi.mocked(bumpDocumentAutoRegenAttempts)
@@ -83,6 +90,15 @@ function queueItem(overrides: Partial<AIQueueItem>): AIQueueItem {
     status: 'pending',
     lastError: null,
     ...overrides
+  }
+}
+
+/** A document row for the job-scoped list mock. */
+function docRow(id: number, jobId: number, type: 'cv' | 'cover_letter'): Document {
+  return {
+    id, job_id: jobId, type, title: '', content: '', is_base: 0, model_used: null,
+    verification_score: null, verification_feedback: null,
+    created_at: '', updated_at: ''
   }
 }
 
@@ -337,10 +353,37 @@ describe('P1.7 sequential generation -> review per job', () => {
     ] as any)
     await processQueue()
     expect(seen).toEqual(['gen:7'])
-    const enqueuedTypes = mockedUpdate.mock.calls.length
-    // verify items are enqueued through the enqueue() helper, which
-    // goes through addAIQueueItem — assert the ids are referenced.
-    expect(enqueuedTypes).toBeGreaterThanOrEqual(0)
+    // One review per generated document, for THIS job. (This asserted
+    // `mockedUpdate.mock.calls.length >= 0` — true of every number, so
+    // it could not tell "the review chain exists" from "nobody queues a
+    // review at all".)
+    expect(mockedAdd).toHaveBeenCalledTimes(2)
+    expect(mockedAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'verify', jobId: 7, documentId: 11 })
+    )
+    expect(mockedAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'verify', jobId: 7, documentId: 12 })
+    )
+  })
+
+  it('enqueues the reviews only after the generation item is done', async () => {
+    // The ordering is the feature: the review item must not exist
+    // while the document is still being written.
+    const pendingDuringGeneration: unknown[] = []
+    mockedTailor.mockImplementation(async () => {
+      // What the queue holds while tailorJobDocsForJob is mid-flight.
+      pendingDuringGeneration.push(...mockedAdd.mock.calls)
+      return { cvId: 11, clId: 12, ms_cv: 0, ms_cl: 0 }
+    })
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 'g1', type: 'tailor_job_docs', jobId: 7 })
+    ])
+    mockedListDocuments.mockReturnValue([docRow(11, 7, 'cv'), docRow(12, 7, 'cover_letter')])
+
+    await processQueue()
+
+    expect(pendingDuringGeneration).toEqual([])
+    expect(mockedAdd).toHaveBeenCalledWith(expect.objectContaining({ type: 'verify' }))
   })
 
   it('does not enqueue a review when generation produced no documents', async () => {
@@ -351,9 +394,25 @@ describe('P1.7 sequential generation -> review per job', () => {
     mockedListDocuments.mockReturnValue([])
     await processQueue()
     // No verify items enqueued (addAIQueueItem never called with a
-    // verify type).
-    const addCalls = vi.mocked(getAIQueue).mock.calls.length
-    expect(addCalls).toBeGreaterThanOrEqual(0)
+    // verify type). Previously asserted on getAIQueue's call count.
+    expect(mockedAdd).not.toHaveBeenCalled()
+  })
+
+  it('reads the job-scoped document list, never the one that unions in the base CV', async () => {
+    // The base CV is shown next to every job in the UI, which is why
+    // `listDocuments(jobId)` includes it — and why the review fan-out
+    // has to use the job-scoped variant. Getting this wrong uploaded
+    // the user's master CV to the reviewer on every job's generation
+    // pass.
+    mockedTailor.mockResolvedValue({ cvId: 11, clId: 12, ms_cv: 0, ms_cl: 0 })
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 'g1', type: 'tailor_job_docs', jobId: 7 })
+    ])
+    mockedListDocuments.mockReturnValue([docRow(11, 7, 'cv'), docRow(12, 7, 'cover_letter')])
+
+    await processQueue()
+
+    expect(mockedListDocuments).toHaveBeenCalledWith(7)
   })
 })
 
@@ -384,9 +443,15 @@ describe('P1.7 review < 80 -> auto-regenerate (cap 5)', () => {
     // of the SAME doc type.
     expect(mockedGetRegen).toHaveBeenCalledWith(11)
     expect(mockedBumpRegen).toHaveBeenCalledWith(11)
-    // A `generate_cv` regeneration for the same job was enqueued.
-    const addCalls = vi.mocked(getAIQueue).mock.results
-    expect(addCalls.length).toBeGreaterThanOrEqual(0)
+    // A regeneration was actually QUEUED — and queued for THIS
+    // document, not just for its job. This used to read
+    // `getAIQueue().mock.results` and assert
+    // `toBeGreaterThanOrEqual(0)`, which is true of every number: with
+    // the entire regeneration enqueue deleted the whole suite stayed
+    // green, which is how a loop that could only ever run once shipped.
+    expect(mockedAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'generate_cv', jobId: 7, documentId: 11 })
+    )
   })
 
   it('does not enqueue a regeneration when the review already passes (>= 80)', async () => {
@@ -401,6 +466,7 @@ describe('P1.7 review < 80 -> auto-regenerate (cap 5)', () => {
     // A passing doc never enters the regeneration loop.
     expect(mockedGetRegen).not.toHaveBeenCalled()
     expect(mockedBumpRegen).not.toHaveBeenCalled()
+    expect(mockedAdd).not.toHaveBeenCalled()
   })
 
   it('does not enqueue a regeneration when the review skipped (no review happened)', async () => {
@@ -414,6 +480,7 @@ describe('P1.7 review < 80 -> auto-regenerate (cap 5)', () => {
     await processQueue()
     // A skip is NOT a failing review — it must not feed the loop.
     expect(mockedBumpRegen).not.toHaveBeenCalled()
+    expect(mockedAdd).not.toHaveBeenCalled()
   })
 
   it('stops regenerating once the 5-attempt cap is reached (flags for manual attention)', async () => {
@@ -430,6 +497,7 @@ describe('P1.7 review < 80 -> auto-regenerate (cap 5)', () => {
     // No further bump / regeneration once the cap is hit. The doc keeps
     // its sub-80 verification_score, which is the manual-attention flag.
     expect(mockedBumpRegen).not.toHaveBeenCalled()
+    expect(mockedAdd).not.toHaveBeenCalled()
   })
 
   it('bumps the counter on each failing pass so the loop advances toward the cap', async () => {
@@ -446,6 +514,9 @@ describe('P1.7 review < 80 -> auto-regenerate (cap 5)', () => {
     await processQueue()
     // The 5th attempt is allowed through (5 > AUTO_REGEN_MAX is false).
     expect(mockedBumpRegen).toHaveBeenCalledWith(11)
+    expect(mockedAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'generate_cover_letter', jobId: 7, documentId: 11 })
+    )
   })
 
   it('blocks the 6th pass: a bump that overshoots the cap queues nothing', async () => {
@@ -462,6 +533,90 @@ describe('P1.7 review < 80 -> auto-regenerate (cap 5)', () => {
     // Defensive: even if a caller bumps past the cap, no regeneration
     // is queued.
     expect(mockedGetRegen).toHaveBeenCalledWith(11)
+    expect(mockedAdd).not.toHaveBeenCalled()
+  })
+})
+
+// P1.7 §2 — the other half of the loop. A regeneration item names the
+// document to rebuild, and the rebuild hands the document straight
+// back to the reviewer. Without either half the cycle is
+// verify -> fail -> regenerate -> STOP: the replacement is a new row
+// (fresh counter, so AUTO_REGEN_MAX is unreachable) and nothing ever
+// reviews it, so the user is left looking at an unreviewed document
+// presented as the job's regenerated CV.
+//
+// These pin the queue-item contract in isolation; aiQueue.regen.test.ts
+// drives the same thing end to end against the real store.
+describe('P1.7 regeneration rebuilds the failed document and re-queues its review', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockedGetQueue.mockReturnValue([])
+    mockedGetJob.mockReturnValue(undefined)
+    mockedUpdate.mockReset().mockReturnValue(true)
+    // The default from the module mock, re-asserted because mockClear
+    // does not remove implementations set by an earlier test.
+    mockedTailorDoc.mockImplementation(async () => ({ content: 'x', document_id: 1 }))
+  })
+
+  it('rebuilds the document the failing review named, not a new one', async () => {
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 'r1', type: 'generate_cv', jobId: 7, documentId: 11 })
+    ])
+
+    await processQueue()
+
+    expect(mockedTailorDoc).toHaveBeenCalledWith(
+      expect.objectContaining({ job_id: 7, document_type: 'cv', document_id: 11 })
+    )
+  })
+
+  it('rebuilds a cover letter as a cover letter', async () => {
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 'r1', type: 'generate_cover_letter', jobId: 7, documentId: 12 })
+    ])
+
+    await processQueue()
+
+    expect(mockedTailorDoc).toHaveBeenCalledWith(
+      expect.objectContaining({ document_type: 'cover_letter', document_id: 12 })
+    )
+  })
+
+  it('asks for no document on a first generation, so a new one is created', async () => {
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 'g1', type: 'generate_cv', jobId: 7 })
+    ])
+
+    await processQueue()
+
+    const [request] = mockedTailorDoc.mock.calls[0]
+    expect(request.document_id ?? null).toBeNull()
+  })
+
+  it('re-queues a review of the document it just rebuilt', async () => {
+    // The document the rebuild actually wrote, which is what has to go
+    // back to the reviewer: chaining the review is the only thing that
+    // lets the loop advance past one round.
+    mockedTailorDoc.mockImplementation(async () => ({ content: 'x', document_id: 42 }))
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 'r1', type: 'generate_cv', jobId: 7, documentId: 11 })
+    ])
+
+    await processQueue()
+
+    expect(mockedAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'verify', jobId: 7, documentId: 42 })
+    )
+  })
+
+  it('consumes the rebuild item rather than leaving it to run again', async () => {
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 'r1', type: 'generate_cv', jobId: 7, documentId: 11 })
+    ])
+
+    await processQueue()
+
+    expect(mockedRemove).toHaveBeenCalledWith('r1')
   })
 })
 

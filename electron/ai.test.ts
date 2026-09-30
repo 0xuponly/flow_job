@@ -13,6 +13,7 @@ vi.mock('./database', () => ({
   listApplications: vi.fn(() => []),
   updateApplication: vi.fn(),
   createDocument: vi.fn(),
+  replaceDocumentContent: vi.fn(),
   getJob: vi.fn()
 }))
 
@@ -851,6 +852,71 @@ describe('P1.4 tailorDocument rejects deliberation-style CV output', () => {
     const persistedContent = vi.mocked(database.createDocument).mock.calls[0]?.[2] ?? ''
     expect(persistedContent).toContain('Jane Doe')
     expect(persistedContent).not.toContain('We need to tailor')
+  })
+})
+
+// P1.7 §2 auto-regeneration. A rebuild has to land on the SAME document
+// row the review just failed on. `createDocument` always inserts a new
+// row, so routing a regeneration through it handed the user a different
+// document with a fresh auto_regen counter — which is why the loop could
+// run exactly once and why AUTO_REGEN_MAX was unreachable.
+describe('P1.7 tailorDocument rebuilds a document in place', () => {
+  const CV_TEXT =
+    'Jane Doe\njane@example.com\n\nEducation\nHarvard University\tCambridge, MA\n\nExperience\nAcme Corp\tBoston, MA\nSoftware Engineer\tJun 2024 – Present'
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    resetModelHealth()
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 'm1', name: 'good', enabled: true, base_url: 'https://example.invalid', model: 'g1', api_key: 'k' } as never
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: CV_TEXT } }]
+    }), { status: 200 })))
+    vi.spyOn(database, 'getJob').mockReturnValue({
+      id: 7, title: 'Analyst', company: 'Acme', description: 'JD text',
+      location: 'Remote', status: 'sourced'
+    } as never)
+    vi.spyOn(database, 'getSettings').mockReturnValue({
+      base_cv: 'CV body', user_name: 'Jane Doe', user_email: 'jane@example.com'
+    } as never)
+    // mockClear, not just a return value: this file has no global
+    // clearAllMocks, so call history leaks in from earlier describes.
+    vi.mocked(database.replaceDocumentContent).mockClear().mockReturnValue({ id: 11 } as never)
+    vi.mocked(database.createDocument).mockClear().mockReturnValue({ id: 99 } as never)
+  })
+
+  it('replaces the named document rather than inserting a new one', async () => {
+    const { tailorDocument } = await import('./ai')
+    const result = await tailorDocument({ job_id: 7, document_type: 'cv', document_id: 11 })
+
+    expect(database.replaceDocumentContent).toHaveBeenCalledWith(
+      11, 'CV — Acme', expect.stringContaining('Jane Doe'), expect.anything()
+    )
+    expect(database.createDocument).not.toHaveBeenCalled()
+    expect(result.document_id).toBe(11)
+  })
+
+  it('still creates a document when no row was named', async () => {
+    const { tailorDocument } = await import('./ai')
+    const result = await tailorDocument({ job_id: 7, document_type: 'cv' })
+
+    expect(database.createDocument).toHaveBeenCalled()
+    expect(database.replaceDocumentContent).not.toHaveBeenCalled()
+    expect(result.document_id).toBe(99)
+  })
+
+  it('does not resurrect a document that was deleted mid-request', async () => {
+    // The rebuild is in flight when the user deletes the document.
+    // Writing an insert here would put back something the user just
+    // threw away.
+    vi.mocked(database.replaceDocumentContent).mockReturnValue(null)
+    const { tailorDocument } = await import('./ai')
+
+    const result = await tailorDocument({ job_id: 7, document_type: 'cv', document_id: 11 })
+
+    expect(database.createDocument).not.toHaveBeenCalled()
+    expect(result.document_id).toBe(11)
   })
 })
 
