@@ -229,6 +229,18 @@ export interface Settings {
   deleted_jobs_cap: number
   auto_scan_enabled: boolean
   auto_scan_interval_minutes: number
+  /**
+   * Minimum 0-1 match score a listing must reach against the base CV
+   * for a scan to add it. Below the threshold the listing is skipped
+   * (not stored) and counted in the scan result's Skipped column.
+   *
+   * Only applies when `base_cv` is set: with no CV there is nothing to
+   * compare against, so nothing is filtered and the scan result says so.
+   * 0 disables the floor; 1 admits only a perfect match. The value is
+   * read through resolveScanMinMatch (jobSearch.ts), which clamps it and
+   * falls back to 0.25 for anything unusable.
+   */
+  scan_min_match: number
   fit_autoscore_interval_minutes: number
   locations_normalized: string
   locations_normalized_v2: string

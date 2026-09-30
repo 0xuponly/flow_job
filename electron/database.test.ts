@@ -29,7 +29,8 @@ vi.mock('electron', () => ({
 // Load the database AFTER the electron override above is in place.
 import { existsSync, unlinkSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import { createJob, updateJob, getJob, listJobs, reloadStore, addAIQueueItem, updateAIQueueItem, getAIQueue, clearAIQueue, dedupeAIQueueItems, createDocument, deleteDocument, listJobDocuments, bumpDocumentAutoRegenAttempts, getDocumentAutoRegenAttempts } from './database'
+import { createJob, updateJob, getJob, listJobs, reloadStore, getSettings, updateSettings, resetSettings, addAIQueueItem, updateAIQueueItem, getAIQueue, clearAIQueue, dedupeAIQueueItems, createDocument, deleteDocument, listJobDocuments, bumpDocumentAutoRegenAttempts, getDocumentAutoRegenAttempts } from './database'
+import { DEFAULT_SCAN_MIN_MATCH } from './jobSearch'
 import type { CreateJobInput } from './types'
 
 const baseInput: CreateJobInput = {
@@ -409,5 +410,27 @@ describe('bumpDocumentAutoRegenAttempts', () => {
     // The bump is a no-op on a missing row: no counter anywhere, and
     // nothing put back.
     expect(listJobDocuments(job.id)).toEqual([])
+  })
+})
+
+describe('scan_min_match default (the scan match floor)', () => {
+  // The floor was a hardcoded 0.25 in jobSearch.ts until the previous
+  // commit made it a filter; this commit made it a setting. The default
+  // has to stay 0.25 so an upgrade does not silently change how much a
+  // scan admits, and 0.25 is asserted there too so the two cannot drift.
+  it('defaults to 0.25, the value the hardcoded floor used', () => {
+    expect(getSettings().scan_min_match).toBe(0.25)
+    expect(DEFAULT_SCAN_MIN_MATCH).toBe(0.25)
+  })
+
+  it('round-trips a user-set threshold', () => {
+    const updated = updateSettings({ scan_min_match: 0.6 })
+    expect(updated.scan_min_match).toBe(0.6)
+    expect(getSettings().scan_min_match).toBe(0.6)
+  })
+
+  it('restores the default on reset', () => {
+    updateSettings({ scan_min_match: 0.9 })
+    expect(resetSettings().scan_min_match).toBe(0.25)
   })
 })

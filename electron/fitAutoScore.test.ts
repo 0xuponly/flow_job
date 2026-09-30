@@ -47,6 +47,7 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     user_email: '', user_phone: '', user_country: '', base_cv: '',
     job_search_keywords: '', job_search_location: '', job_search_locations: '',
     deleted_jobs_cap: 50000, auto_scan_enabled: true, auto_scan_interval_minutes: 120,
+    scan_min_match: 0.25,
     fit_autoscore_interval_minutes: 240, locations_normalized: '',
     locations_normalized_v2: '', locations_normalized_v3: '', locations_normalized_v4: '',
     locations_normalized_v5: '', locations_normalized_v6: '', employment_type_normalized: '',

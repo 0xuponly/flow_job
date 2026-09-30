@@ -29,13 +29,51 @@ export { BOARDS } from './boards'
 export type { BoardConfig, ScanBoardResult, ScanResult } from './boards'
 import { BOARD_CONCURRENCY_HTTP, BOARD_CONCURRENCY_BROWSER } from './scanEstimate'
 
-// Heuristic pre-filter floor for the scan pipeline. Listings with a keyword-
-// overlap score below this threshold are persisted with score=null and a
-// "low keyword overlap" note instead of being LLM-scored. Two sites use it:
-// `processJob` (single-listing import) and `scanAllBoards` (bulk scan).
-// Raised from 0.15 → 0.25 on 2026-07-22 to drop marginal leads before they
-// hit the queue.
-const HEURISTIC_FLOOR = 0.25
+// Minimum match (0-1 keyword-overlap score) a listing has to reach before
+// a scan will add it. The user tunes this as `scan_min_match` in
+// Settings → Scan; this constant is the fallback for stores written
+// before the setting existed, so upgrading is behaviour-neutral. Raised
+// from 0.15 → 0.25 on 2026-07-22.
+//
+// This is a FILTER, not a label. The two call sites (the per-listing
+// scrape in `fetchAndScore` and the first-party API path in
+// `processBoard`) used to persist below-floor listings with score=null
+// and still return `action: 'added'` — a labelling step that prevented
+// nothing, which is how scans filled the store with off-profile jobs.
+// Below the floor the listing is now not written at all and the scan
+// reports it as `skipped` with a reason.
+//
+// Deliberately NOT recorded in the persistent seen-urls set: a filtered
+// listing is not in the database, so claiming otherwise would make a
+// later scan report it as "Already in database" for a row that does not
+// exist, and would hide it from a re-scan after the user lowers the
+// threshold (or pastes a base CV).
+export const DEFAULT_SCAN_MIN_MATCH = 0.25
+
+// Clamp a stored / IPC-supplied threshold into [0, 1]. A NaN threshold
+// makes every comparison false and silently disables the floor — the
+// exact failure this change exists to close — so a non-numeric value
+// falls back to the default and an out-of-range one to the nearest
+// bound. 0 is a valid "add everything" setting.
+export function resolveScanMinMatch(raw: unknown): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return DEFAULT_SCAN_MIN_MATCH
+  return Math.min(1, Math.max(0, raw))
+}
+
+// The one definition of the floor rule, shared by both scan paths so they
+// cannot drift apart again, and unit-testable without driving a scan.
+// The reason is user-visible in the scan result, so it names both the
+// score and the threshold it missed.
+export function checkMatchFloor(
+  heuristicScore: number,
+  minMatch: number
+): { pass: true } | { pass: false; reason: string } {
+  if (heuristicScore >= minMatch) return { pass: true }
+  return {
+    pass: false,
+    reason: `Below match threshold (heuristic ${heuristicScore.toFixed(2)} < ${minMatch.toFixed(2)})`
+  }
+}
 
 // Returns a promise that resolves true as soon as the signal aborts. Used to
 // race long-running in-flight work so the cancel button feels immediate
@@ -176,6 +214,13 @@ export interface ScanResult {
   totalIncompatible: number
   boards: ScanBoardResult[]
   errors: string[]
+  /**
+   * Plain-language statements about how this run was filtered, shown on
+   * the result card. Not a log: each line is a caveat about the run the
+   * user would otherwise have to infer from the counters (e.g. "no base
+   * CV, so nothing could be matched"). Empty on a plain filtered run.
+   */
+  notes: string[]
   addedJobs: { id: number; title: string; company: string }[]
 }
 
@@ -575,7 +620,7 @@ function matchesLocation(jobLocation: string | null, filterLocation: string): bo
 
 const scoreLimiter = createLimiter<unknown>(LLM_SCAN_CONCURRENCY)
 
-async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<string>, scanSeenUrlsSet: Set<string>, workType: WorkType, filterLocation: string | undefined, signal: AbortSignal | undefined): Promise<{ action: 'added' | 'skipped' | 'incompatible' | 'error'; job?: Job; reason?: string }> {
+async function fetchAndScore(url: string, baseCv: string, minMatch: number, seenUrlsSet: Set<string>, scanSeenUrlsSet: Set<string>, workType: WorkType, filterLocation: string | undefined, signal: AbortSignal | undefined): Promise<{ action: 'added' | 'skipped' | 'incompatible' | 'error'; job?: Job; reason?: string; belowFloor?: boolean }> {
   const dk = dedupKey(url)
   if (seenUrlsSet.has(dk)) return { action: 'skipped', reason: 'Already in database' }
 
@@ -619,32 +664,19 @@ async function fetchAndScore(url: string, baseCv: string, seenUrlsSet: Set<strin
   // LLM scorer handles education/years contextually; we no longer hard-reject here.
   // We still call the LLM scorer for every job that passes the cheap filters above.
 
-  // Heuristic pre-filter: cheap keyword-overlap score before paying for
-  // an LLM call. Listings that obviously don't match the user's CV
-  // (different domain, junior roles, etc.) skip the LLM and are
-  // persisted with score=null + a note. The user can re-score any
-  // listing via the per-job "Recompute Fit" button, which uses the
-  // same scoreJobFit under the hood.
+  // Match floor: cheap keyword-overlap check before paying for an LLM
+  // call. With no base CV there is no signal to compare against, so the
+  // floor does not apply and the listing is scored by the LLM as usual
+  // (scanAllBoards states that plainly in the scan result).
   const heuristicScore = scoreCompatibility(input.title, desc, baseCv)
-  if (baseCv && heuristicScore < HEURISTIC_FLOOR) {
-    try {
-      const { job } = createJob({
-        ...input,
-        score: null,
-        fit_rationale: 'Pre-filtered by heuristic (low keyword overlap)',
-        fit_breakdown: null,
-        fit_score_version: null,
-        fit_source: 'heuristic',
-        fit_last_error: null
-      })
-      seenUrlsSet.add(dk)
-      scanSeenUrlsSet.add(dk)
-      return { action: 'added', job }
-    } catch (err) {
-      if (err instanceof JobBlacklistedError) return { action: 'skipped', reason: 'Previously deleted with low fit' }
-      if (err instanceof JobDuplicateError) return { action: 'skipped', reason: 'Duplicate (race-guard)' }
-      throw err
-    }
+  const floor = baseCv ? checkMatchFloor(heuristicScore, minMatch) : { pass: true } as const
+  if (!floor.pass) {
+    // Not persisted, and reported as skipped so the result card's
+    // Skipped column counts it. Marked in-run only, so a repeat of the
+    // same URL later in THIS scan doesn't re-scrape and re-score it,
+    // while the next scan still gets to re-decide on it.
+    scanSeenUrlsSet.add(dk)
+    return { action: 'skipped', reason: floor.reason, belowFloor: true }
   }
 
   let fit
@@ -792,6 +824,10 @@ export async function scanAllBoards(
   )
   const workType = filters?.workType || 'any'
   const baseCv = settings.base_cv || ''
+  // Resolved ONCE per run: getSettings() re-parses the encrypted store on
+  // every call, and a threshold that moved mid-scan would let the same
+  // listing pass on one board and fail on another.
+  const minMatch = resolveScanMinMatch(settings.scan_min_match)
 
   const existingJobs = listJobs()
   const seenUrls = new Set(getSeenUrls().map(dedupKey))
@@ -804,7 +840,12 @@ export async function scanAllBoards(
   const blockedBoards = new Set<string>()
 
   const startedAt = Date.now()
-  const result: ScanResult = { totalFound: 0, totalAdded: 0, totalSkipped: 0, totalErrors: 0, totalIncompatible: 0, boards: [], errors: [], startedAt, durationMs: 0, cancelled: false, addedJobs: [] }
+  const result: ScanResult = { totalFound: 0, totalAdded: 0, totalSkipped: 0, totalErrors: 0, totalIncompatible: 0, boards: [], errors: [], notes: [], startedAt, durationMs: 0, cancelled: false, addedJobs: [] }
+  // How many listings the match floor turned away this run. Counted in
+  // both paths (per-listing scrape + first-party API fetch) so the
+  // result can say so out loud instead of leaving the user to wonder
+  // where the difference between Found and Added went.
+  let belowFloorSkipped = 0
   const _seenProgress = new Set<string>()
   const progress = (msg: string) => {
     if (_seenProgress.has(msg)) return
@@ -973,9 +1014,9 @@ export async function scanAllBoards(
       // API (Adzuna, Greenhouse, etc.), the fetcher returns ready-
       // to-insert jobs that skip the listing/scrape/score funnel
       // entirely. We still apply the same work-type/location/dup
-      // guards and the LLM scoreJobFit heuristic pre-filter via
-      // createJob's path; the difference is that the listing page
-      // and the per-job scrape are gone.
+      // guards and the same match floor as the scrape path; the
+      // difference is that the listing page and the per-job scrape
+      // (and the LLM fit score) are gone.
       if (board.apiFetcher) {
         const tApi0 = Date.now()
         const apiJobs = await board.apiFetcher(keywords, location, signal)
@@ -1011,13 +1052,23 @@ export async function scanAllBoards(
           if (!matchesLocation(input.location ?? null, location)) {
             br.incompatible++; bump('totalIncompatible'); continue
           }
+          const floor = baseCv
+            ? checkMatchFloor(scoreCompatibility(input.title, input.description ?? '', baseCv), minMatch)
+            : { pass: true } as const
+          if (!floor.pass) {
+            // Same rule as the per-listing scrape path: below the floor
+            // the listing is not written at all. In-run dedupe only — the
+            // URL is not in the database, so the next scan re-decides it.
+            if (dk) scanSeenUrls.add(dk)
+            br.skipped++
+            belowFloorSkipped++
+            bump('totalSkipped')
+            continue
+          }
           try {
-            const heuristicScore = scoreCompatibility(input.title, input.description ?? '', baseCv)
             const { job } = createJob({
               ...input,
-              ...(baseCv && heuristicScore < HEURISTIC_FLOOR
-                ? { score: null, fit_rationale: 'Pre-filtered by heuristic (low keyword overlap)', fit_breakdown: null, fit_score_version: null, fit_source: 'heuristic' as const, fit_last_error: null }
-                : { score: null, fit_rationale: null, fit_breakdown: null, fit_score_version: null, fit_source: null as const, fit_last_error: null })
+              score: null, fit_rationale: null, fit_breakdown: null, fit_score_version: null, fit_source: null as const, fit_last_error: null
             })
             if (dk) { seenUrls.add(dk); scanSeenUrls.add(dk) }
             added++
@@ -1189,7 +1240,7 @@ export async function scanAllBoards(
           Promise.allSettled(
             batch.map(async (l) => {
               progress(`Scraping ${board.name}${locTag} — ${decodeEntities(l.company || l.title || l.url)}`)
-              return fetchAndScore(l.url, baseCv, seenUrls, scanSeenUrls, workType, location, signal)
+              return fetchAndScore(l.url, baseCv, minMatch, seenUrls, scanSeenUrls, workType, location, signal)
             })
           ),
           abortPromise(signal).then(() => null),
@@ -1225,6 +1276,7 @@ export async function scanAllBoards(
             } else if (r.value.action === 'skipped') {
               br.skipped++
               bump('totalSkipped')
+              if (r.value.belowFloor) belowFloorSkipped++
             } else if (r.value.action === 'incompatible') {
               br.incompatible++
               bump('totalIncompatible')
@@ -1406,6 +1458,28 @@ export async function scanAllBoards(
   result.boards = result.boards.filter(
     (b) => b.found > 0 || b.added > 0 || b.skipped > 0 || !!b.error
   )
+
+  // Plain-language caveats about how this run was filtered, shown on the
+  // result card. Both are stated rather than left implicit: a store full
+  // of off-profile jobs is what the user reported, and neither "half the
+  // findings were dropped by the floor" nor "there was no signal to
+  // filter with" is visible from the counters alone.
+  if (belowFloorSkipped > 0) {
+    const n = belowFloorSkipped
+    result.notes.push(
+      `${n} ${n === 1 ? 'listing' : 'listings'} scored below the match threshold (${minMatch}) against your base CV and ${n === 1 ? 'was' : 'were'} not added. Lower the threshold in Settings → Scan to add ${n === 1 ? 'it' : 'them'}.`
+    )
+  }
+  if (!baseCv && result.totalFound > 0) {
+    // The no-CV case is deliberately permissive (see the commit body):
+    // with nothing to compare against, a floor would be an arbitrary
+    // cut, and dropping listings the user cannot even see the score for
+    // is worse than a noisy store they can filter themselves. Saying so
+    // out loud is the part that was missing.
+    result.notes.push(
+      'No base CV is configured, so no listing could be matched against your profile: every listing that passed the board filters was added. Add a base CV in Settings → Profile to have scans filter by match.'
+    )
+  }
 
   result.durationMs = Date.now() - startedAt
 

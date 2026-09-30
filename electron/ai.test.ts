@@ -837,7 +837,7 @@ describe('P1.4 tailorDocument rejects deliberation-style CV output', () => {
       openai_model: 'm', user_name: 'Jane Doe', user_email: 'jane@example.com',
       user_phone: '', user_country: '', job_search_keywords: '', job_search_location: '',
       job_search_locations: '', deleted_jobs_cap: 50000, auto_scan_enabled: true,
-      auto_scan_interval_minutes: 120, locations_normalized: '', locations_normalized_v2: '',
+      auto_scan_interval_minutes: 120, scan_min_match: 0.25, locations_normalized: '', locations_normalized_v2: '',
       locations_normalized_v3: '', locations_normalized_v4: '', locations_normalized_v5: '',
       locations_normalized_v6: '', locations_array_migrated_v1: '', disabled_boards_migrated_v1: '',
       employment_type_normalized: '', work_mode_normalized: '', title_casing_normalized: '',
