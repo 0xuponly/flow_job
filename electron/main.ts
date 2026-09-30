@@ -54,7 +54,7 @@ function stripHmac(manifest: Record<string, unknown>): Record<string, unknown> {
 import { formatLocation } from './utils'
 import { startQueueProcessor, stopQueueProcessor, enqueue, listQueueInPickOrder, retryQueueItem, clearQueue } from './aiQueue'
 import { scheduleNextAutoScan, cancelAutoScan, markScanStarted, markScanCompleted, restartAutoScanTimer } from './autoScan'
-import { scheduleNextFitAutoScore, restartFitAutoScoreTimer } from './fitAutoScore'
+import { scheduleNextFitAutoScore, restartFitAutoScoreTimer, enqueueScoreFitBacklog } from './fitAutoScore'
 import {
   addNotification,
   listActiveNotifications,
@@ -1151,19 +1151,12 @@ function registerIpc(): void {
 // documented invariant: score-less rows have version null/old, so
 // they qualify; rows scored against the current CV (version match,
 // real score) are skipped.
-// Module scope: called from both registerIpc (post-scan) and
-// runDeferredStoreWork (session-start re-seed). Was previously
-// nested inside registerIpc, which made the deferred call a
-// ReferenceError that aborted the deferred work — including the
-// disabled-boards migration.
-function enqueueScoreFitBacklog(): void {
-  const cvVersion = db.getSettings().cv_version ?? 0
-  for (const j of db.listJobs()) {
-    if (j.score === null && j.fit_score_version !== cvVersion) {
-      enqueue({ type: 'score_fit', jobId: j.id })
-    }
-  }
-}
+// Lives in ./fitAutoScore next to the 4h re-seeder — it is the same
+// question asked of the same jobs table, and the two MUST agree on
+// which jobs a "Clear queue" suppresses. It used to be a private
+// function here, which meant that half of the clear-durability
+// contract (see isScoreFitSuppressed) was untestable and silently
+// rebuilt the rows the user had just cancelled.
 
 // Score a single job against the current base CV. Shared by the manual
 // background scorer (fired after createJob), the import-from-link flow,

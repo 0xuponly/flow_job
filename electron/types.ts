@@ -267,6 +267,25 @@ export interface Settings {
   statuses_manual_v2: string
   // Gating flag for the queue-duplicate repair (see dedupeAIQueueItems).
   queue_dedup_v1: string
+  /**
+   * Epoch ms of the user's last "Clear queue", 0 when never cleared.
+   *
+   * The durable half of the clear: the queue rows it deleted can be
+   * rebuilt from the JOBS table by the startup / post-scan backlog and by
+   * the 4h fit-auto-score timer, so deleting the rows alone does not stop
+   * the work. Anything the user had already accumulated when they
+   * cancelled is refused by the re-seeders until this moves. Paired with
+   * `queue_cleared_max_job_id`, which says WHICH jobs that was. See
+   * `isScoreFitSuppressed` in database.ts.
+   */
+  queue_cleared_at: number
+  /**
+   * The highest job id that existed at the moment of the last clear — the
+   * watermark separating the work the user cancelled from jobs that turned
+   * up afterwards. Ids are monotonic and never reused, so this needs no
+   * clock and no timestamp parsing to compare against.
+   */
+  queue_cleared_max_job_id: number
 }
 
 export type MatchGrade = 'S' | 'A' | 'B' | 'C' | 'D' | 'F' | null

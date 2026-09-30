@@ -1,6 +1,8 @@
-import { getSettings, getAIQueue, addAIQueueItem, updateAIQueueItem, listJobs } from './database'
+import { getSettings, getAIQueue, addAIQueueItem, updateAIQueueItem, listJobs, isScoreFitSuppressed } from './database'
+import { enqueue } from './aiQueue'
 import { createLogger } from './logger'
 import { timerDeadlineMs } from './utils'
+import type { Job } from './types'
 
 const log = createLogger('fit')
 
@@ -54,6 +56,21 @@ export function getFitAutoScoreState(): { intervalMinutes: number; nextRunAt: nu
 }
 
 /**
+ * The jobs both re-seeders are allowed to queue, and why.
+ *
+ * "Needs a fit score" is a statement about the JOBS table, so both
+ * re-seeding paths ask it the same way. The suppression clause is what
+ * makes "Clear queue" mean what the confirm dialog says it means: work
+ * the user cancelled is not rebuilt out of the jobs table four hours
+ * later, on the next launch, or after the next scan. See
+ * `isScoreFitSuppressed`.
+ */
+function needsFitScore(job: Job, cvVersion: number): boolean {
+  if (job.score !== null || job.fit_score_version === cvVersion) return false
+  return !isScoreFitSuppressed(job.id)
+}
+
+/**
  * Re-enqueue `score_fit` for every job that still has no real fit score and
  * whose queue item is either missing or has exhausted its retries. Jobs with a
  * live pending/processing queue item are skipped so the timer never stacks
@@ -62,10 +79,11 @@ export function getFitAutoScoreState(): { intervalMinutes: number; nextRunAt: nu
 export function runFitAutoScoreBacklog(): number {
   const cvVersion = getSettings().cv_version ?? 0
   const queue = getAIQueue()
+  const now = Date.now()
   let enqueued = 0
 
   for (const job of listJobs()) {
-    if (job.score !== null || job.fit_score_version === cvVersion) continue
+    if (!needsFitScore(job, cvVersion)) continue
 
     // Deliberately not the shared `enqueue()`: this path RESURRECTS a
     // burned-out item rather than adding a new one, which is what
@@ -91,7 +109,7 @@ export function runFitAutoScoreBacklog(): number {
       updateAIQueueItem(existing.id, {
         status: 'pending',
         attempts: 0,
-        nextRetryAt: Date.now(),
+        nextRetryAt: now,
         lastError: undefined
       })
     } else {
@@ -100,6 +118,31 @@ export function runFitAutoScoreBacklog(): number {
     enqueued++
   }
 
+  return enqueued
+}
+
+/**
+ * Queue a fit score for every job that has never been scored against the
+ * current CV. Covers the scan paths that persist score=null (heuristic
+ * pre-filter, LLM-error fallback) plus legacy rows. The
+ * fit_score_version guard matches database.ts's documented invariant:
+ * score-less rows have version null/old, so they qualify; rows scored
+ * against the current CV (version match, real score) are skipped.
+ *
+ * Lives here, next to the other re-seeder, because it is the same
+ * question asked of the same table: this used to be a private function in
+ * main.ts, called both at session start and after every scan, and being
+ * private it was the one half of the clear-durability contract that
+ * nothing could test. Exported, the two paths sit in one file and cannot
+ * drift apart on the suppression rule.
+ */
+export function enqueueScoreFitBacklog(): number {
+  const cvVersion = getSettings().cv_version ?? 0
+  let enqueued = 0
+  for (const job of listJobs()) {
+    if (!needsFitScore(job, cvVersion)) continue
+    if (enqueue({ type: 'score_fit', jobId: job.id })) enqueued++
+  }
   return enqueued
 }
 
