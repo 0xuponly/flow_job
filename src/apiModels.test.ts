@@ -99,12 +99,6 @@ describe('inheritProviderApiKey', () => {
       expect(inheritProviderApiKey(incoming, existing).api_key).toBe('')
     })
 
-    it('does not inherit across different ports on the same host', () => {
-      const existing = [model({ base_url: 'https://openrouter.ai:8443/api/v1', api_key: 'sk-other' })]
-      const incoming = model({ id: '', base_url: ROUTER })
-      expect(inheritProviderApiKey(incoming, existing).api_key).toBe('')
-    })
-
     it('prefers an exact URL match over a looser same-host match', () => {
       const existing = [
         model({ id: 'a', base_url: 'https://openrouter.ai/api', api_key: 'sk-loose' }),
@@ -112,6 +106,54 @@ describe('inheritProviderApiKey', () => {
       ]
       const incoming = model({ id: '', base_url: ROUTER })
       expect(inheritProviderApiKey(incoming, existing).api_key).toBe('sk-exact')
+    })
+  })
+
+  // A key inherited here is saved without the user typing it, so every
+  // case below must leave the incoming key empty. Matching too loosely
+  // hands one vendor's key to another vendor's endpoint.
+  describe('refuses to inherit across a credential boundary', () => {
+    it('does not inherit between two different paths on one host', () => {
+      // A shared gateway (LiteLLM et al) fronts several vendors behind one
+      // host and issues a SEPARATE key per upstream.
+      const existing = [model({ base_url: 'https://gw.corp.example/openai/v1', api_key: 'sk-openai' })]
+      const incoming = model({ id: '', base_url: 'https://gw.corp.example/anthropic/v1' })
+      expect(inheritProviderApiKey(incoming, existing).api_key).toBe('')
+    })
+
+    it('does not inherit onto a bare host from a path on that host', () => {
+      // The empty first segment matches only another empty one, or a
+      // bare host would donate its key to every path behind it.
+      const existing = [model({ base_url: 'https://gw.corp.example', api_key: 'sk-gateway' })]
+      const incoming = model({ id: '', base_url: 'https://gw.corp.example/anthropic/v1' })
+      expect(inheritProviderApiKey(incoming, existing).api_key).toBe('')
+    })
+
+    it('does not inherit when the incoming scheme is a plaintext downgrade', () => {
+      // http:// transmits the key in cleartext. Matching across the scheme
+      // hands a key destined for TLS to an unencrypted endpoint.
+      const existing = [model({ base_url: 'https://api.vendor.test/v1', api_key: 'sk-vendor' })]
+      const incoming = model({ id: '', base_url: 'http://api.vendor.test/v1' })
+      expect(inheritProviderApiKey(incoming, existing).api_key).toBe('')
+    })
+
+    it('does not inherit when the port differs', () => {
+      // A different port is a different service on the same host.
+      const existing = [model({ base_url: 'https://gw.corp.example:8443/v1', api_key: 'sk-8443' })]
+      const incoming = model({ id: '', base_url: 'https://gw.corp.example:9443/v1' })
+      expect(inheritProviderApiKey(incoming, existing).api_key).toBe('')
+    })
+
+    it('does not inherit across a host-prefix collision', () => {
+      const existing = [model({ base_url: 'https://api.example.com/v1', api_key: 'sk-api' })]
+      const incoming = model({ id: '', base_url: 'https://api.example.com.attacker.test/v1' })
+      expect(inheritProviderApiKey(incoming, existing).api_key).toBe('')
+    })
+
+    it('does not inherit onto a subdomain of the keyed host', () => {
+      const existing = [model({ base_url: ROUTER, api_key: 'sk-or-secret' })]
+      const incoming = model({ id: '', base_url: 'https://evil-openrouter.ai/api/v1' })
+      expect(inheritProviderApiKey(incoming, existing).api_key).toBe('')
     })
   })
 })
