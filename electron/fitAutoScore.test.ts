@@ -31,6 +31,7 @@ import {
 } from './fitAutoScore'
 import { getSettings, getAIQueue, addAIQueueItem, updateAIQueueItem, listJobs, isScoreFitSuppressed } from './database'
 import { enqueue } from './aiQueue'
+import { AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX } from './types'
 
 const mockedGetSettings = vi.mocked(getSettings)
 const mockedGetAIQueue = vi.mocked(getAIQueue)
@@ -188,7 +189,10 @@ describe('runFitAutoScoreBacklog', () => {
     expect(mockedUpdateAIQueueItem).toHaveBeenCalledWith(99, {
       status: 'pending',
       attempts: 0,
-      nextRetryAt: Date.now(),
+      autoRevives: 1,
+      // Parked on the standard revive cooldown rather than run now, so
+      // the backlog cannot hand out a free immediate retry.
+      nextRetryAt: Date.now() + AUTO_REVIVE_COOLDOWN_MS,
       lastError: undefined
     })
   })
@@ -262,6 +266,81 @@ describe('runFitAutoScoreBacklog does not stack duplicates', () => {
     mockedGetAIQueue.mockReturnValue([] as never)
     expect(runFitAutoScoreBacklog()).toBe(1)
     expect(mockedAddAIQueueItem).toHaveBeenCalledWith({ type: 'score_fit', jobId: 1 })
+  })
+})
+
+// The 4h timer used to be a free, unlimited, immediate retry lane for
+// score_fit: it reset a burned-out row to `pending` with
+// nextRetryAt = now and never touched `autoRevives`, so the 4h cooldown
+// and AUTO_REVIVE_MAX budget that every other queue type honours (see
+// electron/types.ts) simply did not apply here. A job whose provider
+// rejected it forever would burn a full attempt budget every 4h, and the
+// budget counter would never move. This is the same test with a real
+// store: electron/queueClear.test.ts drives the durable-clear half.
+describe('runFitAutoScoreBacklog respects the revive budget and cooldown', () => {
+  const failedRow = (overrides: Partial<AIQueueItem>) => [
+    makeQueueItem({ id: 1, jobId: 1, status: 'failed', attempts: 5, ...overrides })
+  ]
+
+  it('spends one unit of revive budget when it does resurrect', () => {
+    mockedListJobs.mockReturnValue([makeJob({ id: 1 })])
+    mockedGetAIQueue.mockReturnValue(failedRow({ autoRevives: 1 }))
+    expect(runFitAutoScoreBacklog()).toBe(1)
+    expect(mockedUpdateAIQueueItem).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ autoRevives: 2 })
+    )
+  })
+
+  it('counts a legacy row with no counter as zero revives', () => {
+    mockedListJobs.mockReturnValue([makeJob({ id: 1 })])
+    mockedGetAIQueue.mockReturnValue(failedRow({ autoRevives: undefined }))
+    runFitAutoScoreBacklog()
+    expect(mockedUpdateAIQueueItem).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ autoRevives: 1 })
+    )
+  })
+
+  it('leaves a failed item alone once the revive budget is spent', () => {
+    // Same verdict runPass reaches: no more automatic retries, the task
+    // is the user's now. Resurrecting it here is what made the budget
+    // meaningless for score_fit.
+    mockedListJobs.mockReturnValue([makeJob({ id: 1 })])
+    mockedGetAIQueue.mockReturnValue(failedRow({ autoRevives: AUTO_REVIVE_MAX }))
+    expect(runFitAutoScoreBacklog()).toBe(0)
+    expect(mockedUpdateAIQueueItem).not.toHaveBeenCalled()
+  })
+
+  it('does not resurrect an item whose cooldown has not elapsed', () => {
+    // runPass skips any row with a future nextRetryAt before it looks at
+    // the status. The backlog has to apply the same guard, or a row
+    // parked on a 4h revive cooldown gets pulled forward by the timer.
+    mockedListJobs.mockReturnValue([makeJob({ id: 1 })])
+    mockedGetAIQueue.mockReturnValue(
+      failedRow({ nextRetryAt: Date.now() + 60 * 60 * 1000 })
+    )
+    expect(runFitAutoScoreBacklog()).toBe(0)
+    expect(mockedUpdateAIQueueItem).not.toHaveBeenCalled()
+  })
+
+  it('parks the resurrected item on the full cooldown rather than running it now', () => {
+    mockedListJobs.mockReturnValue([makeJob({ id: 1 })])
+    mockedGetAIQueue.mockReturnValue(failedRow({ nextRetryAt: Date.now() - 1 }))
+    runFitAutoScoreBacklog()
+    expect(mockedUpdateAIQueueItem).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ nextRetryAt: Date.now() + AUTO_REVIVE_COOLDOWN_MS })
+    )
+  })
+
+  it('leaves a pending item in flight alone regardless of its budget', () => {
+    mockedListJobs.mockReturnValue([makeJob({ id: 1 })])
+    mockedGetAIQueue.mockReturnValue(
+      [makeQueueItem({ id: 1, jobId: 1, status: 'pending', autoRevives: AUTO_REVIVE_MAX })]
+    )
+    expect(runFitAutoScoreBacklog()).toBe(0)
+    expect(mockedUpdateAIQueueItem).not.toHaveBeenCalled()
   })
 })
 

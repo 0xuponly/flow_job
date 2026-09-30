@@ -2,6 +2,7 @@ import { getSettings, getAIQueue, addAIQueueItem, updateAIQueueItem, listJobs, i
 import { enqueue } from './aiQueue'
 import { createLogger } from './logger'
 import { timerDeadlineMs } from './utils'
+import { AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX } from './types'
 import type { Job } from './types'
 
 const log = createLogger('fit')
@@ -104,12 +105,33 @@ export function runFitAutoScoreBacklog(): number {
 
     const existing = matches[0]
     if (existing && existing.status === 'failed') {
-      // The item burned its attempts while the app was open. Reset it to
-      // pending so the queue processor will try again on the next tick.
+      // The item burned its attempts while the app was open. Resurrecting
+      // it is the SAME operation the processor's own `revive()` performs
+      // on the next pass, so it is written the same way: it costs one
+      // unit of the revive budget and parks on the same cooldown.
+      //
+      // Both halves used to be missing here, and together they made this
+      // path a free and unlimited retry lane — the 4h cooldown and
+      // AUTO_REVIVE_MAX that every other queue type honours simply did not
+      // apply to score_fit, so a job whose provider was permanently
+      // rejecting it kept burning a full attempt budget every 4 hours,
+      // forever, with the budget counter never moving.
+      const revives = existing.autoRevives ?? 0
+      if (revives >= AUTO_REVIVE_MAX) {
+        // Budget spent. Leave it failed for the user, as runPass does.
+        continue
+      }
+      if (existing.nextRetryAt > now) {
+        // Its cooldown has not elapsed. Same guard runPass applies to
+        // every row, which is why a row parked on a cooldown is never
+        // pulled forward here.
+        continue
+      }
       updateAIQueueItem(existing.id, {
         status: 'pending',
         attempts: 0,
-        nextRetryAt: now,
+        autoRevives: revives + 1,
+        nextRetryAt: now + AUTO_REVIVE_COOLDOWN_MS,
         lastError: undefined
       })
     } else {
