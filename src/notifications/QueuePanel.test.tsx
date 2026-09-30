@@ -109,3 +109,75 @@ describe('QueuePanel window', () => {
     expect(screen.getAllByTestId('queue-task')).toHaveLength(120)
   })
 })
+
+function clickShowFewer(): void {
+  fireEvent.click(screen.getByRole('button', { name: /show fewer/i }))
+}
+
+/**
+ * Paging was one-way. A user who opened a 150-row queue and paged to the
+ * end was left with 150 mounted rows, one Retry/Remove pair per row, and
+ * no control that could get them back: the reset effect only fires on a
+ * change in queue length, and a queue that is not moving is exactly the
+ * case where the user wants to collapse it. Recovering needed a remount
+ * (reopen the drawer) or another poll that happened to change the count.
+ */
+describe('QueuePanel shrink control', () => {
+  it('offers a way back to the first page once paged past it', () => {
+    renderPanel(items(150))
+    pageToEnd()
+    expect(screen.getAllByTestId('queue-task')).toHaveLength(150)
+
+    clickShowFewer()
+    expect(screen.getAllByTestId('queue-task')).toHaveLength(120)
+
+    clickShowFewer()
+    expect(screen.getAllByTestId('queue-task')).toHaveLength(60)
+  })
+
+  it('keeps the more control reachable while shrinking', () => {
+    // The two controls are alternative directions through the same
+    // window: collapsing must not strand the user on the last page with
+    // no way to grow it again.
+    renderPanel(items(150))
+    pageToEnd()
+    expect(screen.queryByRole('button', { name: /show \d+ more/i })).toBeNull()
+
+    clickShowFewer()
+    const more = screen.getByRole('button', { name: /show \d+ more/i })
+    expect(more).toHaveTextContent('Show 30 more')
+    fireEvent.click(more)
+    expect(screen.getAllByTestId('queue-task')).toHaveLength(150)
+  })
+
+  it('never shrinks below one page', () => {
+    renderPanel(items(150))
+    pageToEnd()
+    for (let i = 0; i < 6; i++) {
+      const btn = screen.queryByRole('button', { name: /show fewer/i })
+      if (!btn) break
+      fireEvent.click(btn)
+    }
+    expect(screen.getAllByTestId('queue-task')).toHaveLength(60)
+  })
+
+  it('hides the shrink control on the first page', () => {
+    renderPanel(items(150))
+    expect(screen.queryByRole('button', { name: /show fewer/i })).toBeNull()
+  })
+
+  it('renders no phantom rows when the window outruns the queue', () => {
+    // Paged to a window wider than the queue that then returns as an
+    // equally long but entirely different list: the length is unchanged
+    // so the reset effect does not fire, and a window that renders by
+    // position rather than by count would show rows 151+ of nothing.
+    const { rerender } = renderPanel(items(150))
+    pageToEnd()
+
+    rerender(
+      <QueuePanel items={items(150)} busyId={null} onRetry={vi.fn()} onRemove={vi.fn()} />
+    )
+    expect(screen.getAllByTestId('queue-task')).toHaveLength(150)
+    expect(screen.getByText('150.')).toBeInTheDocument()
+  })
+})

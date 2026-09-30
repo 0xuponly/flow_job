@@ -110,6 +110,11 @@ const QueueRow = memo(function QueueRow({
  * processor uses, so re-sorting here would let the displayed order
  * drift from the order tasks actually run in. The list is rendered in
  * the exact array it is given.
+ *
+ * The window moves both ways: "Show N more" grows it a page at a time
+ * and "Show fewer" walks it back to the first page. Growth alone would
+ * leave a user who paged into a long queue with no way back to the
+ * default view short of closing and reopening the panel.
  */
 export default function QueuePanel({ items, busyId, onRetry, onRemove }: QueuePanelProps) {
   const [visible, setVisible] = useState(PAGE_SIZE)
@@ -138,8 +143,12 @@ export default function QueuePanel({ items, busyId, onRetry, onRemove }: QueuePa
     )
   }
 
+  // `slice` clamps, so a window left wider than the list cannot render
+  // phantom rows; the shrink control is what makes that window reachable
+  // again in the first place.
   const shown = items.slice(0, visible)
   const remaining = items.length - shown.length
+  const canShowFewer = visible > PAGE_SIZE
 
   return (
     <>
@@ -157,15 +166,29 @@ export default function QueuePanel({ items, busyId, onRetry, onRemove }: QueuePa
           />
         ))}
       </ul>
-      {remaining > 0 && (
-        <button
-          type="button"
-          className="btn btn-secondary btn-sm"
-          onClick={() => setVisible((v) => v + PAGE_SIZE)}
-          style={{ width: '100%', marginTop: 4 }}
-        >
-          Show {remaining} more
-        </button>
+      {(remaining > 0 || canShowFewer) && (
+        <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+          {remaining > 0 && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => setVisible((v) => v + PAGE_SIZE)}
+              style={{ flex: 1 }}
+            >
+              Show {remaining} more
+            </button>
+          )}
+          {canShowFewer && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => setVisible((v) => Math.max(PAGE_SIZE, v - PAGE_SIZE))}
+              style={{ flex: 1 }}
+            >
+              Show fewer
+            </button>
+          )}
+        </div>
       )}
     </>
   )
