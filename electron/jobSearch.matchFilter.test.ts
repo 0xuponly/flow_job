@@ -12,7 +12,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const fx = vi.hoisted(() => ({
   settings: {} as Record<string, unknown>,
   scrape: { title: '', company: '', location: '', url: '', description: '' },
-  rssJobs: [] as unknown[]
+  rssJobs: [] as unknown[],
+  // Stand-in for the store's persistent seen_urls. It is written ONLY by
+  // createJob, exactly as the real database writes it, so a scan that
+  // quietly recorded a filtered listing's URL would be caught by the
+  // next scan reporting it as "Already in database" — the failure that
+  // would make a filtered listing permanently unrecoverable.
+  persistedUrls: [] as string[]
 }))
 
 const LISTING_HTML = `<html><body>
@@ -24,9 +30,12 @@ let nextJobId = 1
 vi.mock('./database', () => ({
   getSettings: vi.fn(() => fx.settings),
   listJobs: vi.fn(() => []),
-  getSeenUrls: vi.fn(() => []),
+  getSeenUrls: vi.fn(() => [...fx.persistedUrls]),
   findDuplicateJob: vi.fn(() => false),
-  createJob: vi.fn((input: unknown) => ({ job: { id: nextJobId++, ...(input as object) } })),
+  createJob: vi.fn((input: { url?: string | null }) => {
+    if (input.url) fx.persistedUrls.push(input.url)
+    return { job: { id: nextJobId++, ...(input as object) } }
+  }),
   recordBoardResults: vi.fn(),
   recordBoardScanTime: vi.fn(),
   JobBlacklistedError: class extends Error {},
@@ -58,6 +67,7 @@ vi.mock('./ai', () => ({
 import { scanAllBoards, checkMatchFloor, resolveScanMinMatch, DEFAULT_SCAN_MIN_MATCH } from './jobSearch'
 import { createJob } from './database'
 import { scoreJobFit } from './ai'
+import { scoreCompatibility } from './fitHeuristic'
 
 // A senior backend engineer's CV. Every fixture below is scored against it.
 const BASE_CV = `Senior Backend Engineer with 8 years of experience.
@@ -65,7 +75,13 @@ Skills: TypeScript, Node.js, PostgreSQL, Docker, AWS, Kubernetes, GraphQL, REST.
 Built payment services in Python and Java. Led a team of 5 engineers.
 Industry: fintech.`
 
-// ~0.20 against BASE_CV: below the 0.25 default floor.
+// 0.00 against BASE_CV. A marine posting shares no measurable evidence
+// with a backend-engineering CV, and the evidence-based scorer returns 0
+// for "nothing comparable is stated" — the old composite handed every
+// unrelated posting exactly 0.20 from neutral seniority/location priors,
+// which is how noise beat weak-positive signal. This is the floor's real
+// minimum: no threshold above 0 can admit it, and `scan_min_match: 0`
+// does (see the recovery tests below).
 const IRRELEVANT = {
   title: 'Marine Biologist',
   company: 'Oceanic Research Trust',
@@ -77,7 +93,24 @@ the research station. 3 years of experience in marine ecology required.
 No software background needed.`
 }
 
-// ~0.95 against BASE_CV: comfortably above the floor.
+// 0.07 against BASE_CV: a real near-miss, not a total non-match. It
+// evidences one skill the CV has (python) and nothing else — role 0
+// (analyst, not engineer), sector 0 (growth analytics, not fintech
+// engineering) — so it scores above zero but below the 0.25 default
+// floor. This is the fixture the recovery tests use, because it is the
+// case a user is actually reasoning about when they lower a threshold:
+// borderline, not hopeless.
+const NEAR_MISS = {
+  title: 'Data Analyst, Growth',
+  company: 'Funnelworks',
+  location: 'Vancouver',
+  url: 'https://www.indeed.com/viewjob?jk=nearmiss-1',
+  description: `We are hiring a Data Analyst to instrument our signup funnel.
+You will write SQL, run A/B tests, build dashboards in Amplitude and analyse retention.
+Requirements: 2+ years in product or growth analytics, SQL, Python, statistics, experimentation. Tableau.`
+}
+
+// 0.96 against BASE_CV: comfortably above the floor.
 const RELEVANT = {
   title: 'Senior Backend Engineer',
   company: 'Payments Co',
@@ -90,8 +123,8 @@ for a fintech payments product and mentor a team of engineers. Kubernetes
 experience required.`
 }
 
-// ~0.875 — above the default floor, but not by much, so raising the
-// threshold flips it.
+// 0.87 against BASE_CV — above the default floor, but not by much, so
+// raising the threshold flips it.
 const BORDERLINE = {
   title: 'Backend Engineer',
   company: 'Midco',
@@ -116,6 +149,7 @@ function reset(overrides: SettingsOverride = {}) {
   }, overrides)
   fx.scrape = { ...IRRELEVANT }
   fx.rssJobs = []
+  fx.persistedUrls = []
   vi.mocked(createJob).mockClear()
   vi.mocked(scoreJobFit).mockClear()
 }
@@ -235,9 +269,19 @@ describe('scan match floor — first-party API path', () => {
     expect(raised.notes.join('\n')).toContain('0.9')
   })
 
-  it('honours a lowered scan_min_match: 0 re-admits a listing the default drops', async () => {
-    reset({ base_cv: BASE_CV, scan_min_match: 0 })
-    fx.rssJobs = [IRRELEVANT]
+  it('honours a lowered scan_min_match on a near-miss the default drops', async () => {
+    // The reason a user moves the threshold at all. IRRELEVANT scores
+    // exactly 0.00 under the evidence-based scorer, so no threshold
+    // above 0 can admit it (0 < 0.1) and using it here would only be
+    // testing arithmetic. A genuine near-miss is the case that matters:
+    // a threshold below its score re-admits it.
+    const score = scoreCompatibility(NEAR_MISS.title, NEAR_MISS.description, BASE_CV)
+    expect(score).toBeGreaterThan(0)
+    expect(score).toBeLessThan(DEFAULT_SCAN_MIN_MATCH)
+    const lowered = Number((score / 2).toFixed(4))
+
+    reset({ base_cv: BASE_CV, scan_min_match: lowered })
+    fx.rssJobs = [NEAR_MISS]
     const result = await scanAllBoards({
       keywords: 'engineer',
       boards: ['Indeed (RSS)'],
@@ -297,22 +341,34 @@ describe('scan with no base CV', () => {
 })
 
 describe('a filtered listing is recoverable', () => {
-  it('re-admits it on a later scan once the threshold is lowered', async () => {
+  it('re-admits a near-miss on a later scan once the threshold is lowered', async () => {
     // The floor must not leave a permanent mark: the listing was never
     // written, so a later run at a lower threshold still sees it. This
-    // is the escape hatch for a user who filtered too aggressively.
+    // is the escape hatch for a user who filtered too aggressively, and
+    // it is asserted across two separate scans rather than one, so the
+    // in-run dedupe set cannot be what let it back in.
+    const score = scoreCompatibility(NEAR_MISS.title, NEAR_MISS.description, BASE_CV)
+    expect(score).toBeGreaterThan(0)
+    expect(score).toBeLessThan(DEFAULT_SCAN_MIN_MATCH)
+
     reset({ base_cv: BASE_CV })
-    fx.rssJobs = [IRRELEVANT]
+    fx.rssJobs = [NEAR_MISS]
     const first = await scanAllBoards({
       keywords: 'engineer',
       boards: ['Indeed (RSS)'],
       locations: [{ display: 'Vancouver' }]
     })
+    expect(first.totalFound).toBe(1)
     expect(first.totalAdded).toBe(0)
+    expect(first.totalSkipped).toBe(1)
     expect(createJob).not.toHaveBeenCalled()
+    // The filtered listing left no trace in the store's seen-urls. If
+    // it had, the scan below would skip it as "Already in database" and
+    // the recovery would silently stop working.
+    expect(fx.persistedUrls).toEqual([])
 
-    reset({ base_cv: BASE_CV, scan_min_match: 0.1 })
-    fx.rssJobs = [IRRELEVANT]
+    reset({ base_cv: BASE_CV, scan_min_match: Number((score / 2).toFixed(4)) })
+    fx.rssJobs = [NEAR_MISS]
     const second = await scanAllBoards({
       keywords: 'engineer',
       boards: ['Indeed (RSS)'],
@@ -321,13 +377,53 @@ describe('a filtered listing is recoverable', () => {
     expect(second.totalAdded).toBe(1)
     expect(createJob).toHaveBeenCalledTimes(1)
   })
+
+  it('re-admits a zero-score listing at scan_min_match 0, and only there', async () => {
+    // Under the evidence-based scorer a posting that states nothing
+    // comparable scores 0.00 rather than collecting a neutral prior.
+    // 0 < min_match for every threshold above 0, so no setting other
+    // than 0 can bring such a listing back — that is what a floor means,
+    // not a guard that discards zero specially, and `checkMatchFloor(0,
+    // 0)` passing below is the same fact stated in one line. The
+    // settings control offers 0 explicitly for exactly this.
+    const score = scoreCompatibility(IRRELEVANT.title, IRRELEVANT.description, BASE_CV)
+    expect(score).toBe(0)
+
+    reset({ base_cv: BASE_CV, scan_min_match: 0.1 })
+    fx.rssJobs = [IRRELEVANT]
+    const notQuite = await scanAllBoards({
+      keywords: 'engineer',
+      boards: ['Indeed (RSS)'],
+      locations: [{ display: 'Vancouver' }]
+    })
+    expect(notQuite.totalAdded).toBe(0)
+    expect(notQuite.totalSkipped).toBe(1)
+
+    reset({ base_cv: BASE_CV, scan_min_match: 0 })
+    fx.rssJobs = [IRRELEVANT]
+    const atZero = await scanAllBoards({
+      keywords: 'engineer',
+      boards: ['Indeed (RSS)'],
+      locations: [{ display: 'Vancouver' }]
+    })
+    expect(atZero.totalAdded).toBe(1)
+    expect(atZero.totalSkipped).toBe(0)
+    expect(createJob).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('checkMatchFloor', () => {
   it('passes a score at or above the threshold', () => {
     expect(checkMatchFloor(0.25, 0.25)).toEqual({ pass: true })
     expect(checkMatchFloor(0.9, 0.25)).toEqual({ pass: true })
+  })
+
+  it('treats 0 as a score, not as a reason to skip unconditionally', () => {
+    // The regression this guards: an early-out on a zero score would
+    // make a listing un-admittable at ANY threshold, including 0, and
+    // a user lowering the setting to 0 would get nothing back.
     expect(checkMatchFloor(0, 0)).toEqual({ pass: true })
+    expect(checkMatchFloor(0, 0.0001).pass).toBe(false)
   })
 
   it('fails a score below the threshold with a specific, non-empty reason', () => {
