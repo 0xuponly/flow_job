@@ -43,6 +43,7 @@ import { getJob, getSettings, updateJob, listDocuments, getAIQueue } from './dat
 import { scoreJobFit } from './ai'
 import { enqueue } from './aiQueue'
 import { scoreOneJobInBackground, maybeAutoEnqueueDocs } from './fitScorer'
+import type { AIQueueItem } from './types'
 
 const mockedGetJob = vi.mocked(getJob)
 const mockedGetSettings = vi.mocked(getSettings)
@@ -180,6 +181,10 @@ describe('scoreOneJobInBackground heuristic-fallback path', () => {
 describe('P1.7 maybeAutoEnqueueDocs (fit >= auto_doc_min_fit -> enqueue generation)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // mockReset, not clearAllMocks: `enqueue`'s return value now decides
+    // this function's answer, so a return value set by one test must not
+    // answer the next one. Back to the module default (a queued row).
+    mockedEnqueue.mockReset()
     mockedListDocuments.mockReturnValue([])
     mockedGetQueue.mockReturnValue([])
   })
@@ -233,14 +238,26 @@ describe('P1.7 maybeAutoEnqueueDocs (fit >= auto_doc_min_fit -> enqueue generati
     expect(mockedEnqueue).toHaveBeenCalled()
   })
 
-  it('does not stack duplicates when a generation item is already pending', () => {
+  it('does not stack duplicates when a generation item is already queued', () => {
+    // Duplicate suppression is `enqueue`'s guard, not a second copy of
+    // the rule here: enqueue returns null when an identical item is
+    // already pending OR processing, and the return value has to follow
+    // it — otherwise this function reports work it did not do.
     mockedGetJob.mockReturnValue({ ...fakeJob, score: 0.9 } as any)
     mockedGetSettings.mockReturnValue({ auto_doc_min_fit: 40 } as any)
-    mockedGetQueue.mockReturnValue([
-      { id: 'q1', type: 'tailor_job_docs', jobId: 7, status: 'pending' }
-    ] as any)
+    mockedEnqueue.mockReturnValue(null as unknown as AIQueueItem)
     expect(maybeAutoEnqueueDocs(7)).toBe(false)
-    expect(mockedEnqueue).not.toHaveBeenCalled()
+    // It asked enqueue, rather than checking the queue itself first.
+    expect(mockedEnqueue).toHaveBeenCalledWith({ type: 'tailor_job_docs', jobId: 7 })
+    // ...and it no longer scans the queue on its own account.
+    expect(mockedGetQueue).not.toHaveBeenCalled()
+  })
+
+  it('reports the work as done when the enqueue actually queued a row', () => {
+    mockedGetJob.mockReturnValue({ ...fakeJob, score: 0.9 } as any)
+    mockedGetSettings.mockReturnValue({ auto_doc_min_fit: 40 } as any)
+    mockedEnqueue.mockReturnValue({ id: 1 } as unknown as AIQueueItem)
+    expect(maybeAutoEnqueueDocs(7)).toBe(true)
   })
 
   it('falls back to the default threshold (40) when the setting is absent', () => {
