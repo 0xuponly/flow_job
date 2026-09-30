@@ -280,9 +280,13 @@ export type AIQueueItemType = 'generate_cv' | 'generate_cover_letter' | 'regener
 /**
  * Mirrors AUTO_REVIVE_MAX in electron/types.ts. The renderer needs it
  * only to decide whether a failed task still has automatic recovery
- * left, so it can say "retrying automatically" instead of "needs
- * attention". Kept as a literal rather than shared over IPC because
- * duplicating one integer is cheaper than a round trip.
+ * left, so it can offer a retry instead of calling it abandoned.
+ *
+ * Kept as a literal rather than imported: the renderer must not depend
+ * on a main-process module, and electron/types.ts is a type surface
+ * today rather than a contract that will stay one. The cost of the copy
+ * is drift, so src/fitQueue.test.ts pins the two to each other and fails
+ * the build if either moves without the other.
  */
 export const AUTO_REVIVE_MAX = 3
 export type AIQueueItemStatus = 'pending' | 'processing' | 'failed'
