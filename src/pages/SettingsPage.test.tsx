@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import SettingsPage, { PRESETS } from './SettingsPage'
 import { api } from '../api'
 
@@ -18,6 +18,7 @@ const baseSettings = {
   deleted_jobs_cap: 50000,
   auto_scan_enabled: true,
   auto_scan_interval_minutes: 120,
+  scan_min_match: 0.25,
   backup_path: '',
   backup_last_success_at: '',
   backup_last_error: '',
@@ -92,6 +93,53 @@ describe('SettingsPage PRESETS', () => {
     expect(await screen.findByText(/Presets — click to add/i)).toBeInTheDocument()
     const presetButtons = await screen.findAllByTitle(/via OpenRouter \(needs API key\)/i)
     expect(presetButtons.length).toBe(PRESETS.length)
+  })
+})
+
+describe('SettingsPage scan_min_match (the scan match floor)', () => {
+  // The floor used to be a hardcoded 0.25, and it never actually
+  // filtered anything. It is now user-tunable, and the copy has to state
+  // the two things a user cannot see: that it only works with a base CV,
+  // and which direction raises/lowers the bar.
+  async function openScanTab() {
+    render(<SettingsPage />)
+    fireEvent.click(await screen.findByRole('button', { name: /^Scan$/i }))
+    return screen.findByLabelText(/Skip listings matching less than/i)
+  }
+
+  it('shows the saved threshold on the Scan tab', async () => {
+    const input = await openScanTab()
+    expect(input).toHaveValue(0.25)
+  })
+
+  it('explains what it does, and the no-base-CV case, in one line', async () => {
+    await openScanTab()
+    const copy = screen.getByText(/compares each listing against your base CV/i)
+    expect(copy).toHaveTextContent(/skips anything scoring under this/i)
+    expect(copy).toHaveTextContent(/raise it to keep only strong matches/i)
+    expect(copy).toHaveTextContent(/lower it \(or set 0\) to catch more/i)
+    expect(copy).toHaveTextContent(/with none configured there is nothing to compare against/i)
+  })
+
+  it('persists a raised threshold through the Scan tab Save button', async () => {
+    const input = await openScanTab()
+    vi.mocked(api.updateSettings).mockClear()
+    fireEvent.change(input, { target: { value: '0.6' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save settings/i }))
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalled())
+    expect(vi.mocked(api.updateSettings).mock.calls[0][0]).toMatchObject({ scan_min_match: 0.6 })
+  })
+
+  it('rejects a value outside 0-1 rather than writing it', async () => {
+    // A NaN or out-of-range threshold in the store makes the floor
+    // either a no-op or a wall; the main process clamps, and the control
+    // refuses to produce the value in the first place.
+    const input = await openScanTab()
+    vi.mocked(api.updateSettings).mockClear()
+    fireEvent.change(input, { target: { value: '4' } })
+    expect(input).toHaveValue(0.25)
+    fireEvent.change(input, { target: { value: '' } })
+    expect(input).toHaveValue(0.25)
   })
 })
 

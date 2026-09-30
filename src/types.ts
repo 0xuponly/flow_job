@@ -135,6 +135,12 @@ export interface Settings {
   deleted_jobs_cap: number
   auto_scan_enabled: boolean
   auto_scan_interval_minutes: number
+  // Minimum 0-1 match score a listing must reach against the base CV
+  // for a scan to add it; below it the listing is skipped, not stored.
+  // 0 disables the floor. Only applies when base_cv is set. Mirrors the
+  // main-process default (0.25), the value the hardcoded floor used
+  // before this setting existed.
+  scan_min_match: number
   backup_path: string
   backup_last_success_at: string
   backup_last_error: string

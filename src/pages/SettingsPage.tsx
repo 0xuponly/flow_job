@@ -171,6 +171,12 @@ export default function SettingsPage() {
       if (typeof s.auto_scan_interval_minutes !== 'number' || s.auto_scan_interval_minutes <= 0) {
         s.auto_scan_interval_minutes = 120
       }
+      // Older stores have no scan_min_match. Default to the value the
+      // hardcoded scan floor used, so the control shows what the app is
+      // actually doing rather than a value that changes behaviour.
+      if (typeof s.scan_min_match !== 'number' || !Number.isFinite(s.scan_min_match)) {
+        s.scan_min_match = 0.25
+      }
       // Free public job APIs default to enabled for first-time users.
       // Existing users with `false` (explicitly disabled) keep their choice.
       if (typeof s.aggregator_remotive_enabled !== 'boolean') s.aggregator_remotive_enabled = true
@@ -629,6 +635,38 @@ export default function SettingsPage() {
               </div>
               <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, marginLeft: 24 }}>
                 Auto-scans use all job boards, all work types, and your saved Preferred location. The scan runs while the app is open; you'll see progress in the Scan Jobs tab.
+              </p>
+            </div>
+          </div>
+          <div className="section-title">Match Filter</div>
+          <div className="card">
+            <div className="form-group">
+              <label htmlFor="scan-min-match" style={{ display: 'block', marginBottom: 4 }}>
+                Skip listings matching less than
+              </label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  id="scan-min-match"
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  style={{ width: 90 }}
+                  value={settings.scan_min_match}
+                  onChange={(e) => {
+                    const n = parseFloat(e.target.value)
+                    if (!isNaN(n) && n >= 0 && n <= 1) update('scan_min_match', n)
+                  }}
+                />
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  (0 adds everything, 1 only a perfect match)
+                </span>
+              </div>
+              <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                A scan compares each listing against your base CV and skips anything scoring under this
+                instead of adding it to My Jobs — raise it to keep only strong matches, lower it (or set 0)
+                to catch more. Needs a base CV: with none configured there is nothing to compare against,
+                so nothing is skipped.
               </p>
             </div>
           </div>

@@ -84,6 +84,11 @@ function defaultStore(): Store {
       deleted_jobs_cap: 50000,
       auto_scan_enabled: true,
       auto_scan_interval_minutes: 120,
+      // Minimum 0-1 match score a listing must reach for a scan to add
+      // it (see resolveScanMinMatch in jobSearch.ts). Default is the
+      // value the hardcoded HEURISTIC_FLOOR used before the setting
+      // existed, so upgrading changes nothing until the user moves it.
+      scan_min_match: 0.25,
       fit_autoscore_interval_minutes: 240,
       locations_normalized: '',
       locations_normalized_v2: '',
@@ -266,6 +271,16 @@ export function loadStore(): Store {
     }
     if (typeof store.settings.auto_scan_interval_minutes !== 'number' || store.settings.auto_scan_interval_minutes <= 0) {
       store.settings.auto_scan_interval_minutes = 120
+    }
+    if (typeof store.settings.scan_min_match !== 'number' || !Number.isFinite(store.settings.scan_min_match)) {
+      // Backfill for stores written before scan_min_match existed. The
+      // old hardcoded floor was 0.25, so that is the value an upgrade
+      // gets. Values outside [0, 1] are clamped rather than reset: 0 is
+      // a legitimate "add everything" setting, and anything above 1
+      // would silently reject every listing.
+      store.settings.scan_min_match = 0.25
+    } else if (store.settings.scan_min_match < 0 || store.settings.scan_min_match > 1) {
+      store.settings.scan_min_match = Math.min(1, Math.max(0, store.settings.scan_min_match))
     }
     if (typeof store.settings.fit_autoscore_interval_minutes !== 'number' || store.settings.fit_autoscore_interval_minutes <= 0) {
       store.settings.fit_autoscore_interval_minutes = 240
