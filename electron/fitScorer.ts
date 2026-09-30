@@ -42,7 +42,9 @@ import type { Job } from './types'
  *     and could make a good CV worse.
  *   - A `tailor_job_docs` item that is still pending/processing means
  *     generation is already scheduled; enqueueing again would stack
- *     duplicate work.
+ *     duplicate work. That is decided by `enqueue`'s own duplicate
+ *     guard, which returns null instead of adding a second row — this
+ *     function does not re-check it.
  */
 export function maybeAutoEnqueueDocs(
   jobId: number,
@@ -71,22 +73,17 @@ export function maybeAutoEnqueueDocs(
     return false
   }
 
-  // Generation already scheduled (pending or in flight). `enqueue`
-  // only dedupes against `pending`, so a `processing` item has to be
-  // checked here or a re-trigger mid-generation would queue a second
-  // run.
-  const alreadyQueued = db
-    .getAIQueue()
-    .some(
-      (q) =>
-        q.type === 'tailor_job_docs' &&
-        q.jobId === jobId &&
-        (q.status === 'pending' || q.status === 'processing')
-    )
-  if (alreadyQueued) return false
-
-  enqueue({ type: 'tailor_job_docs', jobId })
-  return true
+  // Duplicate suppression is `enqueue`'s job: its guard matches
+  // pending AND processing rows on (type, jobId, documentId, sectionName),
+  // and a `tailor_job_docs` item is only ever enqueued with a jobId (see
+  // main.ts, jobSearch.ts, and this function), so the guard's key is
+  // exactly this pre-check's predicate. It used to be re-implemented
+  // here — a second full scan of the queue on every fit-landing, before
+  // the one `enqueue` was about to do anyway. The old comment justified
+  // it by claiming "`enqueue` only dedupes against `pending`"; that
+  // stopped being true when the guard was widened to cover `processing`,
+  // and a second copy of a dedupe rule is a second thing to keep correct.
+  return enqueue({ type: 'tailor_job_docs', jobId }) !== null
 }
 
 /**

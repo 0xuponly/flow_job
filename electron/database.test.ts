@@ -29,7 +29,7 @@ vi.mock('electron', () => ({
 // Load the database AFTER the electron override above is in place.
 import { existsSync, unlinkSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import { createJob, updateJob, getJob, listJobs, reloadStore, addAIQueueItem, updateAIQueueItem, getAIQueue, clearAIQueue, dedupeAIQueueItems } from './database'
+import { createJob, updateJob, getJob, listJobs, reloadStore, addAIQueueItem, updateAIQueueItem, getAIQueue, clearAIQueue, dedupeAIQueueItems, createDocument, deleteDocument, listJobDocuments, bumpDocumentAutoRegenAttempts, getDocumentAutoRegenAttempts } from './database'
 import type { CreateJobInput } from './types'
 
 const baseInput: CreateJobInput = {
@@ -294,5 +294,120 @@ describe('dedupeAIQueueItems (real store)', () => {
   it('does not throw on an empty queue', () => {
     expect(dedupeAIQueueItems().removed).toBe(0)
     expect(getAIQueue()).toEqual([])
+  })
+})
+
+// The grouping key was a `|`-delimited concatenation
+// (`${type}|${jobId}|${documentId ?? ''}|${sectionName ?? ''}`) while a
+// field-wise comparator sat right above it, unused. Two rows that
+// stringify identically are not the same work, and the repair pass
+// deletes the loser of such a pair without asking.
+describe('dedupeAIQueueItems groups by field-wise equality, not a string key', () => {
+  it('keeps an empty sectionName distinct from an absent one', () => {
+    // Both render as `...|4|` in the old key, so the repair pass treated
+    // them as one piece of work and dropped a row. `sameWork` — the
+    // comparator the key was supposed to be — says '' is not null.
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: '' })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4 })
+    expect(getAIQueue()).toHaveLength(2)
+    expect(dedupeAIQueueItems().removed).toBe(0)
+    expect(getAIQueue()).toHaveLength(2)
+  })
+
+  it('still collapses a true duplicate of an empty sectionName', () => {
+    // The counterpart to the test above: the empty/absent distinction
+    // must not weaken the dedupe itself. Two rows naming the same work
+    // are one piece of work whatever the spelling.
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: '' })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: '' })
+    expect(dedupeAIQueueItems().removed).toBe(1)
+  })
+
+  it('keeps distinct section names that contain the field separator', () => {
+    // Section names come from the model's document outline, where a
+    // heading like "Experience | Education" is entirely plausible. A key
+    // that concatenates fields with '|' has to survive that spelling.
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: 'Experience | Education' })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: 'Experience' })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: 'Education' })
+    expect(dedupeAIQueueItems().removed).toBe(0)
+    expect(getAIQueue()).toHaveLength(3)
+  })
+
+  it('collapses rows whose pipe-bearing section name is genuinely identical', () => {
+    const a = addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: 'Experience | Education' })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: 'Experience | Education' })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: 'Experience' })
+    expect(dedupeAIQueueItems().removed).toBe(1)
+    const kept = getAIQueue().filter((q) => q.sectionName === 'Experience | Education')
+    expect(kept.map((q) => q.id)).toEqual([a.id])
+  })
+
+  it('treats a pipe-bearing section name on a different document as different work', () => {
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: '4|Summary' })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 44, sectionName: 'Summary' })
+    expect(dedupeAIQueueItems().removed).toBe(0)
+  })
+
+  it('collapses a three-row bucket of one work item down to the single winner', () => {
+    // A bucket is formed by comparing each row against the bucket's
+    // first member, so this is the transitive case: three rows of one
+    // work item must end up as one bucket, not three singletons.
+    const a = addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: '' })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: '' })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: '' })
+    expect(dedupeAIQueueItems().removed).toBe(2)
+    expect(getAIQueue().map((q) => q.id)).toEqual([a.id])
+  })
+
+  it('keeps the blank-headed and section-less rows as two work items', () => {
+    // ...while the two spellings stay apart even inside the same job:
+    // they are two rows, and the winner pick runs once per bucket.
+    const a = addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: '' })
+    const b = addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4 })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4 })
+    expect(dedupeAIQueueItems().removed).toBe(1)
+    expect(getAIQueue().map((q) => q.id)).toEqual([a.id, b.id])
+  })
+})
+
+// The auto review→regenerate budget. `bumpDocumentAutoRegenAttempts`
+// used to answer 0 for a document that is not there, which the loop read
+// as a full budget and rebuilt anyway — a delete landing mid-LLM-call
+// produced a regeneration item pointing at a row the user had removed.
+describe('bumpDocumentAutoRegenAttempts', () => {
+  function seedDoc() {
+    const { job } = createJob(baseInput)
+    return { job, doc: createDocument('cover_letter', 'Cover Letter', 'ORIGINAL', job.id) }
+  }
+
+  it('counts up on an existing document', () => {
+    const { doc } = seedDoc()
+    expect(bumpDocumentAutoRegenAttempts(doc.id)).toBe(1)
+    expect(bumpDocumentAutoRegenAttempts(doc.id)).toBe(2)
+    expect(getDocumentAutoRegenAttempts(doc.id)).toBe(2)
+  })
+
+  it('returns null, not 0, once the document is gone', () => {
+    const { doc } = seedDoc()
+    bumpDocumentAutoRegenAttempts(doc.id)
+    deleteDocument(doc.id)
+    // 0 would read as "no regenerations yet" — a fresh budget — for a
+    // document that no longer exists.
+    expect(bumpDocumentAutoRegenAttempts(doc.id)).toBeNull()
+  })
+
+  it('keeps reporting null for a document that never existed', () => {
+    expect(bumpDocumentAutoRegenAttempts(987654)).toBeNull()
+  })
+
+  it('does not write a counter onto a deleted document', () => {
+    const { job, doc } = seedDoc()
+    expect(listJobDocuments(job.id).map((d) => d.id)).toEqual([doc.id])
+    deleteDocument(doc.id)
+    bumpDocumentAutoRegenAttempts(doc.id)
+    // The bump is a no-op on a missing row: no counter anywhere, and
+    // nothing put back.
+    expect(listJobDocuments(job.id)).toEqual([])
   })
 })
