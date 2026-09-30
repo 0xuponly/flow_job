@@ -96,6 +96,11 @@ export interface ScanResult {
   totalIncompatible: number
   boards: ScanBoardResult[]
   errors: string[]
+  // Plain-language caveats about how the run was filtered (e.g. the
+  // match floor dropped N listings, or no base CV was configured so
+  // nothing could be filtered). Optional so a result cached by an older
+  // build still satisfies the type.
+  notes?: string[]
   addedJobs: { id: number; title: string; company: string }[]
 }
 

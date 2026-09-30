@@ -8,16 +8,22 @@ import { BOARD_TYPES, groupOf, groupSelection, expandFailingToGroups, isFrequent
 import { usePersistedState } from '../persistedState'
 import { applyProgressBatch, applyProgressMessage } from './scanProgress'
 
+// A result that has been through normalizeScanResult: the two backfilled
+// fields are guaranteed present, so the card can render them without
+// re-guarding every access.
+type PaddedScanResult = ScanResult & {
+  addedJobs: { id: number; title: string; company: string }[]
+  notes: string[]
+}
+
 // Backfill fields that may be missing on results cached from older
 // app versions. _scanState.result is in-memory across renderer
 // reloads, so a result captured before `addedJobs` existed can re-
 // surface after a hot reload and crash the render. Defensively default
-// to [] so the UI degrades to the old behavior (no per-job list).
-function normalizeScanResult(r: ScanResult): ScanResult {
-  if (r && !r.addedJobs) {
-    return { ...r, addedJobs: [] }
-  }
-  return r
+// to [] so the UI degrades to the old behavior (no per-job list, no
+// filter notes).
+function normalizeScanResult(r: ScanResult): PaddedScanResult {
+  return { ...r, addedJobs: r.addedJobs ?? [], notes: r.notes ?? [] }
 }
 
 function formatDuration(s: number): string {
@@ -111,7 +117,7 @@ export default function ScanJobsPage() {
   // block, the mount-time reattach) so it can never stick around past
   // a real scan finish.
   const [cancelling, setCancelling] = useState(false)
-  const [result, setResult] = useState<ScanResult | null>(null)
+  const [result, setResult] = useState<PaddedScanResult | null>(null)
   // Auto-tailor indicator (Task 3). When the scan result has addedJobs,
   // we count how many of those jobs already have tailor_generated_at
   // set in the store. The render uses this to show "X/Y tailored" on
@@ -518,7 +524,7 @@ export default function ScanJobsPage() {
         boards: selectedBoards.size < enabledBoards.length ? Array.from(selectedBoards) : undefined
       })
       if (mountedRef.current) {
-        setResult(r)
+        setResult(normalizeScanResult(r))
         setLogSnapshot(fullLogRef.current)
         setElapsed(Math.round(r.durationMs / 1000))
       }
@@ -1058,6 +1064,14 @@ export default function ScanJobsPage() {
                   ))}
                 </tbody>
               </table>
+            )}
+            {result.notes.length > 0 && (
+              <div
+                className="alert alert-info"
+                style={{ marginTop: 8, marginBottom: 12, fontSize: 12 }}
+              >
+                {result.notes.map((n, i) => <div key={i}>{n}</div>)}
+              </div>
             )}
             {result.errors.length > 0 && (
               <div style={{ marginTop: 8, fontSize: 12, color: 'var(--danger)' }}>

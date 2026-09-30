@@ -259,6 +259,11 @@ export interface ScanResult {
   totalIncompatible: number
   boards: ScanBoardResult[]
   errors: string[]
+  // Plain-language caveats about how the run was filtered (e.g. the
+  // match floor dropped N listings, or no base CV was configured so
+  // nothing could be filtered). Optional because a result cached by an
+  // older build can reach the renderer without it.
+  notes?: string[]
   startedAt: number | null
   durationMs: number
   cancelled: boolean

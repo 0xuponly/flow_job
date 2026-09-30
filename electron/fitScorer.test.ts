@@ -174,6 +174,49 @@ describe('scoreOneJobInBackground heuristic-fallback path', () => {
   })
 })
 
+// The scan used to persist below-floor listings with score=null and this
+// exact rationale, and report them as added. Those rows are still in
+// users' stores, and the per-job "Recompute Fit" button has to keep
+// working on them — the scan now filters such listings out instead of
+// storing them, but it must not leave the already-stored ones
+// unrecomputable (e.g. by attaching a status or a version stamp that
+// blocks a manual re-score).
+describe('scoreOneJobInBackground on a legacy pre-filtered row', () => {
+  it('recomputes a stored below-floor job (the Recompute Fit path)', async () => {
+    const legacyRow = {
+      ...fakeJob,
+      score: null,
+      fit_source: 'heuristic',
+      fit_rationale: 'Pre-filtered by heuristic (low keyword overlap)',
+      fit_breakdown: null,
+      fit_score_version: null,
+      fit_last_error: null
+    }
+    mockedGetJob.mockReturnValue(legacyRow as any)
+    mockedGetSettings.mockReturnValue({ base_cv: 'a CV', cv_version: 4 } as any)
+    mockedScore.mockResolvedValue({
+      score: 0.71,
+      rationale: 'Recomputed against the current CV.',
+      breakdown: { matched_skills: ['python'], missing_skills: [], experience_years_match: true },
+      source: 'llm'
+    } as any)
+    mockedUpdate.mockReturnValue({ ...legacyRow, score: 0.71, fit_source: 'llm' } as any)
+
+    const result = await scoreOneJobInBackground(7)
+
+    expect(mockedScore).toHaveBeenCalled()
+    expect(mockedUpdate).toHaveBeenCalledWith(7, {
+      score: 0.71,
+      fit_rationale: 'Recomputed against the current CV.',
+      fit_breakdown: { matched_skills: ['python'], missing_skills: [], experience_years_match: true },
+      fit_score_version: 4,
+      fit_source: 'llm',
+      fit_last_error: null
+    })
+    expect((result as { score: number | null }).score).toBe(0.71)
+  })
+})
+
 // P1.7 §1 — auto-queue trigger. When a job's fit lands at or above
 // the new `auto_doc_min_fit` setting (default 40), generation is
 // auto-enqueued for that job. Skipped when docs already exist with a
