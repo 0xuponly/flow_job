@@ -1058,6 +1058,31 @@ export function listDocuments(jobId?: number): Document[] {
   return docs
 }
 
+/**
+ * The documents belonging to ONE job, and only those.
+ *
+ * `listDocuments(jobId)` deliberately unions in the base CV
+ * (`is_base = 1`, `job_id` null): the Documents / JobDetail views want
+ * the user's master CV shown alongside every job. That is right for
+ * DISPLAY and wrong for anything that acts on a job.
+ *
+ * The AI reviewer is the case that matters. Unioning the base CV in
+ * meant every job's generation pass uploaded the user's master
+ * document to the LLM provider, wrote it a `verification_score` it was
+ * never meant to carry, and pushed it through the auto-regeneration
+ * counter — and because a failing review of it enqueues a
+ * regeneration for THAT job, one job's documents could be rebuilt
+ * from a base CV that job was never derived from. Reviewing the base
+ * CV is an explicit user action; it must not be a side effect of
+ * generating a document for some other job.
+ *
+ * Deliberately reuses `listDocuments` so the ordering stays identical
+ * to what the UI shows.
+ */
+export function listJobDocuments(jobId: number): Document[] {
+  return listDocuments(jobId).filter((d) => d.job_id === jobId && d.is_base !== 1)
+}
+
 export function createDocument(
   type: 'cv' | 'cover_letter',
   title: string,
@@ -1099,6 +1124,57 @@ export function updateDocument(id: number, title: string, content: string): Docu
   const idx = s.documents.findIndex((d) => d.id === id)
   if (idx === -1) throw new Error('Document not found')
   s.documents[idx] = { ...s.documents[idx], title, content, updated_at: now() }
+  persistStore()
+  return s.documents[idx]
+}
+
+/**
+ * Rebuild a document's content IN PLACE, keeping the same row.
+ *
+ * The auto review->regenerate loop (P1.7 §2) has to replace the
+ * document that failed rather than insert a new one. `createDocument`
+ * always mints a fresh id, so a regeneration routed through it would
+ * leave the user looking at a brand-new row that (a) has no
+ * `auto_regen_attempts` counter, so the loop's budget is reset on
+ * every round and AUTO_REGEN_MAX is unreachable, and (b) is a
+ * different row from the one the application, the reviewer and the
+ * queue item all point at. Inheriting the row is what lets the loop
+ * advance round after round and what keeps the surviving document
+ * carrying its own review history.
+ *
+ * The `verification_score` / `verification_feedback` are cleared:
+ * they described the content that was just replaced, and leaving them
+ * would present an unreviewed document as reviewed — the exact state
+ * this function exists to prevent. `createDocument` likewise leaves
+ * them empty, so the regenerated row looks like a freshly written one
+ * until the queued review lands.
+ *
+ * `modelUsed` updates the provenance of the content; omitted, the
+ * previous value is kept.
+ *
+ * Returns the updated row, or null when the document no longer exists
+ * (deleted by the user while the LLM call was in flight) — the caller
+ * must not fall back to inserting, or a deleted document would come
+ * back from the dead.
+ */
+export function replaceDocumentContent(
+  id: number,
+  title: string,
+  content: string,
+  modelUsed?: string | null
+): Document | null {
+  const s = loadStore()
+  const idx = s.documents.findIndex((d) => d.id === id)
+  if (idx === -1) return null
+  s.documents[idx] = {
+    ...s.documents[idx],
+    title,
+    content,
+    model_used: modelUsed === undefined ? s.documents[idx].model_used : modelUsed,
+    verification_score: null,
+    verification_feedback: null,
+    updated_at: now()
+  }
   persistStore()
   return s.documents[idx]
 }

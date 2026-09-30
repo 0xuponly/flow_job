@@ -15,8 +15,11 @@ vi.mock('./tailorJobDocs', () => ({
 // aiQueue pulls ./database for queue persistence; stub the surface the
 // processor touches so tests run without a store. P0.3-era surface
 // plus the P1.7 additions: getJob (fit score read at pick time for
-// priority ordering), listDocuments + getDocumentAutoRegenAttempts /
+// priority ordering), listJobDocuments + getDocumentAutoRegenAttempts /
 // bumpDocumentAutoRegenAttempts (review < 80 -> regeneration loop).
+// `listJobDocuments`, not `listDocuments`: the review fan-out must not
+// union in the base CV, and the mock has to name the same function the
+// processor calls or the test proves nothing about which one is used.
 // aiQueue pulls ./ai for the generation / verify cases. Stub the two
 // entry points the P1.7 review-loop tests need to control, and keep
 // the real RateLimitError class so the existing retry tests still
@@ -39,7 +42,7 @@ vi.mock('./database', () => ({
   clearAIQueue: vi.fn(() => 0),
   getDocument: vi.fn(),
   getJob: vi.fn(),
-  listDocuments: vi.fn(() => []),
+  listJobDocuments: vi.fn(() => []),
   getDocumentAutoRegenAttempts: vi.fn(() => 0),
   bumpDocumentAutoRegenAttempts: vi.fn(() => 1)
 }))
@@ -49,7 +52,7 @@ import { withAiOperation } from './ai'
 import { processQueue, enqueue, listQueueInPickOrder, retryQueueItem, clearQueue, reclaimInterruptedItems, startQueueProcessor, stopQueueProcessor } from './aiQueue'
 import { scoreOneJobInBackground } from './fitScorer'
 import { tailorJobDocsForJob } from './tailorJobDocs'
-import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, clearAIQueue, getJob, getDocument, listDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
+import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, clearAIQueue, getJob, getDocument, listJobDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
 import { RateLimitError, verifyDocumentContent } from './ai'
 
 const mockedScore = vi.mocked(scoreOneJobInBackground)
@@ -62,7 +65,7 @@ const mockedGetJob = vi.mocked(getJob)
 const mockedTailor = vi.mocked(tailorJobDocsForJob)
 const mockedGetDocument = vi.mocked(getDocument)
 const mockedVerify = vi.mocked(verifyDocumentContent)
-const mockedListDocuments = vi.mocked(listDocuments)
+const mockedListDocuments = vi.mocked(listJobDocuments)
 const mockedGetRegen = vi.mocked(getDocumentAutoRegenAttempts)
 const mockedBumpRegen = vi.mocked(bumpDocumentAutoRegenAttempts)
 

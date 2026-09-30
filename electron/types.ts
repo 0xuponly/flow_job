@@ -320,6 +320,14 @@ export interface TailorRequest {
   document_type: 'cv' | 'cover_letter'
   base_content?: string
   topKeywords?: string[]
+  /**
+   * P1.7 §2 auto-regeneration: rebuild THIS document in place instead
+   * of inserting a new one. Set by the queue's regeneration item so
+   * the rebuilt content keeps the document's identity and its
+   * `auto_regen_attempts` budget across rounds. Absent for a first
+   * generation, which always creates a new document.
+   */
+  document_id?: number
 }
 
 export interface TailorResult {
