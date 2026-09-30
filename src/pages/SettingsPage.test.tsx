@@ -51,40 +51,76 @@ vi.mock('../api', () => ({
 }))
 
 describe('SettingsPage PRESETS', () => {
-  it('keeps 5-7 presets so the UI stays compact', () => {
-    expect(PRESETS.length).toBeGreaterThanOrEqual(5)
-    expect(PRESETS.length).toBeLessThanOrEqual(7)
+  // These assert SHAPE and COVERAGE invariants, never specific model names.
+  // Earlier rounds of this file asserted exact slugs, which went stale within
+  // a week and — worse — actively blocked good models, because a slug that
+  // had been dropped for being dead later came back to the free tier healthy.
+  // Names rot; the invariants below do not.
+
+  const slugs = PRESETS.map((p) => p.model.model)
+  const vendors = new Set(slugs.map((s) => s.split('/')[0]))
+
+  it('offers enough presets that one provider outage cannot starve the rotation', () => {
+    // The user's pool collapsed to near-total failure because it was both
+    // small and concentrated. Floor guards the size, ceiling keeps the
+    // quick-add row usable.
+    expect(PRESETS.length).toBeGreaterThanOrEqual(8)
+    expect(PRESETS.length).toBeLessThanOrEqual(14)
   })
 
-  it('uses only OpenRouter free models that are currently listed', () => {
+  it('spreads presets across several vendors so no single 429 storm is fatal', () => {
+    // 10 presets over 7 vendor namespaces today. A floor of 5 means the list
+    // can never quietly regress to "nearly all one vendor" again.
+    expect(vendors.size).toBeGreaterThanOrEqual(5)
+  })
+
+  it('points every preset at OpenRouter with a blank key to inherit', () => {
     for (const preset of PRESETS) {
       expect(preset.model.base_url).toBe('https://openrouter.ai/api/v1')
-      expect(preset.model.model).toMatch(/:free$/)
       expect(preset.model.api_key).toBe('')
     }
+  })
+
+  it('only offers free-tier slugs', () => {
+    // Anything without the :free suffix bills real money on every CV tail.
+    for (const slug of slugs) {
+      expect(slug).toMatch(/:free$/)
+    }
+  })
+
+  it('never lists the same model twice', () => {
+    // A duplicate quick-add button silently doubles that model's weight in
+    // the rotation, which is how one vendor ends up dominating anyway.
+    expect(new Set(slugs).size).toBe(slugs.length)
+  })
+
+  it('never offers a rerank or embedding model', () => {
+    // These only serve /api/v1/rerank and /embeddings; sent to
+    // /chat/completions they 400. Mirrors RERANK_MODEL_PATTERNS in
+    // electron/ai.ts, which keeps them out of rotation but does not stop
+    // them being offered as a preset.
+    const nonChat = [/rerank/i, /embed/i, /(^|-)clip(-|$)/i, /bge-/i]
+    for (const slug of slugs) {
+      for (const pattern of nonChat) {
+        expect(slug).not.toMatch(pattern)
+      }
+    }
+  })
+
+  it('gives every preset a unique, non-empty label for its button and card', () => {
+    const names = PRESETS.map((p) => p.name)
+    const cardNames = PRESETS.map((p) => p.model.name)
+    for (const name of [...names, ...cardNames]) {
+      expect(name.trim().length).toBeGreaterThan(0)
+    }
+    expect(new Set(names).size).toBe(names.length)
+    expect(new Set(cardNames).size).toBe(cardNames.length)
   })
 
   it('describes every preset accurately as key-required', () => {
     for (const preset of PRESETS) {
       expect(preset.desc).toBe('via OpenRouter (needs API key)')
     }
-  })
-
-  it('drops known-dead models from production logs', () => {
-    const ids = PRESETS.map((p) => p.model.model)
-    expect(ids).not.toContain('google/gemma-4-31b-it:free')
-    expect(ids).not.toContain('nvidia/nemotron-3-super-120b-a12b:free')
-    expect(ids).not.toContain('nvidia/nemotron-3-ultra-550b-a55b:free')
-    expect(ids).not.toContain('poolside/laguna-s-2.1:free')
-    expect(ids).not.toContain('big-pickle')
-    expect(ids).not.toContain('mimo-v2.5-free')
-    expect(ids).not.toContain('north-mini-code-free')
-  })
-
-  it('drops free models that have since left the OpenRouter free tier', () => {
-    const ids = PRESETS.map((p) => p.model.model)
-    expect(ids).not.toContain('nex-agi/nex-n2.5-mini:free')
-    expect(ids).not.toContain('inclusionai/ling-3.0-flash-fin:free')
   })
 
   it('renders the Models tab without throwing', async () => {

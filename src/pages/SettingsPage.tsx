@@ -9,14 +9,36 @@ import { inheritProviderApiKey } from '../apiModels'
 import Modal from '../components/Modal'
 import { BOARD_TYPES } from '../boardTypes'
 
+// Quick-add buttons for OpenRouter's `:free` tier. Every entry was checked
+// against the live catalog (GET /api/v1/models + /endpoints) for: pricing 0,
+// `temperature` AND `max_tokens` in supported_parameters (the only two
+// params the rotation sends, see electron/ai.ts), a live endpoint, and a
+// provider that does NOT restrict the free tier to agentic harnesses.
+//
+// Deliberate exclusions, so the next person does not re-add them:
+// - Anything harness-gated. OpenRouter does not expose `allowed_harnesses`
+//   in the JSON API; the restriction shows up as a `warning_message` on the
+//   model page ("only available for use with agentic harnesses"), which
+//   surfaces as a 403 from a plain API call. That killed the whole
+//   Thinking Machines line.
+// - `endpoint.status != 0`. -5 is "Down" (the Nemotron omni model, the
+//   "fetch failed" entry in the log); -2 is degraded.
+// - Rerank/embedding endpoints, which 400 on /chat/completions.
+//
+// Kept deliberately spread across ~7 distinct endpoint providers. One
+// provider's 429 storm should not be able to starve the whole rotation,
+// which is what happened when the pool was nearly all one vendor.
 export const PRESETS: { name: string; desc: string; model: Omit<ApiModelConfig, 'id'> }[] = [
   { name: 'Gemma 4 26B A4B Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Gemma 4 26B A4B', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'google/gemma-4-26b-a4b-it:free' } },
-  { name: 'Nemotron 3.5 Lightning Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Nemotron 3.5 Lightning', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'nvidia/nemotron-3.5-lightning:free' } },
-  { name: 'North Mini Code Free', desc: 'via OpenRouter (needs API key)', model: { name: 'North Mini Code', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'cohere/north-mini-code:free' } },
-  { name: 'Inkling Small Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Inkling Small', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'thinkingmachines/inkling-small:free' } },
+  { name: 'Gemma 4 31B IT Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Gemma 4 31B IT', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'google/gemma-4-31b-it:free' } },
+  { name: 'Nemotron 3 Super Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Nemotron 3 Super', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'nvidia/nemotron-3-super-120b-a12b:free' } },
+  { name: 'Nemotron 3 Ultra Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Nemotron 3 Ultra', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'nvidia/nemotron-3-ultra-550b-a55b:free' } },
   { name: 'Laguna XS 2.1 Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Laguna XS 2.1', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'poolside/laguna-xs-2.1:free' } },
+  { name: 'Laguna S 2.1 Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Laguna S 2.1', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'poolside/laguna-s-2.1:free' } },
+  { name: 'North Mini Code Free', desc: 'via OpenRouter (needs API key)', model: { name: 'North Mini Code', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'cohere/north-mini-code:free' } },
   { name: 'Qwen3.8 27B Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Qwen3.8 27B', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'qwen/qwen3.8-27b:free' } },
-  { name: 'LFM2.5 2.6B Free', desc: 'via OpenRouter (needs API key)', model: { name: 'LFM2.5 2.6B', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'liquid/lfm-2.5-2.6b:free' } }
+  { name: 'LFM2.5 2.6B Free', desc: 'via OpenRouter (needs API key)', model: { name: 'LFM2.5 2.6B', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'liquid/lfm-2.5-2.6b:free' } },
+  { name: 'Dots 3 Note Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Dots 3 Note', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'dots-studio/dots-3-note-preview:free' } }
 ]
 
 type Tab = 'profile' | 'models' | 'boards' | 'companies' | 'scan' | 'data'
