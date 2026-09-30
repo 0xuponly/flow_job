@@ -1,4 +1,4 @@
-import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, clearAIQueue, getDocument, getJob, listDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
+import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, clearAIQueue, getDocument, getJob, listJobDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
 import { log } from './logger'
 import { withAiOperation } from './ai'
 import { tailorDocument, regenerateSection, verifyDocumentContent, RateLimitError } from './ai'
@@ -123,8 +123,31 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
       case 'generate_cv':
       case 'generate_cover_letter': {
         const docType = item.type === 'generate_cv' ? 'cv' : 'cover_letter'
-        await tailorDocument({ job_id: item.jobId, document_type: docType })
+        // `documentId` is set only on an auto-regeneration (a rebuild of
+        // a document that failed its review). It is handed to
+        // tailorDocument so the rebuild REPLACES that row instead of
+        // inserting a new one: a new row would carry no
+        // auto_regen_attempts, so the loop's budget would reset every
+        // round and AUTO_REGEN_MAX could never be reached.
+        const result = await tailorDocument({
+          job_id: item.jobId,
+          document_type: docType,
+          document_id: item.documentId
+        })
         removeAIQueueItem(item.id)
+        // P1.7 §2: chain the review, exactly as the `tailor_job_docs`
+        // case does. Without this the cycle was verify -> regenerate ->
+        // STOP: the rebuilt document was never reviewed again, so the
+        // user was left looking at an unreviewed document presented as
+        // the job's regenerated CV, and the loop could never advance
+        // past a single round.
+        //
+        // A first generation (no documentId) creates its document here
+        // rather than through `tailor_job_docs`, so it gets the same
+        // review chain — otherwise a directly queued generate_* would
+        // land an unreviewed document too.
+        if (epoch !== clearEpoch) return
+        enqueue({ type: 'verify', jobId: item.jobId, documentId: result.document_id })
         break
       }
       case 'regenerate_section': {
@@ -155,6 +178,15 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
         // must not feed the loop — callers already treat skip as
         // "no review happened".
         if (result.kind === 'review' && result.score < PASSING_REVIEW_SCORE) {
+          // The counter is read and bumped on the document the
+          // review just ran against. That is also the document the
+          // regeneration below REPLACES IN PLACE, so the budget
+          // carries across rounds: read 0 -> bump 1 -> rebuild the
+          // same row -> re-queue the review of that same row, until
+          // the counter reaches AUTO_REGEN_MAX. Pointing the
+          // regeneration at a new row instead (which is what
+          // happened while this item carried only a jobId) reset the
+          // counter every round and made the cap unreachable.
           const attemptsSoFar = getDocumentAutoRegenAttempts(item.documentId)
           if (attemptsSoFar >= AUTO_REGEN_MAX) {
             // Cap reached: stop auto-looping. The document keeps its
@@ -168,7 +200,12 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
           if (epoch !== clearEpoch) return
           enqueue({
             type: doc.type === 'cv' ? 'generate_cv' : 'generate_cover_letter',
-            jobId: item.jobId
+            jobId: item.jobId,
+            // The document to rebuild, not just the job: the
+            // replacement has to BE this document for the loop to
+            // re-enter (and for the user's job to keep pointing at
+            // the reviewed, regenerated one).
+            documentId: item.documentId
           })
         }
         break
@@ -222,8 +259,18 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
         // item does not exist until generation has finished, so the
         // queue cannot start reviewing a document that is still being
         // written. Different jobs' items may still interleave.
+        //
+        // `listJobDocuments`, not `listDocuments`: the latter unions
+        // in the base CV, so this fan-out used to hand the user's
+        // master document to the LLM reviewer on every job's
+        // generation pass — uploading it to the provider, stamping it
+        // a verification_score it never asked for, and pushing it
+        // through the auto-regeneration counter (where a failing review
+        // regenerated a job's CV that was never derived from it).
+        // Reviewing the base CV is an explicit user action, not a side
+        // effect of generating documents for another job.
         if (epoch !== clearEpoch) return
-        for (const doc of listDocuments(item.jobId)) {
+        for (const doc of listJobDocuments(item.jobId)) {
           enqueue({ type: 'verify', jobId: item.jobId, documentId: doc.id })
         }
         break

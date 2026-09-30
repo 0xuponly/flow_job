@@ -1,6 +1,6 @@
 import { getSettings, listApiModels, getDocument, updateDocument, updateDocumentVerification, listApplications, updateApplication } from './database'
 import type { ApiModelConfig, FitBreakdown, Job, KeywordCategory, KeywordEntry, KeywordResult, KeywordSource, RuleCheck, TailorRequest, TailorResult, VerificationResult } from './types'
-import { createDocument, getJob } from './database'
+import { createDocument, getJob, replaceDocumentContent } from './database'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
@@ -1018,9 +1018,33 @@ ${request.document_type === 'cover_letter' ? 'Write a tailored cover letter.' : 
     content = generateFallbackDocument(job, request.document_type, baseContent, settings)
   }
 
+  const title =
+    `${request.document_type === 'cv' ? 'CV' : 'Cover Letter'} — ${job.company}`
+
+  // P1.7 §2 auto-regeneration: `document_id` is set when this call is
+  // a REBUILD of a document that already exists (it just failed its AI
+  // review). The rebuild must overwrite that row in place, not mint a
+  // new one: a fresh row would start the auto-regen counter from zero,
+  // so the loop could never reach AUTO_REGEN_MAX, and the document the
+  // user is left looking at would be a different row from the one the
+  // job, the application and the queue item point at.
+  if (request.document_id !== undefined) {
+    const rebuilt = replaceDocumentContent(
+      request.document_id,
+      title,
+      content,
+      modelUsed || undefined
+    )
+    if (rebuilt) return { content, document_id: rebuilt.id }
+    // The document was deleted while the LLM call was in flight.
+    // Writing a replacement would resurrect it behind the user's back,
+    // so this is a no-op the caller can treat as "nothing to store".
+    return { content, document_id: request.document_id }
+  }
+
   const doc = createDocument(
     request.document_type,
-    `${request.document_type === 'cv' ? 'CV' : 'Cover Letter'} — ${job.company}`,
+    title,
     content,
     job.id,
     false,

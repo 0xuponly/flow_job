@@ -289,6 +289,27 @@ export type AIQueueItemType = 'generate_cv' | 'generate_cover_letter' | 'regener
  * the build if either moves without the other.
  */
 export const AUTO_REVIVE_MAX = 3
+
+/**
+ * Mirrors PASSING_REVIEW_SCORE / AUTO_REGEN_MAX in electron/types.ts.
+ *
+ * The Settings copy has to state what the main process will actually
+ * do — "auto-regenerates up to 5x if the review scores below 80" is a
+ * promise about the queue, and while the numbers were hardcoded
+ * literals in the JSX they were free to drift from the behaviour they
+ * describe (they did: the loop could only ever run once, so the page
+ * was promising five). Rendering them from the constants means the
+ * copy is a consequence of the behaviour rather than a copy of it.
+ *
+ * Kept as literals rather than shared over IPC for the same reason as
+ * AUTO_REVIVE_MAX: duplicating two integers is cheaper than a round
+ * trip on every Settings render. types.test.ts asserts they still
+ * equal the main-process constants, so the duplication cannot rot
+ * quietly.
+ */
+export const PASSING_REVIEW_SCORE = 80
+export const AUTO_REGEN_MAX = 5
+
 export type AIQueueItemStatus = 'pending' | 'processing' | 'failed'
 
 export interface AIQueueItem {

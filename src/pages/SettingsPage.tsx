@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { ApiModelConfig, Settings } from '../types'
+import { AUTO_REGEN_MAX, PASSING_REVIEW_SCORE } from '../types'
 import { notify } from '../components/Notifications'
 import { LocationPicker } from '../components/LocationPicker'
 import { parseLocationPicks } from '../utils'
@@ -678,7 +679,8 @@ export default function SettingsPage() {
                 }}
               />
               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                % (generation + AI review, auto-regenerates up to 5x if the review scores below 80)
+                % (generation + AI review, auto-regenerates up to {AUTO_REGEN_MAX}x if the
+                review scores below {PASSING_REVIEW_SCORE})
               </span>
             </div>
           </div>
