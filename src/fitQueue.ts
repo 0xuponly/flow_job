@@ -172,12 +172,22 @@ export function queueItemStatusText(item: AIQueueItem, now: number = Date.now())
     // A failed item with revive budget left is not stranded — the
     // processor will bring it back on its own. Saying so stops a task
     // that is waiting out a quota window from looking abandoned.
+    //
+    // Best-effort, and the wording has to say so. Revival happens only
+    // if a queue pass actually reaches the row: the app has to be
+    // running, and the row has to still be there when the pass gets to
+    // it (the user can clear the queue or remove the task in the
+    // meantime, and a deleted job takes the row with it). "Retrying
+    // automatically in 4h" read as a promise, and a task that never came
+    // back looked like a lie about the app rather than a closed door the
+    // user can reopen with Retry. The countdown is the useful part, so
+    // it stays; the guarantee does not.
     const revives = item.autoRevives ?? 0
     if (revives < AUTO_REVIVE_MAX) {
       const wait = Math.max(0, Math.ceil((item.nextRetryAt - now) / 1000))
       return wait > 0
-        ? `Retrying automatically in ${formatWait(wait)}`
-        : 'Retrying automatically…'
+        ? `Auto-retry in ${formatWait(wait)} (best effort)`
+        : 'Auto-retry due (best effort)'
     }
     return `Failed (${item.attempts} attempts) — needs attention`
   }

@@ -6,7 +6,15 @@ vi.mock('./database', () => ({
   getAIQueue: vi.fn(),
   addAIQueueItem: vi.fn(),
   updateAIQueueItem: vi.fn(),
-  listJobs: vi.fn()
+  listJobs: vi.fn(),
+  isScoreFitSuppressed: vi.fn(() => false)
+}))
+
+// enqueueScoreFitBacklog (the startup / post-scan re-seeder) goes through
+// the shared enqueue(), which is the dedupe-aware one; the real aiQueue is
+// not under test here, so it is stubbed like ./database is.
+vi.mock('./aiQueue', () => ({
+  enqueue: vi.fn(() => ({ id: 1 }))
 }))
 
 vi.mock('./utils', () => ({
@@ -18,15 +26,20 @@ import {
   restartFitAutoScoreTimer,
   cancelFitAutoScore,
   getFitAutoScoreState,
-  runFitAutoScoreBacklog
+  runFitAutoScoreBacklog,
+  enqueueScoreFitBacklog
 } from './fitAutoScore'
-import { getSettings, getAIQueue, addAIQueueItem, updateAIQueueItem, listJobs } from './database'
+import { getSettings, getAIQueue, addAIQueueItem, updateAIQueueItem, listJobs, isScoreFitSuppressed } from './database'
+import { enqueue } from './aiQueue'
+import { AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX } from './types'
 
 const mockedGetSettings = vi.mocked(getSettings)
 const mockedGetAIQueue = vi.mocked(getAIQueue)
 const mockedAddAIQueueItem = vi.mocked(addAIQueueItem)
 const mockedUpdateAIQueueItem = vi.mocked(updateAIQueueItem)
 const mockedListJobs = vi.mocked(listJobs)
+const mockedIsSuppressed = vi.mocked(isScoreFitSuppressed)
+const mockedEnqueue = vi.mocked(enqueue)
 
 function makeSettings(overrides: Partial<Settings> = {}): Settings {
   return {
@@ -43,7 +56,8 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     aggregator_jobicy_enabled: false, aggregator_himalayas_enabled: false,
     ats_boards: [], disabled_boards: [], auto_tailor_on_scan: false,
     auto_tailor_min_fit: 90, quick_apply_shortcut: null, statuses_recomputed: '',
-    statuses_manual_v2: '', queue_dedup_v1: '', ...overrides
+    statuses_manual_v2: '', queue_dedup_v1: '', queue_cleared_at: 0,
+    queue_cleared_max_job_id: 0, ...overrides
   }
 }
 
@@ -76,6 +90,8 @@ beforeEach(() => {
   mockedGetSettings.mockReturnValue(makeSettings())
   mockedGetAIQueue.mockReturnValue([])
   mockedListJobs.mockReturnValue([])
+  mockedIsSuppressed.mockReturnValue(false)
+  mockedEnqueue.mockReturnValue({ id: 1 } as AIQueueItem)
 })
 
 afterEach(() => {
@@ -173,7 +189,10 @@ describe('runFitAutoScoreBacklog', () => {
     expect(mockedUpdateAIQueueItem).toHaveBeenCalledWith(99, {
       status: 'pending',
       attempts: 0,
-      nextRetryAt: Date.now(),
+      autoRevives: 1,
+      // Parked on the standard revive cooldown rather than run now, so
+      // the backlog cannot hand out a free immediate retry.
+      nextRetryAt: Date.now() + AUTO_REVIVE_COOLDOWN_MS,
       lastError: undefined
     })
   })
@@ -247,5 +266,144 @@ describe('runFitAutoScoreBacklog does not stack duplicates', () => {
     mockedGetAIQueue.mockReturnValue([] as never)
     expect(runFitAutoScoreBacklog()).toBe(1)
     expect(mockedAddAIQueueItem).toHaveBeenCalledWith({ type: 'score_fit', jobId: 1 })
+  })
+})
+
+// The 4h timer used to be a free, unlimited, immediate retry lane for
+// score_fit: it reset a burned-out row to `pending` with
+// nextRetryAt = now and never touched `autoRevives`, so the 4h cooldown
+// and AUTO_REVIVE_MAX budget that every other queue type honours (see
+// electron/types.ts) simply did not apply here. A job whose provider
+// rejected it forever would burn a full attempt budget every 4h, and the
+// budget counter would never move. This is the same test with a real
+// store: electron/queueClear.test.ts drives the durable-clear half.
+describe('runFitAutoScoreBacklog respects the revive budget and cooldown', () => {
+  const failedRow = (overrides: Partial<AIQueueItem>) => [
+    makeQueueItem({ id: 1, jobId: 1, status: 'failed', attempts: 5, ...overrides })
+  ]
+
+  it('spends one unit of revive budget when it does resurrect', () => {
+    mockedListJobs.mockReturnValue([makeJob({ id: 1 })])
+    mockedGetAIQueue.mockReturnValue(failedRow({ autoRevives: 1 }))
+    expect(runFitAutoScoreBacklog()).toBe(1)
+    expect(mockedUpdateAIQueueItem).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ autoRevives: 2 })
+    )
+  })
+
+  it('counts a legacy row with no counter as zero revives', () => {
+    mockedListJobs.mockReturnValue([makeJob({ id: 1 })])
+    mockedGetAIQueue.mockReturnValue(failedRow({ autoRevives: undefined }))
+    runFitAutoScoreBacklog()
+    expect(mockedUpdateAIQueueItem).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ autoRevives: 1 })
+    )
+  })
+
+  it('leaves a failed item alone once the revive budget is spent', () => {
+    // Same verdict runPass reaches: no more automatic retries, the task
+    // is the user's now. Resurrecting it here is what made the budget
+    // meaningless for score_fit.
+    mockedListJobs.mockReturnValue([makeJob({ id: 1 })])
+    mockedGetAIQueue.mockReturnValue(failedRow({ autoRevives: AUTO_REVIVE_MAX }))
+    expect(runFitAutoScoreBacklog()).toBe(0)
+    expect(mockedUpdateAIQueueItem).not.toHaveBeenCalled()
+  })
+
+  it('does not resurrect an item whose cooldown has not elapsed', () => {
+    // runPass skips any row with a future nextRetryAt before it looks at
+    // the status. The backlog has to apply the same guard, or a row
+    // parked on a 4h revive cooldown gets pulled forward by the timer.
+    mockedListJobs.mockReturnValue([makeJob({ id: 1 })])
+    mockedGetAIQueue.mockReturnValue(
+      failedRow({ nextRetryAt: Date.now() + 60 * 60 * 1000 })
+    )
+    expect(runFitAutoScoreBacklog()).toBe(0)
+    expect(mockedUpdateAIQueueItem).not.toHaveBeenCalled()
+  })
+
+  it('parks the resurrected item on the full cooldown rather than running it now', () => {
+    mockedListJobs.mockReturnValue([makeJob({ id: 1 })])
+    mockedGetAIQueue.mockReturnValue(failedRow({ nextRetryAt: Date.now() - 1 }))
+    runFitAutoScoreBacklog()
+    expect(mockedUpdateAIQueueItem).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ nextRetryAt: Date.now() + AUTO_REVIVE_COOLDOWN_MS })
+    )
+  })
+
+  it('leaves a pending item in flight alone regardless of its budget', () => {
+    mockedListJobs.mockReturnValue([makeJob({ id: 1 })])
+    mockedGetAIQueue.mockReturnValue(
+      [makeQueueItem({ id: 1, jobId: 1, status: 'pending', autoRevives: AUTO_REVIVE_MAX })]
+    )
+    expect(runFitAutoScoreBacklog()).toBe(0)
+    expect(mockedUpdateAIQueueItem).not.toHaveBeenCalled()
+  })
+})
+
+// The clear is durable (see database.ts's isScoreFitSuppressed). Both
+// re-seeders must honour it, or "Clear queue" rebuilds itself from the
+// jobs table. Real-store coverage, including the restart, lives in
+// electron/queueClear.test.ts.
+describe('both re-seeders honour a cleared queue', () => {
+  beforeEach(() => {
+    mockedListJobs.mockReturnValue([
+      makeJob({ id: 1, score: null, fit_score_version: null }),
+      makeJob({ id: 2, score: null, fit_score_version: null })
+    ])
+  })
+
+  it('the 4h backlog skips a suppressed job and still scores a new one', () => {
+    mockedIsSuppressed.mockImplementation((id: number) => id === 1)
+    expect(runFitAutoScoreBacklog()).toBe(1)
+    expect(mockedAddAIQueueItem).toHaveBeenCalledTimes(1)
+    expect(mockedAddAIQueueItem).toHaveBeenCalledWith({ type: 'score_fit', jobId: 2 })
+  })
+
+  it('the startup / post-scan path skips a suppressed job too', () => {
+    mockedIsSuppressed.mockImplementation((id: number) => id === 1)
+    expect(enqueueScoreFitBacklog()).toBe(1)
+    expect(mockedEnqueue).toHaveBeenCalledTimes(1)
+    expect(mockedEnqueue).toHaveBeenCalledWith({ type: 'score_fit', jobId: 2 })
+  })
+
+  it('neither re-seeder touches a fully suppressed store', () => {
+    mockedIsSuppressed.mockReturnValue(true)
+    expect(runFitAutoScoreBacklog()).toBe(0)
+    expect(enqueueScoreFitBacklog()).toBe(0)
+    expect(mockedAddAIQueueItem).not.toHaveBeenCalled()
+    expect(mockedEnqueue).not.toHaveBeenCalled()
+  })
+})
+
+describe('enqueueScoreFitBacklog', () => {
+  it('queues a fit score for a job that has never been scored', () => {
+    mockedListJobs.mockReturnValue([makeJob({ id: 7 })])
+    expect(enqueueScoreFitBacklog()).toBe(1)
+    expect(mockedEnqueue).toHaveBeenCalledWith({ type: 'score_fit', jobId: 7 })
+  })
+
+  it('skips a job that already has a real score', () => {
+    mockedListJobs.mockReturnValue([makeJob({ id: 7, score: 0.5, fit_score_version: 0 })])
+    expect(enqueueScoreFitBacklog()).toBe(0)
+    expect(mockedEnqueue).not.toHaveBeenCalled()
+  })
+
+  it('skips a job scored against the current CV version', () => {
+    mockedListJobs.mockReturnValue([makeJob({ id: 7, fit_score_version: 0 })])
+    expect(enqueueScoreFitBacklog()).toBe(0)
+    expect(mockedEnqueue).not.toHaveBeenCalled()
+  })
+
+  it('does not count a job the dedupe-aware enqueue refused', () => {
+    // enqueue() returns null when an identical item is already pending or
+    // processing, so the count has to follow the enqueue and not the
+    // predicate or the return value would report work that was not done.
+    mockedListJobs.mockReturnValue([makeJob({ id: 7 }), makeJob({ id: 8 })])
+    mockedEnqueue.mockReturnValueOnce(null as unknown as AIQueueItem)
+    expect(enqueueScoreFitBacklog()).toBe(1)
   })
 })

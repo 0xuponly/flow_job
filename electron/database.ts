@@ -100,6 +100,12 @@ function defaultStore(): Store {
       statuses_recomputed: '',
       statuses_manual_v2: '',
       queue_dedup_v1: '',
+      // 0 = the user has never pressed "Clear queue". Any other value is
+      // the epoch ms of the last clear, paired with the job-id watermark
+      // that says which jobs it covered; both are the durable tombstone
+      // the fit-score re-seeders consult.
+      queue_cleared_at: 0,
+      queue_cleared_max_job_id: 0,
       backup_path: '',      backup_last_success_at: '',
       backup_last_error: '',
       passphrase: '',
@@ -352,6 +358,18 @@ export function loadStore(): Store {
     }
     if (typeof store.settings.cv_version !== 'number') {
       store.settings.cv_version = 0
+      jobsMigrated = true
+    }
+    // A store written before the durable clear existed has no tombstone.
+    // Normalising it to 0 ("never cleared") is the correct reading — the
+    // user's older clears are long gone — and the accessors treat a
+    // missing value the same way, so this is belt and braces.
+    if (typeof store.settings.queue_cleared_at !== 'number') {
+      store.settings.queue_cleared_at = 0
+      jobsMigrated = true
+    }
+    if (typeof store.settings.queue_cleared_max_job_id !== 'number') {
+      store.settings.queue_cleared_max_job_id = 0
       jobsMigrated = true
     }
     if (jobsMigrated) {
@@ -1816,6 +1834,14 @@ export function retrofitSalaryNormalization(): { updated: number; total: number 
 export function bumpCvVersion(): number {
   const s = loadStore()
   s.settings.cv_version = (typeof s.settings.cv_version === 'number' ? s.settings.cv_version : 0) + 1
+  // Editing the CV is the user asking for every job to be scored again
+  // against it, so it retires the "Clear queue" tombstone: the earlier
+  // cancellation was about a body of work defined by the OLD CV, and
+  // holding it against the new one would mean the backlog can never drain
+  // again. Without this, one Clear press would permanently disable
+  // automatic fit scoring for every job in the store.
+  s.settings.queue_cleared_at = 0
+  s.settings.queue_cleared_max_job_id = 0
   persistStore()
   return s.settings.cv_version
 }
@@ -2328,8 +2354,82 @@ export function clearAIQueue(): number {
   const s = loadStore()
   const removed = (s.ai_queue ?? []).length
   s.ai_queue = []
+  // The durable half of the clear (see isScoreFitSuppressed). Written
+  // HERE rather than in aiQueue's clearQueue so the tombstone cannot be
+  // bypassed by a caller that empties the queue by any other route —
+  // clearQueue is the only production caller today, but the store is the
+  // one place that knows the rows are gone for good.
+  s.settings.queue_cleared_at = Date.now()
+  // `nextId` is the id the NEXT job will get, so the highest id that
+  // exists right now is the watermark between "was in the store when the
+  // user cancelled" and "arrived afterwards". See isScoreFitSuppressed.
+  s.settings.queue_cleared_max_job_id = Math.max(0, s.nextId - 1)
   persistStore()
   return removed
+}
+
+/**
+ * When the user last pressed "Clear queue", as epoch ms. 0 when they
+ * never have.
+ *
+ * The tombstone the re-seeders consult, read straight out of the store,
+ * so it is the same value in every process and every pass: an app restart,
+ * the 4h fit-auto-score timer and the post-scan backlog all see it.
+ */
+export function getQueueClearedAt(): number {
+  const at = loadStore().settings.queue_cleared_at
+  return typeof at === 'number' && Number.isFinite(at) && at > 0 ? at : 0
+}
+
+/**
+ * The highest job id that existed at the moment of the last clear. 0 when
+ * the store was empty, or when there has never been a clear.
+ */
+function getQueueClearedMaxJobId(): number {
+  if (getQueueClearedAt() <= 0) return 0
+  const id = loadStore().settings.queue_cleared_max_job_id
+  return typeof id === 'number' && Number.isFinite(id) && id > 0 ? id : 0
+}
+
+/**
+ * Whether automatic fit scoring has been cancelled for this job.
+ *
+ * Deleting the queue rows is not enough on its own: two re-seeders walk
+ * the JOBS table rather than the queue — `enqueueScoreFitBacklog` at
+ * startup and after every scan, and `runFitAutoScoreBacklog` on the
+ * 4h timer — and both rebuild exactly the `score_fit` rows a clear just
+ * removed. The confirm dialog promises "Pending fit scores and document
+ * generation will be cancelled", and a user trying to stop spend cannot
+ * be told that and have the same work return four hours later.
+ *
+ * So the clear is persisted, and everything already in the store when the
+ * user pressed the button is off-limits to the automatic paths:
+ *
+ *   - id <= the watermark  -> suppressed. This is the work the user
+ *     cancelled. It covers rows that were mid-flight and rows sitting
+ *     `failed` at the time, neither of which the queue wipe could express
+ *     on its own.
+ *   - id >  the watermark  -> not suppressed. A job the user imported or
+ *     a scan found afterwards is new work; refusing to score it would
+ *     leave the app silently doing nothing for the rest of time.
+ *
+ * The watermark is a job ID rather than a comparison against
+ * `created_at` on purpose. Both ends of that comparison land inside the
+ * same millisecond as the clear often enough to matter (a scan finishing
+ * as the user clears, or two actions in one event-loop turn), and
+ * whichever way the boundary is drawn, one of "the cleared work came
+ * back" or "a new job was never scored" becomes a coin flip. Ids are
+ * handed out monotonically by `nextId` and never reused, so the
+ * watermark answers the same question with no clock and no parsing.
+ *
+ * Suppression gates the AUTOMATIC paths only. Every explicit user action
+ * (Recompute fit, Tailor, Generate) calls the scorer directly and is
+ * unaffected, and `bumpCvVersion` retires the tombstone because a new CV
+ * redefines which jobs need scoring at all.
+ */
+export function isScoreFitSuppressed(jobId: number): boolean {
+  const maxId = getQueueClearedMaxJobId()
+  return maxId > 0 && jobId <= maxId
 }
 
 /**

@@ -342,12 +342,24 @@ describe('queue task formatting', () => {
 describe('queue task automatic recovery', () => {
   const now = 1_700_000_000_000
 
-  it('says a failed task with budget left is retrying automatically', () => {
+  it('offers an automatic retry for a failed task with budget left', () => {
     const text = queueItemStatusText(
       item({ status: 'failed', attempts: 5, autoRevives: 0, nextRetryAt: now + 1_800_000 }), now
     )
-    expect(text).toMatch(/retrying automatically/i)
+    expect(text).toMatch(/auto-retry/i)
     expect(text).toMatch(/30m/)
+  })
+
+  it('marks the automatic retry as best effort rather than promised', () => {
+    // Revival only happens if a queue pass actually reaches the row: the
+    // app has to be running, and the row has to still be there. A label
+    // that reads as a guarantee turns any one of those into an apparent
+    // lie about the app.
+    const text = queueItemStatusText(
+      item({ status: 'failed', attempts: 5, autoRevives: 1, nextRetryAt: now + 1_800_000 }), now
+    )
+    expect(text).toMatch(/best effort/i)
+    expect(text).not.toMatch(/^retrying automatically/i)
   })
 
   it('flags a task that has spent its revive budget as needing attention', () => {
@@ -355,7 +367,7 @@ describe('queue task automatic recovery', () => {
       item({ status: 'failed', attempts: 5, autoRevives: 3, nextRetryAt: 0 }), now
     )
     expect(text).toMatch(/needs attention/i)
-    expect(text).not.toMatch(/retrying automatically/i)
+    expect(text).not.toMatch(/auto-retry/i)
   })
 
   it('shows a revived task as recovered rather than plain pending', () => {
@@ -375,11 +387,12 @@ describe('queue task automatic recovery', () => {
     expect(text).toMatch(/2h/)
   })
 
-  it('renders a due task as retrying imminently', () => {
+  it('renders a due task as due for an automatic retry', () => {
     const text = queueItemStatusText(
       item({ status: 'failed', attempts: 5, autoRevives: 1, nextRetryAt: now - 1 }), now
     )
-    expect(text).toMatch(/retrying automatically…/i)
+    expect(text).toMatch(/auto-retry due/i)
+    expect(text).toMatch(/best effort/i)
   })
 })
 
@@ -392,17 +405,17 @@ describe('queue task wait formatting at real cooldowns', () => {
     // 4h as "14400s" was the failure mode when the cooldown was tuned;
     // formatWait has to scale with whatever the constant becomes.
     const text = queueItemStatusText(failed({ nextRetryAt: now + 4 * 60 * 60 * 1000 }), now)
-    expect(text).toBe('Retrying automatically in 4h')
+    expect(text).toBe('Auto-retry in 4h (best effort)')
   })
 
   it('shows a one-hour cooldown in hours', () => {
     expect(queueItemStatusText(failed({ nextRetryAt: now + 60 * 60 * 1000 }), now))
-      .toBe('Retrying automatically in 1h')
+      .toBe('Auto-retry in 1h (best effort)')
   })
 
   it('rounds a partial hour up so it never reads as already due', () => {
     expect(queueItemStatusText(failed({ nextRetryAt: now + 90 * 60 * 1000 }), now))
-      .toBe('Retrying automatically in 2h')
+      .toBe('Auto-retry in 2h (best effort)')
   })
 })
 
