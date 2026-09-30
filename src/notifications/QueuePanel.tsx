@@ -115,12 +115,18 @@ export default function QueuePanel({ items, busyId, onRetry, onRemove }: QueuePa
   const [visible, setVisible] = useState(PAGE_SIZE)
   const previousCount = useRef(items.length)
 
-  // Reset the window when the queue SHRINKS, not whenever it is shorter
-  // than the window. `items.length < visible` also fires when the user
-  // pages past the end of a short queue, which made the window snap
-  // shut mid-paging and made the tail unreachable.
+  // Reset the window on ANY change in length, not only a shrink. The
+  // queue is polled every 10s, and a poll can miss a clear-and-rebuild
+  // entirely: the count the effect compares against is whatever the last
+  // render saw, so a queue that grew to 900 and came back to 3 between
+  // two polls presents as 3 -> 3 and leaves the window showing rows that
+  // are not there. Comparing the count against itself can only ever see
+  // the net change, which is exactly the change that is invisible.
+  //
+  // `items.length < visible` would fire mid-paging and snap the window
+  // shut, which is why this keys on a change rather than on the window.
   useEffect(() => {
-    if (items.length < previousCount.current) setVisible(PAGE_SIZE)
+    if (items.length !== previousCount.current) setVisible(PAGE_SIZE)
     previousCount.current = items.length
   }, [items.length])
 
