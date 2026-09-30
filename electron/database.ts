@@ -2366,6 +2366,12 @@ export function updateAIQueueItem(id: number, updates: Partial<AIQueueItem>): bo
  * in-flight request. Nothing is merged — a single row is kept as-is and
  * the rest are dropped, because inventing an attempt count or status
  * for the survivor would be a guess.
+ *
+ * "Same work" is decided field-wise (`sameWork` below): same type, same
+ * job, same document, same section, with absent fields read as null. It
+ * is deliberately NOT a concatenated string key, because this pass
+ * deletes rows it thinks are duplicates and a key quietly widens that
+ * judgement to every pair of rows that merely print the same.
  */
 export function dedupeAIQueueItems(): { removed: number } {
   const s = loadStore()
@@ -2379,17 +2385,36 @@ export function dedupeAIQueueItems(): { removed: number } {
     (a.documentId ?? null) === (b.documentId ?? null) &&
     (a.sectionName ?? null) === (b.sectionName ?? null)
 
-  const groups = new Map<string, AIQueueItem[]>()
+  // `sameWork` is the ONLY thing that decides equality here. It used to
+  // sit above this loop unused while grouping went through a
+  // `|`-delimited string key
+  // (`${type}|${jobId}|${documentId ?? ''}|${sectionName ?? ''}`), and a
+  // key silently equates every pair of rows that stringify alike — the
+  // repair then deletes one of them without asking. It is not a
+  // hypothetical: `sectionName: ''` and an absent `sectionName` both
+  // render as the empty tail of the key, so a blank-headed section and
+  // a section-less one were merged and one row was dropped.
+  //
+  // Bucketing is a linear walk over the buckets found so far, comparing
+  // against each bucket's first member. One representative per bucket is
+  // enough because `sameWork` compares fields, so it is an equivalence
+  // relation: everything in a bucket is sameWork-equal to its first
+  // member, and anything sameWork-equal to a bucket member is
+  // sameWork-equal to the representative. That is slower than a hash on
+  // the queue's size, and deliberately so — this runs once per store, on
+  // a queue measured in hundreds of rows, and a key that has to be
+  // correct for every possible field value is the thing that was wrong
+  // here.
+  const buckets: AIQueueItem[][] = []
   for (const q of s.ai_queue) {
-    const key = `${q.type}|${q.jobId}|${q.documentId ?? ''}|${q.sectionName ?? ''}`
-    const bucket = groups.get(key)
+    const bucket = buckets.find((b) => sameWork(b[0], q))
     if (bucket) bucket.push(q)
-    else groups.set(key, [q])
+    else buckets.push([q])
   }
 
   let removed = 0
   const keep: AIQueueItem[] = []
-  for (const bucket of groups.values()) {
+  for (const bucket of buckets) {
     if (bucket.length === 1) {
       keep.push(bucket[0])
       continue

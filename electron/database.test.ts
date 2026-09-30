@@ -296,3 +296,77 @@ describe('dedupeAIQueueItems (real store)', () => {
     expect(getAIQueue()).toEqual([])
   })
 })
+
+// The grouping key was a `|`-delimited concatenation
+// (`${type}|${jobId}|${documentId ?? ''}|${sectionName ?? ''}`) while a
+// field-wise comparator sat right above it, unused. Two rows that
+// stringify identically are not the same work, and the repair pass
+// deletes the loser of such a pair without asking.
+describe('dedupeAIQueueItems groups by field-wise equality, not a string key', () => {
+  it('keeps an empty sectionName distinct from an absent one', () => {
+    // Both render as `...|4|` in the old key, so the repair pass treated
+    // them as one piece of work and dropped a row. `sameWork` — the
+    // comparator the key was supposed to be — says '' is not null.
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: '' })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4 })
+    expect(getAIQueue()).toHaveLength(2)
+    expect(dedupeAIQueueItems().removed).toBe(0)
+    expect(getAIQueue()).toHaveLength(2)
+  })
+
+  it('still collapses a true duplicate of an empty sectionName', () => {
+    // The counterpart to the test above: the empty/absent distinction
+    // must not weaken the dedupe itself. Two rows naming the same work
+    // are one piece of work whatever the spelling.
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: '' })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: '' })
+    expect(dedupeAIQueueItems().removed).toBe(1)
+  })
+
+  it('keeps distinct section names that contain the field separator', () => {
+    // Section names come from the model's document outline, where a
+    // heading like "Experience | Education" is entirely plausible. A key
+    // that concatenates fields with '|' has to survive that spelling.
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: 'Experience | Education' })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: 'Experience' })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: 'Education' })
+    expect(dedupeAIQueueItems().removed).toBe(0)
+    expect(getAIQueue()).toHaveLength(3)
+  })
+
+  it('collapses rows whose pipe-bearing section name is genuinely identical', () => {
+    const a = addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: 'Experience | Education' })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: 'Experience | Education' })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: 'Experience' })
+    expect(dedupeAIQueueItems().removed).toBe(1)
+    const kept = getAIQueue().filter((q) => q.sectionName === 'Experience | Education')
+    expect(kept.map((q) => q.id)).toEqual([a.id])
+  })
+
+  it('treats a pipe-bearing section name on a different document as different work', () => {
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: '4|Summary' })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 44, sectionName: 'Summary' })
+    expect(dedupeAIQueueItems().removed).toBe(0)
+  })
+
+  it('collapses a three-row bucket of one work item down to the single winner', () => {
+    // A bucket is formed by comparing each row against the bucket's
+    // first member, so this is the transitive case: three rows of one
+    // work item must end up as one bucket, not three singletons.
+    const a = addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: '' })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: '' })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: '' })
+    expect(dedupeAIQueueItems().removed).toBe(2)
+    expect(getAIQueue().map((q) => q.id)).toEqual([a.id])
+  })
+
+  it('keeps the blank-headed and section-less rows as two work items', () => {
+    // ...while the two spellings stay apart even inside the same job:
+    // they are two rows, and the winner pick runs once per bucket.
+    const a = addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4, sectionName: '' })
+    const b = addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4 })
+    addAIQueueItem({ type: 'regenerate_section', jobId: 1, documentId: 4 })
+    expect(dedupeAIQueueItems().removed).toBe(1)
+    expect(getAIQueue().map((q) => q.id)).toEqual([a.id, b.id])
+  })
+})
