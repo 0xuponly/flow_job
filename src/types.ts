@@ -118,6 +118,9 @@ export interface ApiModelConfig {
   api_key: string
   model: string
   enabled?: boolean
+  // Per-model per-attempt HTTP timeout in ms; unset means the main-process
+  // default (45000). Mirrors electron/types.ts. Not surfaced in the UI.
+  timeout_ms?: number
 }
 
 export interface Settings {

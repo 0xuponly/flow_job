@@ -203,6 +203,12 @@ export interface ApiModelConfig {
   // Per-model token budget override. Falls back to FLOW_JOB_MAX_TOKENS env,
   // then DEFAULT_MAX_TOKENS (2048) in ai.ts.
   max_tokens?: number
+  // Per-model per-attempt HTTP timeout in ms. Falls back to
+  // DEFAULT_CALL_TIMEOUT_MS (45000) in ai.ts. Optional and additive: no
+  // settings UI, and a model without it behaves exactly as before.
+  // Nonsense (0, negative, NaN, Infinity) falls back to the default;
+  // a finite value above 10 minutes is clamped to that ceiling.
+  timeout_ms?: number
 }
 
 export interface LocationPick {
