@@ -286,6 +286,18 @@ export interface Settings {
   // Gating flag for the queue-duplicate repair (see dedupeAIQueueItems).
   queue_dedup_v1: string
   /**
+   * Second one-shot gate for the same repair, for the duplicate class
+   * the v1 guard could not see: `failed` rows were outside v1-era
+   * `enqueue()`'s duplicate check, so a store that had already been
+   * repaired once went on collecting a second row per piece of work.
+   *
+   * A separate flag rather than a reset of v1 so the repair stays
+   * one-shot: `queue_dedup_v1` is the record that a given store was
+   * collapsed, and clearing it would re-run a pass that has already
+   * done its job on every subsequent startup.
+   */
+  queue_dedup_v2: string
+  /**
    * Epoch ms of the user's last "Clear queue", 0 when never cleared.
    *
    * The durable half of the clear: the queue rows it deleted can be
@@ -499,6 +511,30 @@ export interface AIQueueItem {
   autoRevives?: number
   createdAt: number
   nextRetryAt: number
+  /**
+   * Epoch ms of the last MANUAL re-add of this row ("run this now"),
+   * or absent when the item carries no boost.
+   *
+   * The durable half of "bump it to the top": management's rule is that
+   * re-adding something already queued must not be refused and must not
+   * make a second row, so the only thing left to give the user is
+   * ordering. A timestamp rather than a counter because it needs no
+   * schema migration and no new store-level sequence (the store is a
+   * JSON document, so an absent field on a legacy row already means
+   * "not promoted"), and because it is a field the UI could read back if
+   * a promotion indicator is ever wanted.
+   *
+   * Honoured by `pickOrder` WITHIN a tier only. `score_fit` is tier 0
+   * and outranks everything, so promoting a `verify` cannot lift it past
+   * a queued `score_fit` — the boost is "ahead of my tier siblings",
+   * which is the honest reading of "to the top" once the project rule
+   * about fit scoring is respected.
+   *
+   * One-shot: the processor clears it when it claims the item, so a
+   * boost is spent on the next run rather than pinning the row above
+   * its peers for the life of the queue.
+   */
+  promotedAt?: number
   // P1.7 (BRIEF5 §3): fit-score snapshot at enqueue time. This is a
   // HINT for ordering only and is intentionally NOT the source of
   // truth — the pick-time sort re-reads job.score so a score that

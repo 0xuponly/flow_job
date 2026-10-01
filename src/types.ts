@@ -346,6 +346,14 @@ export interface AIQueueItem {
   lastError?: string
   /** Times this item has been revived from `failed` by the auto-recovery loop. */
   autoRevives?: number
+  /**
+   * Epoch ms of the last manual re-add, or absent when unpromoted. The
+   * main process resolves the order the panel renders, so the panel
+   * never has to sort on this — it is mirrored only so the field
+   * survives the trip across IPC without the renderer type claiming a
+   * shape the main process does not send.
+   */
+  promotedAt?: number
   createdAt: number
   nextRetryAt: number
 }

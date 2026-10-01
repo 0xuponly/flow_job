@@ -86,14 +86,19 @@ export function runFitAutoScoreBacklog(): number {
   for (const job of listJobs()) {
     if (!needsFitScore(job, cvVersion)) continue
 
-    // Deliberately not the shared `enqueue()`: this path RESURRECTS a
-    // burned-out item rather than adding a new one, which is what
-    // `enqueue` does not do. The pending/processing check below is
-    // duplicated from it deliberately, and must stay in step — when
-    // this checked only `pending` (as `enqueue` once did) both paths
-    // added a row for the same job during a long `processing` window,
-    // which is how the Queue panel came to show three score_fit entries
-    // per job.
+    // Deliberately not the shared `enqueue()`. `enqueue` now matches a
+    // row of the same work in ANY status and revives a `failed` one in
+    // place, but it revives it the way a person asking for it would:
+    // full fresh budget, run now. This path resurrects the way the
+    // PROCESSOR does — one unit of the revive budget, parked on the 4h
+    // cooldown — which is what stops a job that can never be scored from
+    // being re-woken every four hours forever. The pending/processing
+    // check below is the same question `enqueue` asks, asked for the
+    // reason this path needs it (is anything in flight?), and it must
+    // stay in step — when this checked only `pending` (as `enqueue` once
+    // did) both paths added a row for the same job during a long
+    // `processing` window, which is how the Queue panel came to show
+    // three score_fit entries per job.
     // Every matching row, not just the first: a job that somehow has
     // more than one must be judged on whether ANY of them is in flight,
     // or a duplicate pair reads as "exhausted" and gets resurrected.

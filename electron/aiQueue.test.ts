@@ -1370,11 +1370,21 @@ describe('duplicate suppression covers in-flight work', () => {
     expect(enqueue({ type: 'score_fit', jobId: 43 })).not.toBeNull()
   })
 
-  it('still allows retrying a failed item to be re-queued', () => {
-    // `failed` means the work is not in flight, so re-queueing it is
-    // the recovery path, not a duplicate.
-    mockedGetQueue.mockReturnValue([queueItem({ type: 'score_fit', jobId: 42, status: 'failed' })])
-    expect(enqueue({ type: 'score_fit', jobId: 42 })).not.toBeNull()
+  it('revives a failed item in place instead of queueing a second row', () => {
+    // This is the duplicate the user reported. `failed` used to be
+    // excluded from the guard as "not in flight, so re-queueing it is
+    // the recovery path" — which left the failed row AND a new row for
+    // the same work, both in the panel, competing for the same poll.
+    // The recovery is now the revive, on the row that is already there.
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 'f1', type: 'score_fit', jobId: 42, status: 'failed', attempts: 5, lastError: 'x' })
+    ])
+    expect(enqueue({ type: 'score_fit', jobId: 42 })).toBeNull()
+    expect(mockedAdd).not.toHaveBeenCalled()
+    expect(mockedUpdate).toHaveBeenCalledWith(
+      'f1',
+      expect.objectContaining({ status: 'pending', attempts: 0, lastError: undefined })
+    )
   })
 
   it('does not treat two items for the same job as duplicates across types', () => {
