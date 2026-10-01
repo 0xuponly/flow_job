@@ -409,8 +409,33 @@ describe('SettingsPage Auto-queue tab', () => {
   it('keeps diagnostics out of the tab', async () => {
     // Project rule: the UI abstracts internal diagnostics. Nothing about
     // queue types, thresholds, or models belongs on this page.
+    //
+    // Scoped to the PANEL, deliberately. This used to read the Auto-queue
+    // tab button's `.parentElement.parentElement`, which is
+    // `.settings-page-sticky` — the page header plus the tab bar. The
+    // panel is a SIBLING of that element, so every string forbidden
+    // below could be pasted into the tab's own copy and this check would
+    // still pass; it was standing between the rule and the panel without
+    // ever seeing the panel. Each tab renders as a direct child of
+    // `.settings-page` opening with a `.section-title`, so the panel is
+    // the title node and its following siblings, up to the next title.
     await openAutoQueueTab()
-    const tab = screen.getByRole('button', { name: /^Auto-queue$/i }).parentElement!.parentElement!
-    expect(tab.textContent).not.toMatch(/auto_queue_|score_fit|generate_cv|verify_cv|deepseek/i)
+    const page = document.querySelector('.settings-page')
+    const children = Array.from(page?.children ?? [])
+    const start = children.indexOf(screen.getByText('Auto-queue', { selector: '.section-title' }))
+    expect(start).toBeGreaterThan(-1)
+    const panel: Element[] = []
+    for (let i = start; i < children.length; i++) {
+      if (i > start && children[i].classList.contains('section-title')) break
+      panel.push(children[i])
+    }
+    const text = panel
+      .map((n) => n.textContent ?? '')
+      .join('\n')
+    // Not vacuous: the text just read is the panel's own real copy. A
+    // wrong subtree or an empty read would fail this line rather than
+    // pass the rule below by asserting nothing.
+    expect(text).toMatch(/never stops you/i)
+    expect(text).not.toMatch(/auto_queue_|score_fit|generate_cv|verify_cv|deepseek/i)
   })
 })

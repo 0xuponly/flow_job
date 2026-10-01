@@ -357,8 +357,16 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
       // rejoins the queue on its own once the provider recovers.
       // Bounded by autoRevives so a genuinely unsatisfiable task
       // eventually stays failed instead of looping forever.
+      //
+      // Parked here means "rejoin the queue on its own later", so it takes the
+      // restart gate rather than the enqueue one: a MANUAL row is parked
+      // as it always was (the user asked for it), and an automatic row is
+      // parked only while its switch allows it. Otherwise the row goes
+      // straight to terminal `failed` and the user sees a failure they
+      // can Retry, rather than one that keeps reappearing as new
+      // generations they did not ask for.
       const autoRevives = item.autoRevives ?? 0
-      if (autoRevives < AUTO_REVIVE_MAX) {
+      if (autoRevives < AUTO_REVIVE_MAX && mayReviveUnattended(item)) {
         updateAIQueueItem(item.id, {
           status: 'pending',
           attempts: 0,
@@ -421,10 +429,19 @@ let clearEpoch = 0
  * `attempts` is deliberately preserved: the interrupted attempt was
  * still spent, and resetting it would hand a repeatedly-crashing task
  * an unlimited budget.
+ *
+ * Requeueing is starting the work again, so it takes the restart gate:
+ * a MANUAL row is reclaimed exactly as it always was, because a person
+ * asked for that work and this finishes it. An automatic row is left as
+ * the crash left it, `processing`, when its switch is off — that is the
+ * unattended spend the switch says the user bought out of. Either way
+ * the row is not lost: it is visible in the panel, and Retry resumes it
+ * ungated.
  */
 export function reclaimInterruptedItems(): void {
   for (const item of getAIQueue()) {
     if (item.status !== 'processing') continue
+    if (!mayReviveUnattended(item)) continue
     updateAIQueueItem(item.id, {
       status: 'pending',
       nextRetryAt: Date.now(),
@@ -476,12 +493,29 @@ async function runPass(): Promise<void> {
   // `failed` some other way (before auto-revival shipped, or via the
   // retry path) and have no revival scheduled — those are revived here
   // rather than left stranded.
+  //
+  // The revival lane consults the same gate `enqueue` does. `enqueue`
+  // only ever decides whether to ADD a row, so a row already in the
+  // store when the user flips a switch off used to be woken anyway —
+  // up to AUTO_REVIVE_MAX full generations, four hours apart,
+  // unattended, which is the exact leak `879e30d`'s commit message said
+  // gating `enqueue` alone would leave open and which `fitAutoScore.ts`
+  // already refuses for the identical 4h re-seed. Switch off now means
+  // no unattended spend on this lane either.
+  //
+  // The row records whether a person queued it (`manualQueued`, written by
+  // `enqueue`), so this gate can tell the two apart: a MANUAL row is
+  // revived on the 4h cooldown exactly as it always was, because the user
+  // asked for that work; an AUTOMATIC row — including any legacy row with
+  // no origin field — is revived only while its switch allows it. Switch
+  // off therefore means no unattended spend on this lane, without costing
+  // a person their own request when the app restarts under them.
   const due: AIQueueItem[] = []
   for (const q of queue) {
     if (q.nextRetryAt > now) continue
     if (q.status === 'pending') {
       due.push(q)
-    } else if (q.status === 'failed' && revive(q)) {
+    } else if (q.status === 'failed' && revive(q) && mayReviveUnattended(q)) {
       // Reviving writes the fresh counters to the row, then processes
       // the same shape in memory. Without the in-memory half the item
       // would be processed with its exhausted `attempts` and fail
@@ -694,11 +728,12 @@ export function clearQueue(): { removed: number; queue: QueueItemView[] } {
  * every queue row goes through, rather than at the call sites, for two
  * reasons:
  *
- *  1. It cannot be bypassed. There are five automatic producers of
+ *  1. It cannot be bypassed. There are six automatic producers of
  *     work today (the fit-landing trigger in fitScorer, the scan-time
  *     auto-tailor in jobSearch, the processor's own generation→review
- *     chaining and its review→regenerate loop in this file, and the two
- *     fit re-seeders in fitAutoScore) and more arrive with every feature
+ *     chaining, its review→regenerate loop and its
+ *     tailor_job_docs→review fan-out in this file, and the fit
+ *     re-seeder in fitAutoScore) and more arrive with every feature
  *     that queues work. A per-call-site check is a rule that only holds
  *     for the callers that remembered it.
  *  2. A refusal has to be uniform. If two callers disagreed about
@@ -707,7 +742,9 @@ export function clearQueue(): { removed: number; queue: QueueItemView[] } {
  *
  * What the settings do NOT do is stop the user. Every entry point a
  * person triggers passes `{ manual: true }`, and that flag short-circuits
- * this function before a single setting is read. The full inventory,
+ * this function before a single setting is read — and, via
+ * `mayReviveUnattended`, it carries past the enqueue so the user's own
+ * rows keep their restart behaviour too. The full inventory,
  * which is what makes "manual" trustworthy rather than a convention:
  *
  *   main.ts  documents:verify            → verify            (Verify button)
@@ -722,6 +759,31 @@ export function clearQueue(): { removed: number; queue: QueueItemView[] } {
  * matter. There are no others — `rg -n "enqueue\(" electron src` is the
  * check, and aiQueue.autoQueue.test.ts pins both halves of every row of
  * that table.
+ *
+ * THAT INVENTORY IS NOT COMPLETE, and the gap is where a switch-off
+ * leaks. `rg "enqueue\("` counts call sites, so it is blind to the
+ * paths that queue work without calling `enqueue`. Four exist:
+ *
+ *   runPass's revival of a `failed` row   (the 4h auto-revive cooldown)
+ *   processItem's failure-path reschedule (the same cooldown, parked)
+ *   reclaimInterruptedItems at startup   (a row stranded `processing`)
+ *   fitAutoScore.runFitAutoScoreBacklog  (resurrects failed score_fit
+ *                                         rows itself, by design)
+ *
+ * All four consult the same rule rather than re-deriving it, but the
+ * restart lanes ask a NARROWER question than `enqueue` does, via
+ * `mayReviveUnattended`: a MANUAL row — one a person queued, recorded on
+ * the row as `manualQueued` — keeps every restart behaviour it always had,
+ * because a revival or a crash-reclaim finishes work they asked for. Only
+ * an AUTOMATIC row consults the switch, and absent means automatic, which
+ * is what keeps the leak closed for rows written before the field existed.
+ *
+ * The first three above read no setting at all until this was fixed, so a
+ * row already in the store when the user flipped a switch kept being woken
+ * — up to AUTO_REVIVE_MAX full generations, four hours apart, unattended.
+ * That is the leak `879e30d`'s own commit message warned that gating
+ * `enqueue` alone would leave open. When auditing this gate, grep for the
+ * revival and the resurrection, not just the enqueue.
  *
  * So turning CV auto-queueing off stops the app spending tokens on its
  * own and does not stop the user pressing Generate.
@@ -781,8 +843,37 @@ function autoQueueAllows(item: { type: AIQueueItem['type']; documentId?: number 
   }
 }
 
+/**
+ * May the processor wake this EXISTING row on its own?
+ *
+ * The narrower question `autoQueueAllows` answers, and the one the three
+ * restart lanes actually need. `enqueue` already applied the switch once,
+ * at the moment the row was added, so for a row sitting in the store the
+ * interesting question is not "would we add this today?" but "is this
+ * still the user's work, or is it ours to keep spending on?".
+ *
+ *   manualQueued === true  → always. A person asked for it, so a revival
+ *     or a crash-reclaim finishes work they requested. This is the
+ *     behaviour every version had before the revival lanes were gated,
+ *     restored for exactly these rows.
+ *   anything else          → `autoQueueAllows`, so an automatic row still
+ *     consults its switch. Absent is AUTOMATIC (see `AIQueueItem`), which
+ *     is what keeps the leak closed for rows written before the field
+ *     existed.
+ *
+ * Deliberately NOT keyed on the switches alone. A row that a person
+ * queued by hand must not need its switch on to be retried after a crash
+ * or re-run after a failure — that is the promise the whole gate was
+ * built to protect, and it applies to the restart lanes as much as to the
+ * enqueue.
+ */
+function mayReviveUnattended(item: AIQueueItem): boolean {
+  if (item.manualQueued === true) return true
+  return autoQueueAllows(item)
+}
+
 export function enqueue(
-  item: Omit<AIQueueItem, 'id' | 'createdAt' | 'nextRetryAt' | 'attempts' | 'status' | 'promotedAt'>,
+  item: Omit<AIQueueItem, 'id' | 'createdAt' | 'nextRetryAt' | 'attempts' | 'status' | 'promotedAt' | 'manualQueued'>,
   opts?: { manual?: boolean }
 ): AIQueueItem | null {
   // The one line that makes "auto-queue off" mean "the app stops
@@ -825,9 +916,20 @@ export function enqueue(
     // is why the write is conditional on there being a patch.
     const patch: Partial<AIQueueItem> = {}
     if (existing.status === 'failed') Object.assign(patch, revivePatch())
-    if (opts?.manual) patch.promotedAt = Date.now()
+    if (opts?.manual) {
+      patch.promotedAt = Date.now()
+      // A manual re-add also makes the row MANUAL for the restart lanes.
+      // The user has now asked for this work, so a later crash-reclaim or
+      // revival is finishing something they requested rather than new
+      // unattended spend. Only ever set, never cleared: an automatic
+      // enqueue landing on a manual row must not downgrade it.
+      patch.manualQueued = true
+    }
     if (Object.keys(patch).length > 0) updateAIQueueItem(existing.id, patch)
     return null
   }
-  return addAIQueueItem(item)
+  // Written explicitly as `false`, not left absent: absent is the legacy
+  // spelling and this is a fresh row, so recording the origin now is what
+  // lets the restart lanes tell it from a pre-existing one later.
+  return addAIQueueItem({ ...item, manualQueued: opts?.manual === true })
 }
