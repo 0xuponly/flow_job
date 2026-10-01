@@ -631,7 +631,7 @@ export function clearQueue(): { removed: number; queue: QueueItemView[] } {
  * Enqueue a task. If an identical item is already queued — same
  * (type, jobId, documentId, sectionName) in ANY status — this never
  * adds a second row, because one piece of work is one row. Repeated
- * triggers (fit lands, then a re-scan, then the 4h autoscore tick), the
+ * triggers (fit lands, then a re-scan, then the hourly autoscore tick), the
  * startup backlog, and a manual re-add all resolve to the same single
  * row.
  *
@@ -644,7 +644,7 @@ export function clearQueue(): { removed: number; queue: QueueItemView[] } {
  * `manual: true` is the caller's claim that a person asked for this
  * (the direct Verify / Regenerate / Tailor / Quick Apply actions). It
  * is what earns the promotion; automatic re-adds — the fit-landing
- * trigger, the scan-time auto-tailor, the 4h re-seeder, the processor's
+ * trigger, the scan-time auto-tailor, the hourly re-seeder, the processor's
  * own follow-up chaining — deliberately do not promote, or every
  * background tick would reshuffle the queue under the user.
  *

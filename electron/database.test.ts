@@ -29,7 +29,7 @@ vi.mock('electron', () => ({
 // Load the database AFTER the electron override above is in place.
 import { existsSync, unlinkSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import { createJob, updateJob, getJob, listJobs, reloadStore, getSettings, updateSettings, resetSettings, addAIQueueItem, updateAIQueueItem, getAIQueue, clearAIQueue, dedupeAIQueueItems, createDocument, deleteDocument, listJobDocuments, bumpDocumentAutoRegenAttempts, getDocumentAutoRegenAttempts } from './database'
+import { createJob, updateJob, getJob, listJobs, reloadStore, getSettings, updateSettings, resetSettings, addAIQueueItem, updateAIQueueItem, getAIQueue, clearAIQueue, dedupeAIQueueItems, createDocument, deleteDocument, listJobDocuments, bumpDocumentAutoRegenAttempts, getDocumentAutoRegenAttempts, recomputeJobStatusFromDocs } from './database'
 import { DEFAULT_SCAN_MIN_MATCH } from './jobSearch'
 import type { CreateJobInput } from './types'
 
@@ -478,6 +478,56 @@ describe('bumpDocumentAutoRegenAttempts', () => {
     // The bump is a no-op on a missing row: no counter anywhere, and
     // nothing put back.
     expect(listJobDocuments(job.id)).toEqual([])
+  })
+})
+
+// The same latent bug the docs backlog sweep had, in the STATUS path.
+// `recomputeJobStatusFromDocs` computed hasCv / hasCl with a bare
+// `some(d => d.type === 'cv')`, so a document row flagged `is_base` —
+// the marker for "this is the user's master CV, not something generated
+// for this job" — satisfied it, and `nextStatusFromDocs` moved the job to
+// 'reviewing' with nothing generated for it. A base row carrying the
+// job_id (which `createDocument`'s signature permits) is the reachable
+// case; the filter is the same one `listJobDocuments` already applies.
+describe('recomputeJobStatusFromDocs does not count a base CV as generated', () => {
+  function seedJob() {
+    return createJob(baseInput).job
+  }
+
+  it('stays sourced when the only CV is the base CV and the CL is missing', () => {
+    const job = seedJob()
+    createDocument('cv', 'Base CV', 'MASTER', job.id, true)
+    expect(recomputeJobStatusFromDocs(job.id)).toBe('sourced')
+    expect(getJob(job.id)!.status).toBe('sourced')
+  })
+
+  it('does not reach reviewing when both documents are base rows', () => {
+    const job = seedJob()
+    createDocument('cv', 'Base CV', 'MASTER', job.id, true)
+    createDocument('cover_letter', 'Base CL', 'MASTER', job.id, true)
+    expect(recomputeJobStatusFromDocs(job.id)).toBe('sourced')
+    expect(getJob(job.id)!.status).toBe('sourced')
+  })
+
+  it('still reaches reviewing when both documents are generated', () => {
+    // The other half: the filter must not be so broad that a job whose
+    // docs really were generated can never leave 'sourced'.
+    const job = seedJob()
+    createDocument('cv', 'Tailored CV', 'x', job.id)
+    createDocument('cover_letter', 'Tailored CL', 'x', job.id)
+    expect(recomputeJobStatusFromDocs(job.id)).toBe('reviewing')
+    expect(getJob(job.id)!.status).toBe('reviewing')
+  })
+
+  it('demotes back to sourced when the generated CV is deleted and only the base remains', () => {
+    const job = seedJob()
+    createDocument('cv', 'Base CV', 'MASTER', job.id, true)
+    const cv = createDocument('cv', 'Tailored CV', 'x', job.id)
+    createDocument('cover_letter', 'Tailored CL', 'x', job.id)
+    expect(recomputeJobStatusFromDocs(job.id)).toBe('reviewing')
+    deleteDocument(cv.id)
+    expect(recomputeJobStatusFromDocs(job.id)).toBe('sourced')
+    expect(getJob(job.id)!.status).toBe('sourced')
   })
 })
 

@@ -323,7 +323,7 @@ export interface Settings {
    *
    * The durable half of the clear: the queue rows it deleted can be
    * rebuilt from the JOBS table by the startup / post-scan backlog and by
-   * the 4h fit-auto-score timer, so deleting the rows alone does not stop
+   * the hourly fit-auto-score timer, so deleting the rows alone does not stop
    * the work. Anything the user had already accumulated when they
    * cancelled is refused by the re-seeders until this moves. Paired with
    * `queue_cleared_max_job_id`, which says WHICH jobs that was. See
