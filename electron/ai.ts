@@ -10,6 +10,7 @@ import { runDocumentRuleChecks } from '../src/documentRules'
 import { extractJobKeywordsStructured, extractJobKeywords, mergeKeywordResults } from '../src/keywordExtractor'
 import { loadKeywordAllowlists } from '../src/keywordAllowlists'
 import { fingerprintKey, hostOf, redactBody } from './aiDebug'
+import { looksLikeProviderNotice, describeProviderNotice } from './providerNotice'
 
 export class KeywordExtractionError extends Error {
   constructor(message: string) {
@@ -456,9 +457,12 @@ function recordModelFailure(model: ApiModelConfig, statusCode: number | null, is
   if (statusCode === 429) {
     const backoff = Math.min(15000 * 2 ** (health.consecutiveFailures - 1), MAX_429_BACKOFF_MS)
     health.nextAvailableAt = Date.now() + backoff
-  } else if (statusCode === 401 || statusCode === 402 || statusCode === 404) {
+  } else if (statusCode === 401 || statusCode === 402 || statusCode === 403 || statusCode === 404) {
     // Persistent client errors: open circuit breaker for 1 hour so we don't
     // burn seconds on every request retrying a dead/payment-required model.
+    // 403 (forbidden) is here for the same reason: measured 61x in ai.log,
+    // every one of them the same permanently-forbidden model, each earning
+    // a 15s cooldown and being re-walked on the next rotation forever.
     health.circuitOpenUntil = Date.now() + CIRCUIT_BREAKER_MS
     health.nextAvailableAt = health.circuitOpenUntil
   } else if (isTimeout) {
@@ -564,6 +568,30 @@ async function tryModels(
           }[]
         }
         content = data.choices[0]?.message?.content ?? null
+        // A provider that is out of credit answers HTTP 200 with a
+        // plaintext billing/quota notice in `content`, not a model
+        // answer. Measured: 337 of 353 parse-failure log lines in
+        // fit.log were one. Checked BEFORE the validator and before the
+        // `if (content)` success branch below, because:
+        //   - verify / fit pass NO validator, so nothing else stands
+        //     between this body and `recordModelSuccess`, which DELETES
+        //     the health entry — erasing the failure history of a
+        //     provider that is out of credit on every single call, so
+        //     it never cools down and returns to the front of the
+        //     rotation (it looked healthy BECAUSE it was failing).
+        //   - on the CV path the validator does reject it, but as a
+        //     soft failure that explicitly declines to circuit-break.
+        // Routing it here records 402 instead, so the existing 1h
+        // circuit breaker engages and it is skipped for an hour.
+        if (content && looksLikeProviderNotice(content)) {
+          errors.push(`${model.name}: ${describeProviderNotice(content)}`)
+          recordModelFailure(model, 402, false)
+          content = null
+          // Continue to the next model. Deliberately skipping the
+          // `empty response` branch below: that would record a second,
+          // soft failure on top of the circuit break.
+          continue
+        }
         if (content && validateResponse) {
           // Defensive validation gate. A model that returns HTTP 200
           // with reasoning-channel / planning-meta content (VL-style

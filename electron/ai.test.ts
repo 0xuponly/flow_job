@@ -346,7 +346,7 @@ describe('callAI resilient failover', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('opens a circuit breaker for 401/402/404 and skips the dead model', async () => {
+  it('opens a circuit breaker for 401/402/403/404 and skips the dead model', async () => {
     vi.spyOn(database, 'listApiModels').mockReturnValue([
       { id: 'm1', name: 'dead', enabled: true, base_url: 'https://openrouter.ai', model: 'dead', api_key: 'k' } as any,
       { id: 'm2', name: 'live', enabled: true, base_url: 'https://openrouter.ai', model: 'live', api_key: 'k' } as any
@@ -373,6 +373,46 @@ describe('callAI resilient failover', () => {
     expect(body.model).toBe('live')
   })
 
+  it('opens the 1-hour circuit breaker for 403 (was: a 15s cooldown forever)', async () => {
+    // Measured: 61 x "403 forbidden" in ai.log, every one of them the same
+    // permanently-forbidden model, each earning a 15s soft cooldown and
+    // being re-walked on the next rotation. 403 is a persistent client
+    // error like 401/402/404, so it belongs in the same breaker class.
+    //
+    // Timers matter here: a plain "was it skipped on the next call?"
+    // assertion passes under the old 15s cooldown too. The discriminator
+    // is that it is STILL skipped well past 15s and still inside the 1h
+    // window — i.e. the breaker is open, not a cooldown.
+    vi.useFakeTimers()
+    try {
+      vi.spyOn(database, 'listApiModels').mockReturnValue([
+        { id: 'forbidden', name: 'forbidden', enabled: true, base_url: 'https://openrouter.ai', model: 'forbidden', api_key: 'k' } as any,
+        { id: 'live', name: 'live', enabled: true, base_url: 'https://openrouter.ai', model: 'live', api_key: 'k' } as any
+      ])
+      const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(init.body as string)
+        if (body.model === 'forbidden') return new Response('no access', { status: 403 })
+        return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 })
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
+      const first = await callAI('sys', 'user')
+      expect(first.content).toBe('ok')
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+
+      // Past the 15s soft cooldown (SERVER_ERROR_BACKOFF_MS) but well
+      // inside the 1h breaker (CIRCUIT_BREAKER_MS).
+      vi.advanceTimersByTime(5 * 60 * 1000)
+      fetchMock.mockClear()
+      const second = await callAI('sys', 'user')
+      expect(second.content).toBe('ok')
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string).model).toBe('live')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('respects 429 cooldown and retries after the cooldown expires', async () => {
     vi.useFakeTimers()
     vi.spyOn(database, 'listApiModels').mockReturnValue([
@@ -395,6 +435,205 @@ describe('callAI resilient failover', () => {
     expect(result.content).toBe('ok')
 
     vi.useRealTimers()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Arm A regression: a provider billing/quota notice delivered with HTTP 200
+// must NOT be recorded as a success.
+//
+// Measured: 337 of 353 `non-parseable` log lines in fit.log + fit.log.1
+// carried a plaintext billing notice (failures-to-failures, so valid).
+//
+// The bug had two arms:
+//   A — verify/fit pass NO validator, so the notice was non-null `content`,
+//       took the `if (content)` success branch, and called
+//       recordModelSuccess, which DELETES the model's health entry. A
+//       provider out of credit therefore had its failure history erased on
+//       every call: never cooled down, back at the front of the rotation
+//       immediately. It looked healthy BECAUSE it was failing invisibly.
+//   B — on the CV path the validator rejected it, but as a soft failure
+//       that explicitly declines to circuit-break, so 15s forever.
+//
+// Both are fixed by recognising the body BEFORE the success branch and
+// recording 402, which engages the existing 1h breaker.
+// ---------------------------------------------------------------------------
+describe('provider billing notice (HTTP 200) is a hard failure, not a success', () => {
+  // Verbatim from fit.log (truncated by the logger's own 240-char snippet).
+  const NOTICE =
+    "The account behind this API key doesn't have enough credits. This model needs paid Pollen. Please [top up](https://enter.pollinations.ai/top-up?ref=agent_low_balance_topup), then try again."
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    resetModelHealth()
+  })
+
+  it('ARM A: does not reach recordModelSuccess — the health entry survives on the no-validator path', async () => {
+    // One model, no validator. This is exactly the verify/fit call shape
+    // (`callAI(..., undefined, undefined, exclude)`).
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 'broke', name: 'broke', enabled: true, base_url: 'https://example.invalid', model: 'broke', api_key: 'k' } as any
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: NOTICE } }]
+    }), { status: 200 })))
+
+    // The notice is not content, so the call fails...
+    await expect(callAI('sys', 'user')).rejects.toThrow()
+
+    // ...and — the Arm A assertion — the model is NOT immediately
+    // available again. If recordModelSuccess had run, the health entry
+    // would have been deleted and this call would hit the wire again.
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockClear()
+    await expect(callAI('sys', 'user')).rejects.toThrow()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('ARM A: the breaker is open (1h), not merely a 15s cooldown', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 'broke', name: 'broke', enabled: true, base_url: 'https://example.invalid', model: 'broke', api_key: 'k' } as any,
+      { id: 'live', name: 'live', enabled: true, base_url: 'https://example.invalid', model: 'live', api_key: 'k' } as any
+    ])
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const model = JSON.parse(init.body as string).model
+      if (model === 'broke') {
+        return new Response(JSON.stringify({ choices: [{ message: { content: NOTICE } }] }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    // The rotation moves on to the working model rather than surfacing
+    // the notice as content.
+    const first = await callAI('sys', 'user')
+    expect(first.content).toBe('ok')
+    expect(first.modelUsed).toBe('live')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    // 'broke' is circuit-broken, so it is not walked again.
+    fetchMock.mockClear()
+    await callAI('sys', 'user')
+    const walked = fetchMock.mock.calls.map((c) => JSON.parse(c[1].body as string).model)
+    expect(walked).toEqual(['live'])
+  })
+
+  it('ARM B: on the CV path (validator present) the notice records a hard failure, not a soft one', async () => {
+    // The CV validator already rejected this body, but as a soft failure
+    // that explicitly declined to circuit-break. Now it is caught before
+    // the validator, so the breaker engages.
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 'broke', name: 'broke', enabled: true, base_url: 'https://example.invalid', model: 'broke', api_key: 'k' } as any
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: NOTICE } }]
+    }), { status: 200 })))
+    const { looksLikeHarvardCv } = await import('./ai')
+
+    await expect(callAI('sys', 'user', 0.7, undefined, undefined, looksLikeHarvardCv))
+      .rejects.toThrow()
+
+    // Survives: not walked again. A soft 15s failure would also skip it
+    // immediately, so this alone does not distinguish — the breaker
+    // assertion above does. What matters here is that it is a FAILURE and
+    // never a success.
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockClear()
+    await expect(callAI('sys', 'user', 0.7, undefined, undefined, looksLikeHarvardCv))
+      .rejects.toThrow()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('never persists a billing notice as a document', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 'broke', name: 'broke', enabled: true, base_url: 'https://example.invalid', model: 'broke', api_key: 'k' } as any
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: NOTICE } }]
+    }), { status: 200 })))
+    vi.spyOn(database, 'getJob').mockReturnValue({
+      id: 1, title: 'Senior Financial Analyst', company: 'TIC',
+      description: 'JD text', location: 'Remote', score: null, fit_score_version: null,
+      fit_source: null, fit_breakdown: null, fit_last_error: null, fit_error_toasted: null,
+      match_grade: null, fit_rationale: null, status: 'sourced'
+    } as any)
+    vi.spyOn(database, 'getSettings').mockReturnValue({
+      base_cv: 'CV body', openai_api_key: '', openai_base_url: 'https://example.invalid',
+      openai_model: 'm', user_name: 'Jane Doe', user_email: 'jane@example.com',
+      user_phone: '', user_country: '', job_search_keywords: '', job_search_location: '',
+      job_search_min_score: 0, autofill_enabled: false, openrouter_api_key: '',
+      openrouter_base_url: '', openrouter_model: ''
+    } as any)
+
+    const { tailorDocument } = await import('./ai')
+    await expect(tailorDocument({ job_id: 1, document_type: 'cv' })).rejects.toThrow()
+    expect(database.createDocument).not.toHaveBeenCalled()
+    expect(database.replaceDocumentContent).not.toHaveBeenCalled()
+  })
+
+  it('names the notice in the thrown error so the user sees why', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 'broke', name: 'broke', enabled: true, base_url: 'https://example.invalid', model: 'broke', api_key: 'k' } as any
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: 'This model needs paid Pollen.' } }]
+    }), { status: 200 })))
+
+    let caught: unknown
+    try {
+      await callAI('sys', 'user')
+    } catch (err) { caught = err }
+    expect(caught).toBeInstanceOf(Error)
+    const msg = (caught as Error).message
+    expect(msg).toContain('broke')
+    expect(msg).toMatch(/provider billing|paid Pollen/i)
+    // A notice-only pool is NOT a RateLimitError: nothing is rate limited,
+    // so the queue must not tell the user to "try again in a minute".
+    expect(caught).not.toBeInstanceOf(RateLimitError)
+  })
+
+  it('ADVERSARIAL: a real CV answer mentioning billing/credit still succeeds and clears health', async () => {
+    // The false-positive guard, end to end. A financial-analyst CV that
+    // says "billing reconciliation" and "credit exposure" must be accepted
+    // as content — a false positive here would discard a good document.
+    const goodCv =
+      'Jane Doe\n1 Main St • Cambridge, MA • jane@example.com\n\n' +
+      'Experience\nAcme Capital\tBoston, MA\n' +
+      'Senior Financial Analyst\tJun 2022 – Present\n' +
+      '- Rebuilt the monthly billing reconciliation, cutting close time 4 days.\n' +
+      '- Owned credit exposure reporting on a $2.4B loan book.'
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 'fin', name: 'fin', enabled: true, base_url: 'https://example.invalid', model: 'fin', api_key: 'k' } as any
+    ])
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: goodCv } }]
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { looksLikeHarvardCv } = await import('./ai')
+
+    const result = await callAI('sys', 'user', 0.7, undefined, undefined, looksLikeHarvardCv)
+    expect(result.content).toBe(goodCv)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    // And the success genuinely recorded: the model is walked again next
+    // call (health cleared, no cooldown).
+    fetchMock.mockClear()
+    await callAI('sys', 'user', 0.7, undefined, undefined, looksLikeHarvardCv)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('ADVERSARIAL: a real review JSON mentioning billing is accepted as content', async () => {
+    const review =
+      '{"score": 92, "passed": true, "feedback": "Deep billing and credit-risk experience."}'
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      { id: 'r', name: 'r', enabled: true, base_url: 'https://example.invalid', model: 'r', api_key: 'k' } as any
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: review } }]
+    }), { status: 200 })))
+
+    const result = await callAI('sys', 'user')
+    expect(result.content).toBe(review)
   })
 })
 
