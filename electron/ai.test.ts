@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // Stub the ./database module to avoid pulling in the real database
 // (which transitively imports electron/logger and requires a live
@@ -1838,5 +1838,317 @@ describe('no bare numeric timeout literal at any callAI call site', () => {
     // The four call sites that used to carry a literal now name it.
     const named = src.match(/callAI\([^)]*DEFAULT_CALL_TIMEOUT_MS[^)]*\)/g) ?? []
     expect(named.length).toBe(5) // 4 call sites + callAI's own signature
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The timeout cooldown.
+//
+// tryModels arms the abort timer PER MODEL, so a model that hangs burns
+// its whole per-attempt budget (DEFAULT_CALL_TIMEOUT_MS, 45s by default,
+// or its own `timeout_ms`) and returns nothing at all. It used to be
+// handed a flat 5s cooldown for that — shorter than the gap between any
+// two queue items — so the hung model was eligible again on the very
+// next item and got re-walked (and re-aborted at full cost) on
+// essentially every rotation. `consecutiveFailures` climbed in the
+// health entry the whole time and was never consulted on this path.
+//
+// The cooldown is now proportional to the budget that was just burned,
+// doubles per consecutive abort, is capped, and is cleared outright by
+// the next success.
+//
+// Every test here runs on fake timers: nothing sleeps for real seconds,
+// and each rung is probed on BOTH sides of its boundary — skipped at
+// `cooldown - 1`, walked again at exactly `cooldown` — so a cooldown
+// that came out too short and one that came out too long both fail.
+describe('timeout cooldown', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    resetModelHealth()
+  })
+
+  afterEach(async () => {
+    // A failed probe can leave a request genuinely in flight — that is
+    // exactly what "the model was walked instead of skipped" means. Every
+    // request goes through one module-level chain in ai.ts, so an
+    // abandoned one would wedge every later test in this file. Advancing
+    // past any abort timer that is still armed lets it finish.
+    if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(11 * 60 * 1000)
+    vi.useRealTimers()
+  })
+
+  function modelConfig(over: Partial<ApiModelConfig> = {}): ApiModelConfig {
+    return { id: 'm1', name: 'a', enabled: true, base_url: 'https://example.invalid', model: 'a', api_key: 'k', ...over }
+  }
+
+  function okResponse() {
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 })
+  }
+
+  // A provider that never answers: fetch hangs until the abort timer
+  // fires, which is what a real hung model looks like. `isTimeout` is
+  // read off that abort in the catch block, so this drives the real
+  // classification rather than a hand-rolled error object.
+  function hangUntilAbort() {
+    return vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new Error('The operation was aborted')))
+    }))
+  }
+
+  // callAI reaches tryModels through serializeRequest's promise chain, so
+  // the abort timer does not exist until the microtask queue has turned.
+  // Advancing the clock before then would sail past a timer that has not
+  // been armed yet, and a hung request would never be aborted.
+  async function settle(): Promise<void> {
+    await Promise.resolve()
+    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+  }
+
+  // A call whose rejection is inspected after an intervening await, so the
+  // handler has to be attached on the same tick the promise is created.
+  // callAI rejects synchronously on the cooling path, and an unhandled
+  // rejection is reported as a test-file error even when the test passes.
+  function attempt(item: string): Promise<unknown> {
+    return callAI('sys', item).then(() => null, (err: unknown) => err)
+  }
+
+  function expectTimedOut(err: unknown, modelName: string): void {
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).message).toContain(`${modelName}: timeout`)
+  }
+
+  function expectAllFailed(err: unknown): void {
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).message).toContain('All 1 configured AI models failed')
+  }
+
+  // A call that must be refused because every model is cooling. callAI
+  // picks the rotation synchronously, so one microtask turn is enough to
+  // know whether the model was walked; asserting that BEFORE awaiting the
+  // outcome keeps a regression fast and specific instead of hanging on a
+  // request that will never resolve.
+  async function expectSkipped(item: string, walksSoFar: number): Promise<void> {
+    const pending = attempt(item)
+    await settle()
+    expect(vi.mocked(fetch), `${item}: the cooling model was walked instead of skipped`)
+      .toHaveBeenCalledTimes(walksSoFar)
+    await expect(pending).resolves.toBeInstanceOf(RateLimitError)
+  }
+
+  // Walks a cooldown ladder one rung at a time. `fire(step)` performs the
+  // failure that starts rung `step`; the rung is then probed from both
+  // sides, and the walk on the boundary is the next rung's failure — so
+  // the ladder cannot pass by accident.
+  async function walkRungs(rungs: number[], fire: (step: number) => Promise<void>): Promise<void> {
+    for (const [step, cooldown] of rungs.entries()) {
+      await fire(step)
+      const walked = vi.mocked(fetch).mock.calls.length
+      // The immediately following queue item, then a probe one
+      // millisecond before the cooldown ends: skipped in both, so the
+      // timeout is not burned a second time.
+      await expectSkipped(`next-item-${step}`, walked)
+      await vi.advanceTimersByTimeAsync(cooldown - 1)
+      await expectSkipped(`pre-cooldown-end-${step}`, walked)
+      // ... and available again on the exact millisecond it ends.
+      await vi.advanceTimersByTimeAsync(1)
+    }
+    // The last rung's boundary walk, which no further rung depends on.
+    await fire(rungs.length)
+  }
+
+  // One hung attempt, aborted at that model's own per-attempt timeout.
+  function abortsAfter(attemptTimeoutMs: number, modelName = 'hang') {
+    return async (step: number) => {
+      const pending = attempt(`item-${step}`)
+      await settle()
+      await vi.advanceTimersByTimeAsync(attemptTimeoutMs)
+      expectTimedOut(await pending, modelName)
+    }
+  }
+
+  // One attempt answered immediately with a non-429 failure, which
+  // surfaces as the generic all-models-failed error.
+  const allFailed = async (step: number) => {
+    expectAllFailed(await attempt(`item-${step}`))
+  }
+
+  // Same, for a 429, which surfaces as RateLimitError.
+  const rateLimited = async (step: number) => {
+    expect(await attempt(`item-${step}`)).toBeInstanceOf(RateLimitError)
+  }
+
+  it('skips a timed-out model on the immediately following item instead of aborting it again', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      modelConfig({ id: 'hang', name: 'hang', model: 'hang' })
+    ])
+    const fetchMock = hangUntilAbort()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const first = attempt('item-1')
+    await settle()
+    await vi.advanceTimersByTimeAsync(45_000)
+    expectTimedOut(await first, 'hang')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    // The next queue item. This is the whole point: the old flat 5s
+    // cooldown had always expired by the time the next item could be
+    // picked up, so this model was walked again and burned another 45s.
+    // It is now skipped as unavailable and the item fails without a
+    // request going out at all.
+    await expectSkipped('item-2', 1)
+
+    // ... and it is a cooldown, not a circuit break: the model is walked
+    // again once the cooldown ends (45s, not the 1h a 401/402/404 earns).
+    await vi.advanceTimersByTimeAsync(44_999)
+    await expectSkipped('item-3', 1)
+    await vi.advanceTimersByTimeAsync(1)
+    const walkedAgain = attempt('item-4')
+    await settle()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(45_000)
+    expectTimedOut(await walkedAgain, 'hang')
+  })
+
+  it('escalates with consecutiveFailures, doubling per abort up to a 5 minute cap', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      modelConfig({ id: 'hang', name: 'hang', model: 'hang' })
+    ])
+    vi.stubGlobal('fetch', hangUntilAbort())
+
+    // 45s — the budget the model just burned — then 90s, then 180s, then
+    // 360s clamped to the 5 minute cap, and capped from there on. A model
+    // could abort at the full timeout forever and never get louder, which
+    // is what the flat 5s allowed.
+    await walkRungs([45_000, 90_000, 180_000, 300_000, 300_000, 300_000], abortsAfter(45_000))
+  })
+
+  it('scales the cooldown off a model-level timeout_ms instead of the 45s default', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      modelConfig({ id: 'slow', name: 'slow', model: 'slow', timeout_ms: 90_000 })
+    ])
+    vi.stubGlobal('fetch', hangUntilAbort())
+
+    // The cooldown is the budget this model actually burned: 90s, then
+    // 180s, then 360s clamped to the same 5 minute cap. Scaling off
+    // DEFAULT_CALL_TIMEOUT_MS instead would have cooled it for 45s — half
+    // the time it was just left hanging — and the cap would sit below a
+    // single one of its attempts.
+    await walkRungs([90_000, 180_000, 300_000], abortsAfter(90_000, 'slow'))
+  })
+
+  it('clears the escalation on the next success, leaving a healthy model available immediately', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      modelConfig({ id: 'flaky', name: 'flaky', model: 'flaky' })
+    ])
+    let broken = true
+    const fetchMock = vi.fn((_url: string, init: RequestInit) => {
+      if (!broken) return Promise.resolve(okResponse())
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(new Error('The operation was aborted')))
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    // Two aborts, 45s of cooldown and then 90s, so the model is two rungs
+    // deep when it recovers and a stale entry would be unmistakable below.
+    for (const [step, cooldown] of [45_000, 90_000].entries()) {
+      const pending = attempt(`item-${step}`)
+      await settle()
+      await vi.advanceTimersByTimeAsync(45_000)
+      expectTimedOut(await pending, 'flaky')
+      // Ride the cooldown out so the next abort is a fresh walk.
+      await vi.advanceTimersByTimeAsync(cooldown)
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    // Recover. recordModelSuccess deletes the health entry, so whatever
+    // cooldown was running and the escalation with it are both gone at
+    // once — the model is usable again with no clock advance at all.
+    broken = false
+    await expect(callAI('sys', 'recovered')).resolves.toMatchObject({ content: 'ok' })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    await expect(callAI('sys', 'after-recovery')).resolves.toMatchObject({ content: 'ok' })
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+
+    // The entry itself was deleted, not merely its nextAvailableAt: the
+    // next timeout starts the ladder over at one rung (45s). Had the
+    // counter survived, this would be the third rung (180s).
+    broken = true
+    const brokeAgain = attempt('broke-again')
+    await settle()
+    await vi.advanceTimersByTimeAsync(45_000)
+    expectTimedOut(await brokeAgain, 'flaky')
+    const walked = vi.mocked(fetch).mock.calls.length
+    await expectSkipped('next-item', walked)
+    // One rung, not the third: still cooling a millisecond before 45s
+    // has passed, and available again on the 45s mark.
+    await vi.advanceTimersByTimeAsync(44_999)
+    await expectSkipped('pre-cooldown-end', walked)
+    await vi.advanceTimersByTimeAsync(1)
+    const afterCooldown = attempt('after-cooldown')
+    await settle()
+    expect(vi.mocked(fetch).mock.calls.length).toBe(walked + 1)
+    await vi.advanceTimersByTimeAsync(45_000)
+    expectTimedOut(await afterCooldown, 'flaky')
+  })
+
+  it('leaves the 429 ladder alone: 15s doubling, 10 minute cap', async () => {
+    // Not the branch under change, and pinned deliberately: if the
+    // proportional timeout cooldown had leaked into the rate-limit path a
+    // 429 would now cost 45s, then 5 minutes, for a provider that told us
+    // exactly how long to wait.
+    vi.useFakeTimers()
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      modelConfig({ id: 'limited', name: 'limited', model: 'limited' })
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 429 })))
+
+    await walkRungs(
+      [15_000, 30_000, 60_000, 120_000, 240_000, 480_000, 600_000, 600_000],
+      rateLimited
+    )
+  })
+
+  it('leaves the 5xx cooldown flat at 15s, with no escalation', async () => {
+    // A 5xx is the other transient class and has never escalated. The
+    // escalation is scoped to the timeout branch, so this one must not
+    // pick it up by association.
+    vi.useFakeTimers()
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      modelConfig({ id: 'broken', name: 'broken', model: 'broken' })
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 500 })))
+
+    await walkRungs([15_000, 15_000, 15_000], allFailed)
+  })
+
+  it('leaves the 401/402/404 circuit breaker at 1 hour', async () => {
+    vi.useFakeTimers()
+    for (const status of [401, 402, 404]) {
+      resetModelHealth()
+      vi.spyOn(database, 'listApiModels').mockReturnValue([
+        modelConfig({ id: `dead-${status}`, name: 'dead', model: 'dead' })
+      ])
+      const fetchMock = vi.fn(async () => new Response('', { status }))
+      vi.stubGlobal('fetch', fetchMock)
+
+      expectAllFailed(await attempt('item-1'))
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+
+      // An hour — not 5 minutes, and not 45s. A dead key stays dead, and
+      // the breaker keeps an order of magnitude above the timeout cap.
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000 - 1)
+      await expectSkipped(`pre-hour-${status}`, 1)
+      await vi.advanceTimersByTimeAsync(1)
+      const walkedAgain = attempt(`after-hour-${status}`)
+      await settle()
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expectAllFailed(await walkedAgain)
+    }
   })
 })

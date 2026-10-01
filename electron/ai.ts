@@ -445,10 +445,65 @@ function recordModelSuccess(model: ApiModelConfig): void {
 
 const MAX_429_BACKOFF_MS = 10 * 60 * 1000
 const CIRCUIT_BREAKER_MS = 60 * 60 * 1000
-const NETWORK_ERROR_BACKOFF_MS = 5000
 const SERVER_ERROR_BACKOFF_MS = 15000
 
-function recordModelFailure(model: ApiModelConfig, statusCode: number | null, isTimeout: boolean): void {
+// Timeout (network-error) cooldown.
+//
+// A timeout is the one failure that costs the full per-attempt budget and
+// returns nothing: the abort timer is armed per model inside the rotation
+// loop, so a hung model burns DEFAULT_CALL_TIMEOUT_MS (45s, or its own
+// `timeout_ms`) before the rotation moves on. The cooldown it used to be
+// handed was a flat 5s — shorter than the gap between any two queue items
+// — so the model was eligible again on the very next item and got re-walked,
+// and re-aborted at full cost, on essentially every rotation. Every abort
+// incremented `consecutiveFailures` and this branch never looked at it, so a
+// model could hang forever without ever being backed off further.
+//
+// The cooldown is therefore proportional to the budget that was just
+// burned, and escalates with the same exponential shape the 429 ladder
+// already uses:
+//
+//   min(base x 2^(consecutiveFailures - 1), max(MAX_TIMEOUT_COOLDOWN_MS, base))
+//
+// where base is the timeout actually armed for that attempt — a model's own
+// `timeout_ms` when it has a usable one, else DEFAULT_CALL_TIMEOUT_MS, which
+// is deliberately not hardcoded here. At the 45s default that is
+// 45s -> 90s -> 180s -> 300s (capped) -> 300s, so the first abort already
+// outlasts any plausible gap between queue items and a permanently hung
+// model settles at one re-walk per 5 minutes instead of one per item.
+//
+// The cap is 5 minutes, deliberately below MAX_429_BACKOFF_MS (10 min) and an
+// order of magnitude below CIRCUIT_BREAKER_MS (1 h): a timeout is a
+// transient "we gave up waiting", not a verdict about the model, so it must
+// never silence one as hard as a 429 or a 401/402/404 does. It is floored
+// at the model's own budget so a slow model is never re-walked sooner than
+// the timeout it just burned.
+//
+// A success deletes the health entry outright (recordModelSuccess), so the
+// whole ladder — cooldown and counter — is gone the moment the model works
+// again. Nothing here can outlive a working model.
+const TIMEOUT_COOLDOWN_BASE_FACTOR = 1
+const MAX_TIMEOUT_COOLDOWN_MS = 5 * 60 * 1000
+
+function timeoutCooldownMs(
+  model: ApiModelConfig,
+  attemptTimeoutMs: number | undefined,
+  consecutiveFailures: number
+): number {
+  // The same resolution the abort timer used, so the cooldown is literally
+  // "the budget that was just burned". getCallTimeoutMs already discards a
+  // nonsense `timeout_ms` and clamps an absurd one to MAX_CALL_TIMEOUT_MS.
+  const base = getCallTimeoutMs(model, attemptTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS)
+  const ladder = base * TIMEOUT_COOLDOWN_BASE_FACTOR * 2 ** (Math.max(1, consecutiveFailures) - 1)
+  return Math.min(ladder, Math.max(MAX_TIMEOUT_COOLDOWN_MS, base))
+}
+
+function recordModelFailure(
+  model: ApiModelConfig,
+  statusCode: number | null,
+  isTimeout: boolean,
+  attemptTimeoutMs?: number
+): void {
   const key = modelKey(model)
   const health = getHealth(model)
   health.consecutiveFailures++
@@ -462,7 +517,7 @@ function recordModelFailure(model: ApiModelConfig, statusCode: number | null, is
     health.circuitOpenUntil = Date.now() + CIRCUIT_BREAKER_MS
     health.nextAvailableAt = health.circuitOpenUntil
   } else if (isTimeout) {
-    health.nextAvailableAt = Date.now() + NETWORK_ERROR_BACKOFF_MS
+    health.nextAvailableAt = Date.now() + timeoutCooldownMs(model, attemptTimeoutMs, health.consecutiveFailures)
   } else {
     // 5xx and other transient errors.
     health.nextAvailableAt = Date.now() + SERVER_ERROR_BACKOFF_MS
@@ -630,7 +685,11 @@ async function tryModels(
       const msg = err instanceof Error ? err.message : 'Unknown error'
       const isTimeout = msg.includes('aborted')
       errors.push(`${model.name}: ${isTimeout ? 'timeout' : msg}`)
-      recordModelFailure(model, null, isTimeout)
+      // The resolved per-model timeout travels with the failure so the
+      // timeout cooldown can scale off the budget this attempt actually
+      // burned. A non-timeout throw carries isTimeout=false and lands on
+      // recordModelFailure's other-transient branch, which ignores it.
+      recordModelFailure(model, null, isTimeout, attemptTimeoutMs)
     }
   }
 
