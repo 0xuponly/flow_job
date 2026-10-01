@@ -282,18 +282,95 @@ describe('P1.7 maybeAutoEnqueueDocs (fit >= auto_doc_min_fit -> enqueue generati
   })
 
   it('does not stack duplicates when a generation item is already queued', () => {
-    // Duplicate suppression is `enqueue`'s guard, not a second copy of
-    // the rule here: enqueue returns null when an identical item is
-    // already pending OR processing, and the return value has to follow
-    // it — otherwise this function reports work it did not do.
+    // Duplicate suppression for `tailor_job_docs` rows is `enqueue`'s
+    // guard, not a second copy of the rule here: enqueue returns null when
+    // an identical item is already pending OR processing, and the return
+    // value has to follow it — otherwise this function reports work it did
+    // not do.
     mockedGetJob.mockReturnValue({ ...fakeJob, score: 0.9 } as any)
     mockedGetSettings.mockReturnValue({ auto_doc_min_fit: 40 } as any)
     mockedEnqueue.mockReturnValue(null as unknown as AIQueueItem)
     expect(maybeAutoEnqueueDocs(7)).toBe(false)
     // It asked enqueue, rather than checking the queue itself first.
     expect(mockedEnqueue).toHaveBeenCalledWith({ type: 'tailor_job_docs', jobId: 7 })
-    // ...and it no longer scans the queue on its own account.
-    expect(mockedGetQueue).not.toHaveBeenCalled()
+    // ...and the one queue read it does make is the shared
+    // cross-producer check (`jobDocWorkInFlight`), not a private scan for
+    // `tailor_job_docs` rows. Exactly one read: a second would be the
+    // second copy of the same rule.
+    expect(mockedGetQueue).toHaveBeenCalledTimes(1)
+  })
+
+  // The direction the backlog sweep could see and this one could not: the
+  // sweep queues `generate_cv` / `generate_cover_letter`, which `enqueue`'s
+  // guard cannot match against a `tailor_job_docs` row, so the trigger used
+  // to queue its own row on top and the job ended up with three CVs.
+  describe('the document backlog sweep already queued this job', () => {
+    const liveRow = (over: Partial<AIQueueItem> = {}): AIQueueItem =>
+      ({ id: 1, type: 'generate_cv', jobId: 7, status: 'pending', ...over }) as AIQueueItem
+
+    beforeEach(() => {
+      mockedGetJob.mockReturnValue({ ...fakeJob, score: 0.9 } as any)
+      mockedGetSettings.mockReturnValue({ auto_doc_min_fit: 40 } as any)
+      mockedEnqueue.mockReturnValue({ id: 99 } as unknown as AIQueueItem)
+    })
+
+    it('declines when a generate_cv row is pending', () => {
+      mockedGetQueue.mockReturnValue([liveRow()])
+      expect(maybeAutoEnqueueDocs(7)).toBe(false)
+      expect(mockedEnqueue).not.toHaveBeenCalled()
+    })
+
+    it('declines when a generate_cv row is processing', () => {
+      mockedGetQueue.mockReturnValue([liveRow({ status: 'processing' })])
+      expect(maybeAutoEnqueueDocs(7)).toBe(false)
+      expect(mockedEnqueue).not.toHaveBeenCalled()
+    })
+
+    it('declines when a generate_cover_letter row is pending', () => {
+      // It produces both documents, so a live cover-letter row is a live
+      // second cover letter just as much as a live CV row is a second CV.
+      mockedGetQueue.mockReturnValue([liveRow({ type: 'generate_cover_letter' })])
+      expect(maybeAutoEnqueueDocs(7)).toBe(false)
+      expect(mockedEnqueue).not.toHaveBeenCalled()
+    })
+
+    it('declines when a tailor_job_docs row is pending (before enqueue is asked)', () => {
+      mockedGetQueue.mockReturnValue([liveRow({ type: 'tailor_job_docs' })])
+      expect(maybeAutoEnqueueDocs(7)).toBe(false)
+      expect(mockedEnqueue).not.toHaveBeenCalled()
+    })
+
+    it('ignores another job\'s rows', () => {
+      mockedGetQueue.mockReturnValue([liveRow({ jobId: 8 })])
+      expect(maybeAutoEnqueueDocs(7)).toBe(true)
+      expect(mockedEnqueue).toHaveBeenCalledWith({ type: 'tailor_job_docs', jobId: 7 })
+    })
+
+    it('does not treat a regeneration row as coverage of a first generation', () => {
+      // A `generate_cv` carrying a documentId is the review -> regenerate
+      // loop replacing a document that exists; it produces no first
+      // generation, so it must not suppress this job's CV.
+      mockedGetQueue.mockReturnValue([liveRow({ documentId: 42 })])
+      expect(maybeAutoEnqueueDocs(7)).toBe(true)
+    })
+
+    it('does not treat a failed row as in flight', () => {
+      mockedGetQueue.mockReturnValue([liveRow({ status: 'failed' })])
+      expect(maybeAutoEnqueueDocs(7)).toBe(true)
+    })
+
+    it('still checks the toggles before the queue: cover letters off declines either way', () => {
+      mockedGetSettings.mockReturnValue({ auto_doc_min_fit: 40, auto_queue_cover_letter: false } as any)
+      mockedGetQueue.mockReturnValue([liveRow()])
+      expect(maybeAutoEnqueueDocs(7)).toBe(false)
+      expect(mockedEnqueue).not.toHaveBeenCalled()
+      // ...and with the queue empty the toggle is still what stopped it,
+      // so the deferral can never be read as "something else will finish
+      // this job".
+      mockedGetQueue.mockReturnValue([])
+      expect(maybeAutoEnqueueDocs(7)).toBe(false)
+      expect(mockedEnqueue).not.toHaveBeenCalled()
+    })
   })
 
   it('reports the work as done when the enqueue actually queued a row', () => {

@@ -19,7 +19,7 @@ import { log } from './logger'
 import * as db from './database'
 import { scoreJobFit } from './ai'
 import { enqueue } from './aiQueue'
-import { autoDocQueueEligible } from './docAutoQueue'
+import { autoDocQueueEligible, jobDocWorkInFlight } from './docAutoQueue'
 import type { Job } from './types'
 
 /**
@@ -49,6 +49,16 @@ import type { Job } from './types'
  *     not re-check it. (A `failed` row is included in that guard: it is
  *     revived in place rather than re-queued, so the answer here is
  *     still "not newly added.")
+ *
+ * The guard above only matches OTHER `tailor_job_docs` rows, and the
+ * backlog sweep queues `generate_cv` and `generate_cover_letter`
+ * instead — two rows for one job's two documents, where a
+ * `tailor_job_docs` row is one row that produces both. So "is this
+ * job's document work already covered" is a second question with a
+ * second answer per direction, and it is now `jobDocWorkInFlight`
+ * (same module), asked by both directions about the document types
+ * they are about to produce. See that function for the deferral
+ * semantics and for why the trigger asks about both types.
  */
 export function maybeAutoEnqueueDocs(
   jobId: number,
@@ -94,6 +104,19 @@ export function maybeAutoEnqueueDocs(
   // the sweep cannot drift from the trigger's preconditions.
   if (!autoDocQueueEligible(job, settings, db.listDocuments(jobId))) return false
 
+  // ...and "is this job's document work already covered or in flight,
+  // by ANY producer?" lives in `jobDocWorkInFlight`, the same shared
+  // predicate the sweep consults for each unit it is about to queue.
+  // `tailor_job_docs` generates BOTH documents, so the trigger asks
+  // about both types: a live `generate_cv` row is producing a CV this
+  // job would otherwise get a second of, and a live
+  // `generate_cover_letter` row the same. This is the direction that
+  // used to be missing entirely, and it is what let one job reach three
+  // queue rows — and three CVs plus three cover letters — because
+  // `enqueue`'s guard below only matches other `tailor_job_docs` rows.
+  //
+  // Deferral semantics: see the doc comment on `jobDocWorkInFlight`.
+  if (jobDocWorkInFlight(db.getAIQueue(), jobId, ['cv', 'cover_letter'])) return false
 
   // Duplicate suppression is `enqueue`'s job: its guard matches a row
   // of the same work in ANY status on (type, jobId, documentId,

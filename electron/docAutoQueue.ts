@@ -1,5 +1,5 @@
 import { PASSING_REVIEW_SCORE } from './types'
-import type { Document, Job, Settings } from './types'
+import type { AIQueueItem, Document, Job, Settings } from './types'
 
 /**
  * Whether this job is allowed to have document generation queued FOR IT,
@@ -90,4 +90,111 @@ export function autoDocQueueEligible(
 
   const shippable = docs.length > 0 && docs.every((d) => (d.verification_score ?? 0) >= PASSING_REVIEW_SCORE)
   return !shippable
+}
+
+/**
+ * The queue types that PRODUCE a document for a job, and which document
+ * each one produces.
+ *
+ * `tailor_job_docs` is the both-documents unit: processItem's case for it
+ * calls `tailorJobDocsForJob`, which tailors the CV and the cover letter
+ * and writes both. The other two produce exactly one each. This is the
+ * mapping that lets `jobDocWorkInFlight` be asked "will a live row give
+ * this job a CV?" in the same words by a caller that means only the CV
+ * (the sweep's unit) and by one that means both (the trigger's
+ * `tailor_job_docs`).
+ */
+const DOC_PRODUCING_ROWS: Partial<Record<AIQueueItem['type'], Document['type'][]>> = {
+  tailor_job_docs: ['cv', 'cover_letter'],
+  generate_cv: ['cv'],
+  generate_cover_letter: ['cover_letter']
+}
+
+/**
+ * Whether a LIVE queue row for this job will already produce a first
+ * generation of any of `docTypes` — i.e. whether a producer other than
+ * the caller's own has this job's document work covered or in flight.
+ *
+ * One predicate, BOTH directions, and the reason it is shared is the whole
+ * defect this exists to close. Document work for one job can be produced
+ * two ways:
+ *
+ *   - the document backlog sweep queues `generate_cv` and
+ *     `generate_cover_letter` as two units, one per missing document
+ *     (electron/docsAutoQueue.ts);
+ *   - the fit-landing trigger queues a single `tailor_job_docs` row,
+ *     which generates both in one pass (electron/fitScorer.ts).
+ *
+ * `enqueue`'s duplicate guard keys on `(type, jobId, documentId,
+ * sectionName)`, so it can never see that these two are the same work: a
+ * `tailor_job_docs` row does not match a `generate_cv` row. Each
+ * direction therefore had to answer "is this job already covered?" for
+ * itself, and only the sweep→trigger direction had an answer at all:
+ * `jobCoveredByLiveTailor` stopped the sweep when a live tailor row
+ * existed, while nothing stopped the trigger when the sweep's rows
+ * existed. Proved end to end against the real store and the real
+ * processor: one job, 3 queue rows, 3 CVs and 3 cover letters, and every
+ * one of them billed. Both directions now ask this function, so they
+ * cannot drift apart the way they just did.
+ *
+ * What counts as covered:
+ *
+ *   - A row for THIS job only. Another job's row is another job's work.
+ *   - `pending` or `processing` — the states the processor works from.
+ *     A `failed` row is NOT in flight: the work has not happened, and
+ *     reviving that row is exactly what the sweep's revive branch is for.
+ *   - A row with NO `documentId`. A `generate_cv` that carries a
+ *     `documentId` is the review→regenerate loop rebuilding a document
+ *     that EXISTS (aiQueue.ts's `verify` case), not a first generation
+ *     of a missing one. Counting it would suppress the fresh generation
+ *     the caller is about to queue — and it does not cover anything
+ *     either: `tailorDocument` with a `document_id` replaces that row in
+ *     place, so a job whose CV was deleted while its regeneration row
+ *     was still queued would be left with no CV and nothing to produce
+ *     one. This is the same exclusion `sameWorkRows` makes in
+ *     docsAutoQueue.ts, for the same reason.
+ *   - A row whose type produces one of the requested document types, per
+ *     `DOC_PRODUCING_ROWS`. This is what makes the check per-document
+ *     rather than per-job: a live `generate_cv` row covers the CV and
+ *     nothing else, so it does not stop a caller that is about to
+ *     generate a cover letter.
+ *
+ * Deferral semantics — what the caller gets when this returns true.
+ *
+ * The caller does NOT get its work skipped: it gets it handed to
+ * whichever producer holds the live row, and the two producers are not
+ * equivalent, so the two cases are:
+ *
+ *   - Deferring to a `tailor_job_docs` row is total. That row generates
+ *     both documents, so the job gets exactly what the trigger would have
+ *     given it, from one row instead of the trigger's one row. Nothing
+ *     is left undone.
+ *   - Deferring to a single-unit row is total only for that unit. A live
+ *     `generate_cv` row will produce the CV and never a cover letter, so
+ *     the other document stays the backlog sweep's job — which is what
+ *     the sweep is for: it is armed at startup, after every scan, and on
+ *     the hourly cadence, and it asks about each missing unit separately,
+ *     gated by that unit's own toggle. A `tailor_job_docs` row covering
+ *     both types means neither unit is ever stranded by this.
+ *
+ * So: the trigger asks about BOTH types, because it produces both, and a
+ * partial overlap leaves the uncovered document to the sweep rather than
+ * to a second `tailor_job_docs` row that would duplicate the live one.
+ * Which also means the trigger's own switch checks stay load-bearing: if
+ * the uncovered document's toggle is off, the trigger was never allowed
+ * to produce it either, so a deferral can never override the user's
+ * settings.
+ */
+export function jobDocWorkInFlight(
+  queue: AIQueueItem[],
+  jobId: number,
+  docTypes: readonly Document['type'][]
+): boolean {
+  return queue.some((q) => {
+    if (q.jobId !== jobId) return false
+    if (q.status !== 'pending' && q.status !== 'processing') return false
+    if ((q.documentId ?? null) !== null) return false
+    const produced = DOC_PRODUCING_ROWS[q.type]
+    return produced !== undefined && produced.some((t) => docTypes.includes(t))
+  })
 }
