@@ -112,14 +112,20 @@ describe('maybeAutoEnqueueDocs against the real store', () => {
     expect(generationRows()).toHaveLength(1)
   })
 
-  it('still queues for a job whose own generation item has failed', () => {
-    // `failed` is not in flight; re-queueing it is the recovery path, and
-    // the guard has to agree with that rather than refuse forever.
+  it('revives a failed generation item in place rather than stacking a second row', () => {
+    // `failed` used to be outside enqueue's duplicate guard, on the
+    // reasoning that re-queueing it "is the recovery path" — so this
+    // case produced a second `tailor_job_docs` row for a job that
+    // already had one, which is the duplicate the panel was showing.
+    // The recovery is now a revive of the existing row.
     seed()
     const row = addAIQueueItem({ type: 'tailor_job_docs', jobId: seededJobId })
     row.status = 'failed'
-    expect(maybeAutoEnqueueDocs(seededJobId)).toBe(true)
-    expect(generationRows()).toHaveLength(2)
+    // Null means "not newly added", which is exactly what happened: no
+    // second row was created. The row is now runnable again.
+    expect(maybeAutoEnqueueDocs(seededJobId)).toBe(false)
+    expect(generationRows()).toHaveLength(1)
+    expect(generationRows()[0].status).toBe('pending')
   })
 
   it('does not confuse another job\'s generation item for this one', () => {

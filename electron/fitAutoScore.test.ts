@@ -57,7 +57,7 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     aggregator_jobicy_enabled: false, aggregator_himalayas_enabled: false,
     ats_boards: [], disabled_boards: [], auto_tailor_on_scan: false,
     auto_tailor_min_fit: 90, quick_apply_shortcut: null, statuses_recomputed: '',
-    statuses_manual_v2: '', queue_dedup_v1: '', queue_cleared_at: 0,
+    statuses_manual_v2: '', queue_dedup_v1: '', queue_dedup_v2: '', queue_cleared_at: 0,
     queue_cleared_max_job_id: 0, ...overrides
   }
 }

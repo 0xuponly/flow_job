@@ -296,6 +296,74 @@ describe('dedupeAIQueueItems (real store)', () => {
     expect(dedupeAIQueueItems().removed).toBe(0)
     expect(getAIQueue()).toEqual([])
   })
+
+  it('keeps the pending row over a failed one', () => {
+    // The duplicate class the v1 pass could not see: `enqueue` matched
+    // pending and processing only, so a failed row stayed put and the
+    // next enqueue for the same work added a second, visible, row. The
+    // one that can still run wins.
+    const a = addAIQueueItem({ type: 'verify', jobId: 1, documentId: 9 })
+    const b = addAIQueueItem({ type: 'verify', jobId: 1, documentId: 9 })
+    updateAIQueueItem(a.id, { status: 'failed', attempts: 5 })
+    expect(b.status).toBe('pending')
+    dedupeAIQueueItems()
+    const kept = getAIQueue().filter((q) => q.documentId === 9)
+    expect(kept).toHaveLength(1)
+    expect(kept[0].status).toBe('pending')
+  })
+
+  it('breaks a full tie on the lowest id, so the choice is deterministic', () => {
+    // The third key of the survivor rule, and the only one that was not
+    // pinned: without it the winner of an otherwise identical pair
+    // depended on sort stability.
+    const a = addAIQueueItem({ type: 'score_fit', jobId: 1 })
+    const b = addAIQueueItem({ type: 'score_fit', jobId: 1 })
+    updateAIQueueItem(b.id, { attempts: 2 })
+    updateAIQueueItem(b.id, { attempts: 0 })
+    dedupeAIQueueItems()
+    expect(getAIQueue().map((q) => q.id)).toEqual([a.id])
+  })
+
+  it('reconciles duplicates in a store the v1 pass already collapsed', () => {
+    // The user-visible duplicate: a store that has been running long
+    // enough to have been through the pending/processing repair went on
+    // collecting duplicates, because `failed` was still outside the
+    // guard. A v1 flag alone would skip this store forever, which is
+    // exactly why the second pass has its own gate.
+    updateSettings({ queue_dedup_v1: '1' })
+    addAIQueueItem({ type: 'verify', jobId: 1, documentId: 9 })
+    addAIQueueItem({ type: 'verify', jobId: 1, documentId: 9 })
+    addAIQueueItem({ type: 'score_fit', jobId: 1 })
+    addAIQueueItem({ type: 'score_fit', jobId: 1 })
+    expect(getAIQueue()).toHaveLength(4)
+
+    expect(dedupeAIQueueItems().removed).toBe(2)
+    expect(getAIQueue()).toHaveLength(2)
+    expect(getSettings().queue_dedup_v2).toBe('1')
+  })
+
+  it('runs only once under the second gate, so later legitimate rows survive', () => {
+    // The repair is one-shot in both runs: a duplicate that appears
+    // after it has run (only reachable by writing `ai_queue` directly)
+    // must not be collapsed out from under a running session.
+    addAIQueueItem({ type: 'score_fit', jobId: 1 })
+    dedupeAIQueueItems()
+    addAIQueueItem({ type: 'score_fit', jobId: 3 })
+    addAIQueueItem({ type: 'score_fit', jobId: 3 })
+    expect(dedupeAIQueueItems().removed).toBe(0)
+    // Both job-3 rows are still there: the gate held.
+    expect(getAIQueue()).toHaveLength(3)
+  })
+
+  it('records the first pass on a store that has never been through either', () => {
+    // A store written before either flag existed carries neither, so
+    // running the v2 pass records both — otherwise a future pass keyed
+    // on v1 would re-run on every startup for no reason.
+    expect(getSettings().queue_dedup_v1).toBe('')
+    dedupeAIQueueItems()
+    expect(getSettings().queue_dedup_v1).toBe('1')
+    expect(getSettings().queue_dedup_v2).toBe('1')
+  })
 })
 
 // The grouping key was a `|`-delimited concatenation

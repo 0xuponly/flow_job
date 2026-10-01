@@ -34,6 +34,9 @@ function backoffMs(item: AIQueueItem): number {
  *
  * Tie-break: ascending `id` (enqueue order), so a queue with equal fit
  * scores is processed deterministically across runs.
+ *
+ * A manual re-add promotes a row WITHIN its tier, never across it (see
+ * `promotedAt` on AIQueueItem and the boost comparison in pickOrder).
  */
 function priorityTier(type: AIQueueItem['type']): number {
   return type === 'score_fit' ? 0 : 1
@@ -89,6 +92,22 @@ function pickOrder(items: AIQueueItem[]): AIQueueItem[] {
   return [...items].sort((a, b) => {
     const tier = priorityTier(a.type) - priorityTier(b.type)
     if (tier !== 0) return tier
+    // Inside a tier, a manual re-add wins. This is the "bump it to the
+    // top" the user asked for, and it is deliberately scoped to the
+    // tier: `score_fit` is tier 0 and the project rule is that fit
+    // scoring outranks everything, so promoting a `verify` must not lift
+    // it past a queued `score_fit`. Within the tier the boost also beats
+    // the fit-score comparison below, because a user who just asked for
+    // this item is a stronger signal than a heuristic that was sampled
+    // when the item happened to be enqueued.
+    //
+    // Most recent promotion first: the newest request is the one the
+    // user is waiting on. Equal timestamps (two re-adds inside the same
+    // millisecond) fall through to the id tie-break, so the order stays
+    // deterministic rather than depending on sort stability.
+    const boostA = a.promotedAt ?? 0
+    const boostB = b.promotedAt ?? 0
+    if (boostA !== boostB) return boostB - boostA
     // Within a tier, higher fit first. A null score sorts last (the
     // job has not been scored yet, so it cannot be prioritised).
     const scoreA = fitOf(a.jobId)
@@ -110,7 +129,15 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
     // after this pass snapshotted it. Doing the LLM work anyway would
     // spend a request on a job the user just cancelled, and would let
     // the item enqueue its follow-up work back into the cleared queue.
-    if (!updateAIQueueItem(item.id, { status: 'processing' })) return
+    //
+    // `promotedAt: undefined` SPENDS a manual boost: this is the row
+    // being taken, so the "run this now" signal has been acted on. Left
+    // on the row it would pin the item above its tier siblings for good
+    // — including across the failures and auto-revivals that follow,
+    // which is not a thing the user asked for and is not one they could
+    // undo. Every pass goes through this write, so a boost cannot
+    // outlive the run that was meant to consume it.
+    if (!updateAIQueueItem(item.id, { status: 'processing', promotedAt: undefined })) return
 
     // One queue item is one operation and holds the AI slot for its
     // whole duration, so it cannot interleave with a direct renderer
@@ -497,7 +524,13 @@ function reviveInMemory(item: AIQueueItem): AIQueueItem {
 }
 
 /**
- * Put a failed (or otherwise stalled) item back in line for processing.
+ * The write that gives a row another run: `pending`, due now, a fresh
+ * attempt budget, no stale error.
+ *
+ * The single definition of a revive. `retryQueueItem` (the Retry button)
+ * and `enqueue`'s duplicate path both build their write from it, so a
+ * row revived by a re-add cannot drift from a row a user retried by
+ * hand — two copies of this is how they would.
  *
  * `attempts` MUST be reset alongside `status` / `nextRetryAt`. The
  * catch block in processItem gates its retry on `attempts < N`
@@ -511,16 +544,30 @@ function reviveInMemory(item: AIQueueItem): AIQueueItem {
  * `lastError` is cleared so the Queue panel stops showing a stale
  * failure for a task the user just asked to run again.
  *
- * Returns the queue in pick order so the caller can hand the refreshed
- * list straight back to the renderer.
+ * `autoRevives` is deliberately NOT touched. This is the user's own
+ * request for this work to run again, which is the same thing the Retry
+ * button does and sits outside the automatic-revival budget the
+ * processor charges itself (`AUTO_REVIVE_MAX`); charging it here would
+ * make a hand-triggered recovery stop working after a few automatic
+ * ones, and would diverge from what `retryQueueItem` has always done.
  */
-export function retryQueueItem(id: number): QueueItemView[] {
-  updateAIQueueItem(id, {
+function revivePatch(): Partial<AIQueueItem> {
+  return {
     status: 'pending',
     nextRetryAt: Date.now(),
     attempts: 0,
     lastError: undefined
-  })
+  }
+}
+
+/**
+ * Put a failed (or otherwise stalled) item back in line for processing.
+ *
+ * Returns the queue in pick order so the caller can hand the refreshed
+ * list straight back to the renderer.
+ */
+export function retryQueueItem(id: number): QueueItemView[] {
+  updateAIQueueItem(id, revivePatch())
   return listQueueInPickOrder()
 }
 
@@ -543,10 +590,32 @@ export function clearQueue(): { removed: number; queue: AIQueueItem[] } {
 }
 
 /**
- * Enqueue a task. If an identical item is already pending (same type +
- * jobId + documentId + sectionName), skip so repeated triggers (fit
- * lands, then a re-scan, then the 4h autoscore tick) do not stack
- * duplicate work.
+ * Enqueue a task. If an identical item is already queued — same
+ * (type, jobId, documentId, sectionName) in ANY status — this never
+ * adds a second row, because one piece of work is one row. Repeated
+ * triggers (fit lands, then a re-scan, then the 4h autoscore tick), the
+ * startup backlog, and a manual re-add all resolve to the same single
+ * row.
+ *
+ * On a hit the row is brought back to life rather than left alone:
+ * a `failed` row is revived in place (`revivePatch` — the same write
+ * the Retry button makes, so the two cannot drift), and a `manual`
+ * enqueue additionally promotes it. Both are only reachable when the
+ * work already has a row, so neither can invent one.
+ *
+ * `manual: true` is the caller's claim that a person asked for this
+ * (the direct Verify / Regenerate / Tailor / Quick Apply actions). It
+ * is what earns the promotion; automatic re-adds — the fit-landing
+ * trigger, the scan-time auto-tailor, the 4h re-seeder, the processor's
+ * own follow-up chaining — deliberately do not promote, or every
+ * background tick would reshuffle the queue under the user.
+ *
+ * The return value is unchanged and load-bearing: `null` means "not
+ * newly added" (it was already queued, revived, or promoted), a row
+ * means this call created it. `maybeAutoEnqueueDocs` answers "did
+ * generation get scheduled?" from it, so widening the guard did not
+ * change what any existing caller can conclude — a revived row still
+ * reports `null`, exactly as a suppressed duplicate always has.
  *
  * `documentId` / `sectionName` are compared with a null-normalising
  * helper: rows created before those fields existed store them as
@@ -570,24 +639,47 @@ export function clearQueue(): { removed: number; queue: AIQueueItem[] } {
  * rather than pre-check the queue; see `maybeAutoEnqueueDocs`, which
  * used to do exactly that and scanned twice per call.
  */
-export function enqueue(item: Omit<AIQueueItem, 'id' | 'createdAt' | 'nextRetryAt' | 'attempts' | 'status'>): AIQueueItem | null {
+export function enqueue(
+  item: Omit<AIQueueItem, 'id' | 'createdAt' | 'nextRetryAt' | 'attempts' | 'status' | 'promotedAt'>,
+  opts?: { manual?: boolean }
+): AIQueueItem | null {
   const norm = (v: number | string | undefined | null): number | string | null => v ?? null
-  // Matches PENDING AND PROCESSING. `processing` is the state the
-  // processor puts an item in before its LLM call, and it is a long
-  // window — a scan finishing, the startup backlog pass, or the
-  // fit-auto-score timer can all land inside it. Guarding on `pending`
-  // alone let every one of those add a second row for work already in
-  // flight, which is how the panel came to show three score_fit entries
-  // for one job. `failed` is deliberately NOT matched: that work is not
-  // in flight, and re-queueing it is the recovery path.
+  // Matches PENDING, PROCESSING AND FAILED.
+  //
+  // `processing` is the state the processor puts an item in before its
+  // LLM call, and it is a long window — a scan finishing, the startup
+  // backlog pass, or the fit-auto-score timer can all land inside it.
+  // Guarding on `pending` alone let every one of those add a second row
+  // for work already in flight, which is how the panel came to show
+  // three score_fit entries for one job.
+  //
+  // `failed` used to be excluded, on the reasoning that re-queueing it
+  // is "the recovery path". That is what the duplicate rows were: a
+  // failed row stayed AND the next enqueue for the same work added a
+  // second, both visible in the panel, for the recovery to be a no-op
+  // anyway — the two rows compete for the same 30s poll. Recovery is
+  // what the revive below does, and it does it on the row that is
+  // already there, which is the one carrying the failure history the
+  // user needs to see.
   const existing = getAIQueue().find(
     (q) =>
-      (q.status === 'pending' || q.status === 'processing') &&
       q.type === item.type &&
       q.jobId === item.jobId &&
       norm(q.documentId) === norm(item.documentId) &&
       norm(q.sectionName) === norm(item.sectionName)
   )
-  if (existing) return null
+  if (existing) {
+    // One write for the whole hit. A manual re-add of a failed row both
+    // revives it and promotes it, and `persistStore` is a full-store
+    // encrypt plus an atomic rename on every call — serialised, not
+    // coalesced — so two writes here would be two of those. An automatic
+    // enqueue that lands on a healthy row changes nothing at all, which
+    // is why the write is conditional on there being a patch.
+    const patch: Partial<AIQueueItem> = {}
+    if (existing.status === 'failed') Object.assign(patch, revivePatch())
+    if (opts?.manual) patch.promotedAt = Date.now()
+    if (Object.keys(patch).length > 0) updateAIQueueItem(existing.id, patch)
+    return null
+  }
   return addAIQueueItem(item)
 }

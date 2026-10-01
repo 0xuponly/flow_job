@@ -105,6 +105,11 @@ function defaultStore(): Store {
       statuses_recomputed: '',
       statuses_manual_v2: '',
       queue_dedup_v1: '',
+      // Second run of the same repair, for the duplicate class the v1
+      // guard could not see: `enqueue` did not match `failed` rows, so
+      // a store already collapsed under v1 went on collecting a second
+      // row for work it had a row for. See dedupeAIQueueItems.
+      queue_dedup_v2: '',
       // 0 = the user has never pressed "Clear queue". Any other value is
       // the epoch ms of the last clear, paired with the job-id watermark
       // that says which jobs it covered; both are the durable tombstone
@@ -2378,15 +2383,29 @@ export function updateAIQueueItem(id: number, updates: Partial<AIQueueItem>): bo
 /**
  * Collapse queue rows that describe the same piece of work.
  *
- * `enqueue()`'s duplicate guard only matched `pending`, so an enqueue
- * landing while an identical item was mid-`processing` created a second
- * row. Two creation paths (the startup backlog and the fit-auto-score
- * timer) plus the processor's own retry cycle produced three `score_fit`
- * rows for one job, which the Queue panel then showed verbatim.
+ * `enqueue()`'s duplicate guard used to match `pending` only, so an
+ * enqueue landing while an identical item was mid-`processing` created
+ * a second row. Two creation paths (the startup backlog and the
+ * fit-auto-score timer) plus the processor's own retry cycle produced
+ * three `score_fit` rows for one job, which the Queue panel then showed
+ * verbatim. Widening the guard to `processing` closed that one; a
+ * `failed` row was still outside it, because re-queueing failed work
+ * "is the recovery path" — so a failed row persisted AND the next
+ * enqueue for the same work added a second, and both were visible. That
+ * is the duplicate the user reported.
  *
- * The guard is widened to cover `processing`, so this cannot recur — but
+ * The guard is now widened to every status, so neither can recur — but
  * rows already written stay written. This is the one-shot repair for
- * them, gated on `queue_dedup_v1`.
+ * them, and it runs under `queue_dedup_v2` (the v1 flag, and the run it
+ * gated, were both about the `pending`/`processing` class alone).
+ *
+ * A NEW flag rather than a re-armed v1, for two reasons. It keeps the
+ * repair one-shot: v1 is the record that this store was collapsed, and
+ * resetting it would re-run a pass that has already done its job on
+ * every subsequent startup, forever. And it keeps the two runs
+ * distinguishable — a store that carries v2 has been through both, and
+ * the v2 pass is the one that had to deal with `failed` rows among the
+ * duplicates.
  *
  * The survivor is chosen to preserve the most work: the item furthest
  * along its retry budget wins, and `processing` beats `pending` beats
@@ -2403,7 +2422,7 @@ export function updateAIQueueItem(id: number, updates: Partial<AIQueueItem>): bo
  */
 export function dedupeAIQueueItems(): { removed: number } {
   const s = loadStore()
-  if (s.settings.queue_dedup_v1 === '1') return { removed: 0 }
+  if (s.settings.queue_dedup_v2 === '1') return { removed: 0 }
 
   const rank = (q: AIQueueItem): number =>
     q.status === 'processing' ? 2 : q.status === 'pending' ? 1 : 0
@@ -2455,7 +2474,11 @@ export function dedupeAIQueueItems(): { removed: number } {
   }
 
   s.ai_queue = keep
+  // Both flags, so a store that reaches this pass having never run it
+  // (a fresh install, or one written before either flag existed) records
+  // both runs having happened. v1 is otherwise superseded by v2.
   s.settings.queue_dedup_v1 = '1'
+  s.settings.queue_dedup_v2 = '1'
   persistStore()
   return { removed }
 }

@@ -381,7 +381,10 @@ function registerIpc(): void {
       return result
     } catch (err) {
       if (err instanceof RateLimitError) {
-        enqueue({ type: 'verify', jobId, documentId })
+        // `manual`: the user pressed Verify, so if this review is already
+        // queued it is revived (if it had failed) and moved to the top of
+        // its tier rather than being refused or duplicated.
+        enqueue({ type: 'verify', jobId, documentId }, { manual: true })
         return { queued: true }
       }
       throw err
@@ -392,7 +395,9 @@ function registerIpc(): void {
       return await withAiOperation(() => regenerateSection(documentId, sectionName, jobId, extraContext))
     } catch (err) {
       if (err instanceof RateLimitError) {
-        enqueue({ type: 'regenerate_section', jobId, documentId, sectionName, extraContext })
+        // `manual`: same rule — an already-queued regeneration for this
+        // section is revived and promoted, not queued twice.
+        enqueue({ type: 'regenerate_section', jobId, documentId, sectionName, extraContext }, { manual: true })
         return { queued: true }
       }
       throw err
@@ -565,7 +570,10 @@ function registerIpc(): void {
       return await withAiOperation(() => tailorDocument(request))
     } catch (err) {
       if (err instanceof RateLimitError) {
-        enqueue({ type: request.document_type === 'cv' ? 'generate_cv' : 'generate_cover_letter', jobId: request.job_id })
+        // `manual`: the user asked for this document, so a generation
+        // item that is already queued for it is revived and promoted to
+        // the top of its tier instead of being duplicated.
+        enqueue({ type: request.document_type === 'cv' ? 'generate_cv' : 'generate_cover_letter', jobId: request.job_id }, { manual: true })
         return { queued: true }
       }
       throw err
@@ -578,7 +586,10 @@ function registerIpc(): void {
   ipcMain.handle('queue:markResponse', (_e, jobId: number, responseAt?: number) =>
     db.markResponse(jobId, responseAt))
   ipcMain.handle('tailor:quickApply', (_e, jobId: number) => {
-    enqueue({ type: 'tailor_job_docs', jobId })
+    // `manual`: Quick Apply is a user action, so an already-queued
+    // generation item for this job is promoted to the top of its tier
+    // rather than stacked a second time.
+    enqueue({ type: 'tailor_job_docs', jobId }, { manual: true })
     return { queued: true }
   })
 
@@ -1174,8 +1185,10 @@ function registerIpc(): void {
 // harmless either way.
 function runDeferredStoreWork(): void {
   // Before anything reads or writes the queue. A one-shot repair for
-  // duplicate rows left by the old enqueue guard — it must run first so
-  // the backlog re-seed below does not race rows that are about to be
+  // duplicate rows left by the old enqueue guards — first the
+  // pending/processing class, now also the `failed` class (the second
+  // run is gated separately, see dedupeAIQueueItems). It must run first
+  // so the backlog re-seed below does not race rows that are about to be
   // collapsed, and so the processor never picks up a duplicate.
   try {
     const dedupe = db.dedupeAIQueueItems()
