@@ -1,4 +1,4 @@
-import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, clearAIQueue, getDocument, getJob, listJobDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
+import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, clearAIQueue, getDocument, getJob, getSettings, listJobDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
 import { log } from './logger'
 import { withAiOperation } from './ai'
 import { tailorDocument, regenerateSection, verifyDocumentContent, RateLimitError } from './ai'
@@ -565,6 +565,14 @@ function revivePatch(): Partial<AIQueueItem> {
  *
  * Returns the queue in pick order so the caller can hand the refreshed
  * list straight back to the renderer.
+ *
+ * The Queue panel's Retry button, so it is a MANUAL action and is
+ * deliberately not subject to the `auto_queue_*` switches — the same
+ * rule that keeps Generate working with CV auto-queueing off. It also
+ * never creates a row: a user cannot conjure work the app did not
+ * already decide to do, they can only re-run what it decided and that
+ * failed. Which is why it does not go through `enqueue` and so needs no
+ * gate of its own.
  */
 export function retryQueueItem(id: number): QueueItemView[] {
   updateAIQueueItem(id, revivePatch())
@@ -647,6 +655,15 @@ export function clearQueue(): { removed: number; queue: QueueItemView[] } {
  * change what any existing caller can conclude — a revived row still
  * reports `null`, exactly as a suppressed duplicate always has.
  *
+ * The five `auto_queue_*` settings (Settings > Auto-queue) are enforced
+ * HERE, centrally, rather than at each call site — see
+ * `autoQueueAllows`. Central is the only placement that holds: an
+ * automatic enqueue with its toggle off is refused no matter which
+ * module asked, so a path added later cannot quietly bypass the user's
+ * choice. `opts.manual` is what keeps that from being overreach —
+ * every manual entry point already passes it, so an explicit user
+ * action is queued whatever the toggles say.
+ *
  * `documentId` / `sectionName` are compared with a null-normalising
  * helper: rows created before those fields existed store them as
  * `null`, while a fresh `enqueue({...})` call simply omits them
@@ -669,10 +686,111 @@ export function clearQueue(): { removed: number; queue: QueueItemView[] } {
  * rather than pre-check the queue; see `maybeAutoEnqueueDocs`, which
  * used to do exactly that and scanned twice per call.
  */
+/**
+ * The `auto_queue_*` settings (Settings > Auto-queue), resolved for one
+ * enqueue.
+ *
+ * Placement is the point. These are read HERE, inside the one function
+ * every queue row goes through, rather than at the call sites, for two
+ * reasons:
+ *
+ *  1. It cannot be bypassed. There are five automatic producers of
+ *     work today (the fit-landing trigger in fitScorer, the scan-time
+ *     auto-tailor in jobSearch, the processor's own generation→review
+ *     chaining and its review→regenerate loop in this file, and the two
+ *     fit re-seeders in fitAutoScore) and more arrive with every feature
+ *     that queues work. A per-call-site check is a rule that only holds
+ *     for the callers that remembered it.
+ *  2. A refusal has to be uniform. If two callers disagreed about
+ *     whether a type was gated, "is this queued?" would have two
+ *     answers and no test could pin it down.
+ *
+ * What the settings do NOT do is stop the user. Every entry point a
+ * person triggers passes `{ manual: true }`, and that flag short-circuits
+ * this function before a single setting is read. The full inventory,
+ * which is what makes "manual" trustworthy rather than a convention:
+ *
+ *   main.ts  documents:verify            → verify            (Verify button)
+ *   main.ts  documents:regenerateSection → regenerate_section (Regenerate)
+ *   main.ts  ai:tailor                   → generate_cv /     (Tailor /
+ *                                          generate_cover_letter  Generate)
+ *   main.ts  tailor:quickApply           → tailor_job_docs   (Quick Apply)
+ *
+ * All four are rate-limit fallbacks: the handler tries the AI call
+ * directly first and only queues when the provider is throttling, at
+ * which point "a person asked for this" is the whole truth of the
+ * matter. There are no others — `rg -n "enqueue\(" electron src` is the
+ * check, and aiQueue.autoQueue.test.ts pins both halves of every row of
+ * that table.
+ *
+ * So turning CV auto-queueing off stops the app spending tokens on its
+ * own and does not stop the user pressing Generate.
+ *
+ * The mapping, by `item.type`:
+ *   score_fit           → auto_queue_fit
+ *   generate_cv         → auto_queue_cv
+ *   generate_cover_letter → auto_queue_cover_letter
+ *   verify              → auto_queue_verify_cv / auto_queue_verify_cover_letter,
+ *                         chosen by the document's type (a `verify` row
+ *                         carries a documentId; there is no document, so
+ *                         nothing is gated — the processor drops such a
+ *                         row anyway)
+ *   tailor_job_docs     → auto_queue_cv AND auto_queue_cover_letter.
+ *                         The item generates both documents in one pass
+ *                         (tailorJobDocsForJob), so it cannot honour one
+ *                         toggle without silently doing the other: with
+ *                         either off there is no truthful subset of it
+ *                         to run, and running it anyway would quietly
+ *                         generate the document the user just switched
+ *                         off. An explicit Tailor / Quick Apply still
+ *                         enqueues, because it is manual.
+ *   regenerate_section  → ungated. There is no automatic producer of it
+ *                         at all; the only path is the user's
+ *                         Regenerate button.
+ *
+ * "The setting is true" is written `!== false` on purpose. A store
+ * written before these keys existed, or a hand-edited one, must not have
+ * a feature disabled by a value nobody chose, and the normalisation in
+ * database.ts guarantees a boolean is there anyway — this is the
+ * belt-and-braces for the window between the two.
+ */
+function autoQueueAllows(item: { type: AIQueueItem['type']; documentId?: number }): boolean {
+  const s = getSettings()
+  switch (item.type) {
+    case 'score_fit':
+      return s.auto_queue_fit !== false
+    case 'generate_cv':
+      return s.auto_queue_cv !== false
+    case 'generate_cover_letter':
+      return s.auto_queue_cover_letter !== false
+    case 'tailor_job_docs':
+      return s.auto_queue_cv !== false && s.auto_queue_cover_letter !== false
+    case 'verify': {
+      const doc = item.documentId != null ? getDocument(item.documentId) : null
+      // No document to classify: let it through. The processor removes
+      // such a row on its next pass without calling the model, so
+      // nothing is spent either way — and guessing a doc type here
+      // would suppress work for the wrong document.
+      if (!doc) return true
+      return doc.type === 'cv'
+        ? s.auto_queue_verify_cv !== false
+        : s.auto_queue_verify_cover_letter !== false
+    }
+    default:
+      return true
+  }
+}
+
 export function enqueue(
   item: Omit<AIQueueItem, 'id' | 'createdAt' | 'nextRetryAt' | 'attempts' | 'status' | 'promotedAt'>,
   opts?: { manual?: boolean }
 ): AIQueueItem | null {
+  // The one line that makes "auto-queue off" mean "the app stops
+  // queueing on its own" rather than "the user loses the button":
+  // a manual enqueue is a person asking for this work and is never
+  // gated. Checked before the duplicate scan so a suppressed automatic
+  // enqueue cannot even revive a failed row.
+  if (!opts?.manual && !autoQueueAllows(item)) return null
   const norm = (v: number | string | undefined | null): number | string | null => v ?? null
   // Matches PENDING, PROCESSING AND FAILED.
   //

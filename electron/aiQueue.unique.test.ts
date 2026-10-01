@@ -20,6 +20,17 @@ const store = vi.hoisted(() => ({
 }))
 
 vi.mock('./database', () => ({
+  // The auto-queue gate in enqueue() reads these; all true = every
+  // automatic enqueue allowed, which is the shipped default. The
+  // switches themselves are covered against the real store in
+  // aiQueue.autoQueue.test.ts.
+  getSettings: () => ({
+    auto_queue_fit: true,
+    auto_queue_cv: true,
+    auto_queue_cover_letter: true,
+    auto_queue_verify_cv: true,
+    auto_queue_verify_cover_letter: true
+  }),
   getAIQueue: () => store.rows,
   addAIQueueItem: (item: Partial<AIQueueItem>) => {
     const row: AIQueueItem = {

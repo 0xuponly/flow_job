@@ -78,7 +78,15 @@ function needsFitScore(job: Job, cvVersion: number): boolean {
  * duplicates. Returns the number of jobs re-enqueued.
  */
 export function runFitAutoScoreBacklog(): number {
-  const cvVersion = getSettings().cv_version ?? 0
+  // `auto_queue_fit` off → this path queues nothing. Checked here as
+  // well as in the shared enqueue() because this function deliberately
+  // does NOT go through enqueue (see the note on addAIQueueItem below):
+  // it resurrects failed rows processor-style, so the central gate
+  // would never see it. That bypass is the reason this check has to be
+  // explicit — with the setting off the whole backlog is a no-op.
+  const settings = getSettings()
+  if (settings.auto_queue_fit === false) return 0
+  const cvVersion = settings.cv_version ?? 0
   const queue = getAIQueue()
   const now = Date.now()
   let enqueued = 0
@@ -164,6 +172,11 @@ export function runFitAutoScoreBacklog(): number {
  * drift apart on the suppression rule.
  */
 export function enqueueScoreFitBacklog(): number {
+  // `auto_queue_fit` off → nothing, on both callers (session start and
+  // after every scan). Checked here as well as in enqueue() so the
+  // rule reads the same in both re-seeders, and so the startup call
+  // site needs no knowledge of the setting at all.
+  if (getSettings().auto_queue_fit === false) return 0
   const cvVersion = getSettings().cv_version ?? 0
   let enqueued = 0
   for (const job of listJobs()) {

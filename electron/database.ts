@@ -123,6 +123,16 @@ function defaultStore(): Store {
       auto_tailor_min_fit: 90,
       // P1.7 (BRIEF5 §4): fit threshold for auto document generation.
       auto_doc_min_fit: 40,
+      // Auto-queue switches (Settings > Auto-queue). All true: this is
+      // the behaviour that shipped before the keys existed, so an
+      // upgrade changes nothing until the user turns one off. They gate
+      // AUTOMATIC enqueues only — a manual generate/verify/tailor still
+      // queues.
+      auto_queue_fit: true,
+      auto_queue_cv: true,
+      auto_queue_cover_letter: true,
+      auto_queue_verify_cv: true,
+      auto_queue_verify_cover_letter: true,
       quick_apply_shortcut: null
     },
     api_models: [],
@@ -308,6 +318,26 @@ export function loadStore(): Store {
       store.settings.auto_doc_min_fit = 40
     } else if (store.settings.auto_doc_min_fit > 0 && store.settings.auto_doc_min_fit <= 1) {
       store.settings.auto_doc_min_fit = Math.round(store.settings.auto_doc_min_fit * 100)
+    }
+    // Backfill the auto-queue switches. Same pattern as
+    // auto_tailor_on_scan above: anything that is not already a boolean
+    // becomes `true`.
+    //
+    // The direction matters more here than it does for the scan
+    // settings above. These keys gate automatic work, so "unreadable"
+    // has to mean ON: a store written before they existed, or one
+    // hand-edited to a string, must not come back up with a feature
+    // silently disabled. Only an explicit `false` turns one off.
+    for (const key of [
+      'auto_queue_fit',
+      'auto_queue_cv',
+      'auto_queue_cover_letter',
+      'auto_queue_verify_cv',
+      'auto_queue_verify_cover_letter'
+    ] as const) {
+      if (typeof store.settings[key] !== 'boolean') {
+        store.settings[key] = true
+      }
     }
     if (typeof store.settings.quick_apply_shortcut !== 'string' && store.settings.quick_apply_shortcut !== null) {
       store.settings.quick_apply_shortcut = null

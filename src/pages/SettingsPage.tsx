@@ -41,7 +41,37 @@ export const PRESETS: { name: string; desc: string; model: Omit<ApiModelConfig, 
   { name: 'Dots 3 Note Free', desc: 'via OpenRouter (needs API key)', model: { name: 'Dots 3 Note', base_url: 'https://openrouter.ai/api/v1', api_key: '', model: 'dots-studio/dots-3-note-preview:free' } }
 ]
 
-type Tab = 'profile' | 'models' | 'boards' | 'companies' | 'scan' | 'data'
+type Tab = 'profile' | 'models' | 'boards' | 'companies' | 'scan' | 'autoqueue' | 'data'
+
+const AUTO_QUEUE_KEYS = [
+  'auto_queue_fit',
+  'auto_queue_cv',
+  'auto_queue_cover_letter',
+  'auto_queue_verify_cv',
+  'auto_queue_verify_cover_letter'
+] as const
+
+type AutoQueueKey = (typeof AUTO_QUEUE_KEYS)[number]
+
+/**
+ * The Auto-queue tab's rows, in the order they are shown.
+ *
+ * One source of truth for both the labels and the keys they write, so a
+ * row cannot be added with a label and a mismatched setting. The keys
+ * are the contract with the main process (see the Settings type), so
+ * they are spelled here once and never reassembled at runtime.
+ *
+ * Labels say what the app does on its own, never how: no model names,
+ * thresholds, or internal terms — the question a row answers is whether
+ * the app spends tokens unattended, and that is all it needs to say.
+ */
+const AUTO_QUEUE_TOGGLES: { key: AutoQueueKey; label: string }[] = [
+  { key: 'auto_queue_fit', label: 'Auto-queue fit scoring' },
+  { key: 'auto_queue_cv', label: 'Auto-queue CV generation' },
+  { key: 'auto_queue_cover_letter', label: 'Auto-queue cover letter generation' },
+  { key: 'auto_queue_verify_cv', label: 'Auto-review CV' },
+  { key: 'auto_queue_verify_cover_letter', label: 'Auto-review cover letter' }
+]
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<Tab>('profile')
@@ -93,6 +123,13 @@ export default function SettingsPage() {
   const [boards, setBoards] = useState<{ name: string; useBrowser: boolean; enabled: boolean }[]>([])
   const [disabled, setDisabled] = useState<Set<string>>(new Set())
   const [boardsSaving, setBoardsSaving] = useState(false)
+  // Auto-queue tab. These persist on change rather than through the
+  // page-wide Save button (which only renders on Profile / Models /
+  // Scan): each switch is one independent decision, and a user who
+  // turned one off should not have to hunt for a Save button to make it
+  // take effect. `autoQueueSaving` dims the switches while a write is in
+  // flight so a double-click cannot race two writes of different keys.
+  const [autoQueueSaving, setAutoQueueSaving] = useState(false)
 
   // Lazy-load the boards list the first time the user opens the
   // Boards tab. Cheaper than loading on every Settings mount, and
@@ -173,6 +210,30 @@ export default function SettingsPage() {
     }
   }
 
+  // Flip one auto-queue switch. Optimistic, then persisted through the
+  // existing settings:update IPC — the same path the Boards tab uses
+  // for its toggles and the Save button uses for everything else, so
+  // there is one way a setting reaches the store.
+  //
+  // The response is authoritative for the row that was tapped: the main
+  // process normalises what it stores (a non-boolean becomes `true`),
+  // and echoing that back means the switch shows what is actually
+  // persisted rather than what was asked for.
+  async function toggleAutoQueue(key: AutoQueueKey, on: boolean) {
+    setAutoQueueSaving(true)
+    const previous = settings
+    setSettings((prev) => (prev ? { ...prev, [key]: on } : prev))
+    try {
+      const updated = await api.updateSettings({ [key]: on })
+      setSettings(updated)
+    } catch (err) {
+      notify(`Failed to save auto-queue switch: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+      if (previous) setSettings(previous)
+    } finally {
+      setAutoQueueSaving(false)
+    }
+  }
+
   const emptyModel = { name: '', base_url: 'https://api.deepseek.com', api_key: '', model: 'deepseek-chat' }
 
   const loadSettings = () => {
@@ -198,6 +259,14 @@ export default function SettingsPage() {
       // actually doing rather than a value that changes behaviour.
       if (typeof s.scan_min_match !== 'number' || !Number.isFinite(s.scan_min_match)) {
         s.scan_min_match = 0.25
+      }
+      // Older stores have no auto-queue keys. Default them ON, matching
+      // the main-process normalisation: these gate automatic work, so
+      // an absent or non-boolean value must never read as "off" here —
+      // a switch shown off that is not stored off would be a lie the
+      // user could act on. Only an explicit `false` shows a switch off.
+      for (const key of AUTO_QUEUE_KEYS) {
+        if (typeof s[key] !== 'boolean') s[key] = true
       }
       // Free public job APIs default to enabled for first-time users.
       // Existing users with `false` (explicitly disabled) keep their choice.
@@ -543,6 +612,7 @@ export default function SettingsPage() {
             { id: 'boards', label: 'Boards' },
             { id: 'companies', label: 'Companies' },
             { id: 'scan', label: 'Scan' },
+            { id: 'autoqueue', label: 'Auto-queue' },
             { id: 'data', label: 'Data' }
           ] as { id: Tab; label: string }[]).map((t) => (
             <button
@@ -744,6 +814,56 @@ export default function SettingsPage() {
               </span>
             </div>
           </div>
+        </>
+      )}
+
+      {tab === 'autoqueue' && (
+        <>
+          <div className="section-title">Auto-queue</div>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+            Choose what the app queues by itself. Turning a switch off stops that work being added on its own — it never stops you: generating, verifying, tailoring and Quick Apply still queue the moment you ask for them.
+          </p>
+
+          <div className="card" style={{ padding: 0 }}>
+            {AUTO_QUEUE_TOGGLES.map((row, i) => (
+              <div
+                key={row.key}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: 12,
+                  padding: '10px 16px',
+                  borderBottom: i < AUTO_QUEUE_TOGGLES.length - 1 ? '1px solid var(--border)' : 'none'
+                }}
+              >
+                <label
+                  htmlFor={row.key}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    fontSize: 13,
+                    cursor: 'pointer',
+                    minWidth: 0
+                  }}
+                >
+                  <input
+                    id={row.key}
+                    type="checkbox"
+                    checked={settings[row.key] !== false}
+                    disabled={autoQueueSaving}
+                    onChange={(e) => void toggleAutoQueue(row.key, e.target.checked)}
+                  />
+                  <span>{row.label}</span>
+                </label>
+              </div>
+            ))}
+          </div>
+
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
+            Switches save as soon as you change them. Work already in the queue keeps running — clearing it is a separate action in the Queue panel.
+          </p>
         </>
       )}
 

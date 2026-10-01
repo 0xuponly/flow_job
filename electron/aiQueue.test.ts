@@ -36,6 +36,17 @@ vi.mock('./ai', async (importOriginal) => {
 
 vi.mock('./database', () => ({
   getAIQueue: vi.fn(() => []),
+  // The auto-queue gate in enqueue() reads these. Every switch on here
+  // means "auto-queueing allowed", which is what the store's own default
+  // is; the switches' own behaviour is covered against the real store
+  // in aiQueue.autoQueue.test.ts.
+  getSettings: vi.fn(() => ({
+    auto_queue_fit: true,
+    auto_queue_cv: true,
+    auto_queue_cover_letter: true,
+    auto_queue_verify_cv: true,
+    auto_queue_verify_cover_letter: true
+  })),
   updateAIQueueItem: vi.fn(() => true),
   removeAIQueueItem: vi.fn(),
   addAIQueueItem: vi.fn(),
