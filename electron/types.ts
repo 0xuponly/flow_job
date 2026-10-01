@@ -524,6 +524,34 @@ export interface AIQueueItem {
   attempts: number
   lastError?: string
   /**
+   * Whether a person asked for this row, as opposed to the app deciding
+   * to on its own. Written by `enqueue` from the same `manual` flag that
+   * short-circuits the auto-queue gate, so it is the row's own record of
+   * its origin rather than something a caller has to remember to pass.
+   *
+   * It exists for the RESTART lanes, not for enqueue. `enqueue` already
+   * refuses to add an automatic row when its switch is off, so by the
+   * time a row exists the gate has already been applied once. But a row
+   * that was queued while the switch was ON, or queued by hand, outlives
+   * that decision: the processor can still wake it later (a `failed`
+   * row revived on the 4h cooldown, a row stranded `processing` by a
+   * crash and reclaimed at startup), and those wake-ups are new provider
+   * calls the user is not watching. This field is what lets those lanes
+   * ask "was this one the user's?" — a manual row keeps every
+   * restart behaviour it always had; an automatic one still consults the
+   * switch.
+   *
+   * ABSENT means AUTOMATIC, deliberately. Rows written by every version
+   * before this field existed carry no origin, and the conservative
+   * reading is the one that closes the spend leak: treating them as
+   * manual would hand every pre-existing row a free pass and undo the
+   * gate for the rows it was written to protect. The cost is real and
+   * intended — a row a user hand-queued before this field shipped stops
+   * auto-reviving once its switch is off. It stays visible in the Queue
+   * panel, and the ungated Retry button re-asks for it.
+   */
+  manualQueued?: boolean
+  /**
    * How many times this item has been revived from `failed` back to
    * `pending` by the automatic recovery loop. Absent on rows written
    * before auto-revival existed; treat undefined as 0 so legacy rows

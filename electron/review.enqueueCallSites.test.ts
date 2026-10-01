@@ -267,7 +267,7 @@ vi.mock('./ai', async (importOriginal) => {
 })
 
 import { addAIQueueItem, createJob, getAIQueue, reloadStore, updateAIQueueItem, updateSettings } from './database'
-import { processQueue, reclaimInterruptedItems } from './aiQueue'
+import { processQueue, reclaimInterruptedItems, enqueue } from './aiQueue'
 import { maybeAutoEnqueueDocs } from './fitScorer'
 import * as ai from './ai'
 import type { CreateJobInput } from './types'
@@ -586,8 +586,168 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
       // the switches directly or disagree with the one gate.
       expect(body, `${name} must not read the auto_queue_* settings`).not.toMatch(/auto_queue_|getSettings/)
       // ...and it does ask the gate. Without this the assertions above
-      // would also be satisfied by a lane that stayed ungated.
-      expect(body, `${name} must consult autoQueueAllows`).toContain('autoQueueAllows(')
+      // would also be satisfied by a lane that stayed ungated. The gate
+      // for a lane is `mayReviveUnattended`, the narrowed one: a manual
+      // row is exempt, so the lane cannot call `autoQueueAllows`
+      // directly or it would refuse the user's own work.
+      expect(body, `${name} must consult the restart gate`).toContain('mayReviveUnattended(')
+      expect(body, `${name} must not gate manual rows away`).not.toContain('autoQueueAllows(')
     }
+    // ...and the narrowed gate really is the switch, behind a manual-row
+    // exemption. Asserted here rather than in the behavioural cases below
+    // so a future edit that hardcodes `true` is caught too.
+    const gate = src.slice(
+      src.indexOf('function mayReviveUnattended('),
+      src.indexOf('export function enqueue(')
+    )
+    expect(gate).toContain('manualQueued === true')
+    expect(gate).toContain('autoQueueAllows(item)')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Part 3 — the origin is persisted, and the restart lanes gate on it.
+//
+// The rows in Part 2 all had no recorded origin, so they could only be
+// treated as AUTOMATIC. That closed the spend leak but it also refused to
+// revive a row the user had queued by hand, which is the promise the whole
+// gate exists to protect. `manualQueued` is the row's own record of its
+// origin, so a lane can now ask the narrower question: is this the user's
+// work, or is it ours to keep spending on?
+// ---------------------------------------------------------------------------
+
+describe('the restart lanes gate on the row\'s recorded origin', () => {
+  /** A `failed` row with a fresh revive budget, ready to be revived. */
+  function failedRow(origin?: { manualQueued?: boolean }): number {
+    const jobId = addJob()
+    const row = addAIQueueItem({ type: 'generate_cv', jobId, ...origin })
+    updateAIQueueItem(row.id, { status: 'failed', attempts: 5, autoRevives: 0, nextRetryAt: 0 })
+    return row.id
+  }
+
+  it('revives a MANUAL failed row with its switch OFF — the restored behaviour', async () => {
+    // The row a person queued, with auto_queue_cv off. Every version
+    // before the revival lanes were gated revived this; the gate must not
+    // have cost the user their own request. Same observable result as the
+    // switch-on control below, which is the point: for a manual row the
+    // switch is not consulted at all.
+    failedRow({ manualQueued: true })
+    updateSettings(ALL_OFF)
+
+    await processQueue()
+
+    const after = getAIQueue()[0]
+    expect(after.status).toBe('pending')
+    // Revived (0 -> 1), then the provider being down rescheduled it on the
+    // 4h cooldown (1 -> 2). Two is a row that really ran again.
+    expect(after.autoRevives).toBe(2)
+    expect(calls('tailorDocument')).toBe(1)
+  })
+
+  it('does NOT revive an AUTOMATIC failed row with its switch OFF, and spends no increment', async () => {
+    // The leak. `autoRevives` is asserted as well as `status` because a
+    // gate that revived and then re-parked would leave the row looking
+    // dormant while still having burned a full generation.
+    failedRow({ manualQueued: false })
+    updateSettings(ALL_OFF)
+
+    await processQueue()
+
+    const after = getAIQueue()[0]
+    expect(after.status).toBe('failed')
+    expect(after.autoRevives ?? 0).toBe(0)
+    expect(calls('tailorDocument')).toBe(0)
+  })
+
+  it('reclaims a MANUAL row stranded `processing` at a crash, switch OFF', () => {
+    // The one-shot lane. A user who queued by hand and then force-quit
+    // mid-generation gets that generation resumed, exactly as before.
+    const jobId = addJob()
+    const row = addAIQueueItem({ type: 'generate_cv', jobId, manualQueued: true })
+    updateAIQueueItem(row.id, { status: 'processing', nextRetryAt: 0 })
+    updateSettings(ALL_OFF)
+
+    reclaimInterruptedItems()
+
+    expect(getAIQueue()[0].status).toBe('pending')
+  })
+
+  it('does NOT reclaim an AUTOMATIC row stranded `processing`, switch OFF', () => {
+    const jobId = addJob()
+    const row = addAIQueueItem({ type: 'generate_cv', jobId, manualQueued: false })
+    updateAIQueueItem(row.id, { status: 'processing', nextRetryAt: 0 })
+    updateSettings(ALL_OFF)
+
+    reclaimInterruptedItems()
+
+    expect(getAIQueue()[0].status).toBe('processing')
+  })
+
+  it('treats a LEGACY row with no origin field as AUTOMATIC, so the leak stays closed', () => {
+    // The backward-compatibility case, and the one most likely to be got
+    // wrong. Rows written by every version before `manualQueued` existed
+    // carry no origin. Reading absent as MANUAL would hand every
+    // pre-existing row a free pass and undo the gate for exactly the rows
+    // it protects, so absent is AUTOMATIC.
+    //
+    // Constructed by writing the literal store shape rather than by
+    // omitting the field from a typed call, so this cannot silently start
+    // passing because the default changed.
+    const jobId = addJob()
+    const row = addAIQueueItem({ type: 'generate_cv', jobId })
+    expect(getAIQueue()[0].manualQueued).toBeUndefined()
+    updateAIQueueItem(row.id, { status: 'failed', attempts: 5, autoRevives: 0, nextRetryAt: 0 })
+    updateSettings(ALL_OFF)
+
+    return processQueue().then(() => {
+      expect(getAIQueue()[0].status).toBe('failed')
+      expect(getAIQueue()[0].autoRevives ?? 0).toBe(0)
+      expect(calls('tailorDocument')).toBe(0)
+    })
+  })
+
+  it('persists the origin: it survives a round trip through the store', async () => {
+    // Without this, every case above would pass on a flag held in memory
+    // and lost on restart — which is the bug the whole change exists to
+    // fix, since the reclaim lane runs at startup. Written through
+    // `enqueue` (the only producer of the field) and read back after a
+    // full reload from disk.
+    //
+    // `persistStore` chains its write onto a promise, so a reload in the
+    // same tick would read the file as it stood BEFORE the write; the
+    // macrotask yield is what a real process restart gives us for free
+    // (same shape as autoQueueSettings.test.ts's `simulateRestart`).
+    const jobId = addJob()
+    enqueue({ type: 'generate_cv', jobId }, { manual: true })
+    enqueue({ type: 'generate_cover_letter', jobId }, { manual: false })
+
+    // Drop the in-memory copy and read both rows back off disk.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    reloadStore()
+
+    const rows = getAIQueue()
+    const manualRow = rows.find((r) => r.type === 'generate_cv')!
+    const autoRow = rows.find((r) => r.type === 'generate_cover_letter')!
+    expect(manualRow.manualQueued, 'a manual enqueue keeps its origin').toBe(true)
+    // Written explicitly `false` rather than left absent, so a fresh
+    // automatic row is distinguishable from a pre-existing one.
+    expect(autoRow.manualQueued, 'an automatic row is recorded as automatic').toBe(false)
+  })
+
+  it('a MANUAL re-add of an existing automatic row makes it manual for the lanes', () => {
+    // The dedupe path. An automatic row already in the store, then the
+    // user asks for that same work: the existing row is revived rather
+    // than a second one added, so the origin has to travel on the patch —
+    // otherwise the user's request would be recorded as the app's.
+    const jobId = addJob()
+    const row = addAIQueueItem({ type: 'generate_cv', jobId, manualQueued: false })
+    updateAIQueueItem(row.id, { status: 'failed', attempts: 5, autoRevives: 0 })
+
+    enqueue({ type: 'generate_cv', jobId }, { manual: true })
+
+    const after = getAIQueue()
+    // Still one row: the dedupe guard is unchanged.
+    expect(after).toHaveLength(1)
+    expect(after[0].manualQueued).toBe(true)
   })
 })
