@@ -225,7 +225,16 @@ export default function SettingsPage() {
     setSettings((prev) => (prev ? { ...prev, [key]: on } : prev))
     try {
       const updated = await api.updateSettings({ [key]: on })
-      setSettings(updated)
+      // Merge ONLY the key that was tapped, exactly as the rollback path
+      // below restores the whole object it captured before the optimistic
+      // write. Taking the whole response would replace this shared state
+      // object with the STORE's copy and silently discard every unsaved
+      // batch edit the user has made on another tab (a raised
+      // scan_min_match, a typed profile name) — while that tab's dirty
+      // flag stays set, so pressing Save persists the old value and looks
+      // like it worked. The response stays authoritative for the one key
+      // it just wrote.
+      setSettings((prev) => (prev ? { ...prev, [key]: updated[key] } : updated))
     } catch (err) {
       notify(`Failed to save auto-queue switch: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
       if (previous) setSettings(previous)

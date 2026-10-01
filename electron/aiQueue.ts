@@ -357,8 +357,15 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
       // rejoins the queue on its own once the provider recovers.
       // Bounded by autoRevives so a genuinely unsatisfiable task
       // eventually stays failed instead of looping forever.
+      //
+      // Parked here means "rejoin the queue on its own later", which is
+      // the same unattended spend the revival lane now gates, so this
+      // parks the row on the 4h cooldown only while its switch allows
+      // it. Otherwise the row goes straight to terminal `failed` and the
+      // user sees a failure they can Retry, rather than one that keeps
+      // reappearing as new generations they did not ask for.
       const autoRevives = item.autoRevives ?? 0
-      if (autoRevives < AUTO_REVIVE_MAX) {
+      if (autoRevives < AUTO_REVIVE_MAX && autoQueueAllows(item)) {
         updateAIQueueItem(item.id, {
           status: 'pending',
           attempts: 0,
@@ -421,10 +428,19 @@ let clearEpoch = 0
  * `attempts` is deliberately preserved: the interrupted attempt was
  * still spent, and resetting it would hand a repeatedly-crashing task
  * an unlimited budget.
+ *
+ * Requeueing is starting the work again, so it takes the same gate as
+ * the revival lane above: a row whose switch is off is left exactly as
+ * the crash left it, `processing`, rather than resumed and paid for.
+ * That costs the user the automatic resume of a generation they had
+ * already asked for, and buys them what the switch says they bought —
+ * nothing of that kind runs without them. The row is not lost; it is
+ * visible in the panel, and Retry resumes it ungated.
  */
 export function reclaimInterruptedItems(): void {
   for (const item of getAIQueue()) {
     if (item.status !== 'processing') continue
+    if (!autoQueueAllows(item)) continue
     updateAIQueueItem(item.id, {
       status: 'pending',
       nextRetryAt: Date.now(),
@@ -476,12 +492,28 @@ async function runPass(): Promise<void> {
   // `failed` some other way (before auto-revival shipped, or via the
   // retry path) and have no revival scheduled — those are revived here
   // rather than left stranded.
+  //
+  // The revival lane consults the same gate `enqueue` does. `enqueue`
+  // only ever decides whether to ADD a row, so a row already in the
+  // store when the user flips a switch off used to be woken anyway —
+  // up to AUTO_REVIVE_MAX full generations, four hours apart,
+  // unattended, which is the exact leak `879e30d`'s commit message said
+  // gating `enqueue` alone would leave open and which `fitAutoScore.ts`
+  // already refuses for the identical 4h re-seed. Switch off now means
+  // no unattended spend on this lane either.
+  //
+  // The row does not record whether the user queued it by hand (`manual`
+  // short-circuits `autoQueueAllows` at enqueue time and is never
+  // persisted), so this gate cannot tell a hand-queued row from an
+  // automatic one and applies to both. That is deliberate: a failed row
+  // re-run is the app starting NEW work, not finishing work in progress,
+  // and the user still has the ungated Retry button to ask for it.
   const due: AIQueueItem[] = []
   for (const q of queue) {
     if (q.nextRetryAt > now) continue
     if (q.status === 'pending') {
       due.push(q)
-    } else if (q.status === 'failed' && revive(q)) {
+    } else if (q.status === 'failed' && revive(q) && autoQueueAllows(q)) {
       // Reviving writes the fresh counters to the row, then processes
       // the same shape in memory. Without the in-memory half the item
       // would be processed with its exhausted `attempts` and fail
@@ -694,11 +726,12 @@ export function clearQueue(): { removed: number; queue: QueueItemView[] } {
  * every queue row goes through, rather than at the call sites, for two
  * reasons:
  *
- *  1. It cannot be bypassed. There are five automatic producers of
+ *  1. It cannot be bypassed. There are six automatic producers of
  *     work today (the fit-landing trigger in fitScorer, the scan-time
  *     auto-tailor in jobSearch, the processor's own generation→review
- *     chaining and its review→regenerate loop in this file, and the two
- *     fit re-seeders in fitAutoScore) and more arrive with every feature
+ *     chaining, its review→regenerate loop and its
+ *     tailor_job_docs→review fan-out in this file, and the fit
+ *     re-seeder in fitAutoScore) and more arrive with every feature
  *     that queues work. A per-call-site check is a rule that only holds
  *     for the callers that remembered it.
  *  2. A refusal has to be uniform. If two callers disagreed about
@@ -722,6 +755,33 @@ export function clearQueue(): { removed: number; queue: QueueItemView[] } {
  * matter. There are no others — `rg -n "enqueue\(" electron src` is the
  * check, and aiQueue.autoQueue.test.ts pins both halves of every row of
  * that table.
+ *
+ * THAT INVENTORY IS NOT COMPLETE, and the gap is where a switch-off
+ * leaks. `rg "enqueue\("` counts call sites, so it is blind to the
+ * paths that queue work without calling `enqueue`. Four exist:
+ *
+ *   runPass's revival of a `failed` row   (the 4h auto-revive cooldown)
+ *   processItem's failure-path reschedule (the same cooldown, parked)
+ *   reclaimInterruptedItems at startup   (a row stranded `processing`)
+ *   fitAutoScore.runFitAutoScoreBacklog  (resurrects failed score_fit
+ *                                         rows itself, by design)
+ *
+ * All four consult this same rule rather than re-deriving it. The last
+ * was always gated, and that is precisely why the gap went unnoticed:
+ * an auditor grepping `enqueue(` finds one non-enqueue producer that
+ * takes the gate correctly and concludes the gate is complete. The
+ * first three read no setting at all, so a row already in the store
+ * when the user flipped a switch kept being woken — up to AUTO_REVIVE_MAX
+ * full generations, four hours apart, unattended. That is the leak
+ * `879e30d`'s own commit message warned that gating `enqueue` alone
+ * would leave open. When auditing this gate, grep for the revival and the
+ * resurrection, not just the enqueue.
+ *
+ * Note that a row does not record whether a person queued it: `manual`
+ * short-circuits this function at enqueue time and is never persisted,
+ * so these lanes cannot exempt a hand-queued row and do not try to. A
+ * failed row is re-run as NEW work, and the user re-asks for it with the
+ * ungated Retry button.
  *
  * So turning CV auto-queueing off stops the app spending tokens on its
  * own and does not stop the user pressing Generate.
