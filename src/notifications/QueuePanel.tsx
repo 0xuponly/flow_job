@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from 'react'
-import type { AIQueueItem } from '../types'
+import type { QueueItemView } from '../types'
 import { queueItemLabel, queueItemStatusText } from '../fitQueue'
 
 /**
@@ -14,16 +14,45 @@ import { queueItemLabel, queueItemStatusText } from '../fitQueue'
 const PAGE_SIZE = 60
 
 interface QueuePanelProps {
-  items: AIQueueItem[]
+  /**
+   * The enriched view, not `AIQueueItem[]`. The panel renders
+   * jobTitle / jobCompany for every row it is given, and the renderer
+   * swaps its whole list for whatever a queue call returns — so the
+   * shape it accepts is the shape the backend must send. Requiring the
+   * view type is what makes a handler answering with raw store rows a
+   * compile error instead of a panel that shows `Job <id>` on every row.
+   */
+  items: QueueItemView[]
   /** A queue call is in flight; suppress per-row actions to avoid double submits. */
   busyId: number | null
-  onRetry: (item: AIQueueItem) => void
-  onRemove: (item: AIQueueItem) => void
+  onRetry: (item: QueueItemView) => void
+  onRemove: (item: QueueItemView) => void
 }
 
-/** "Senior Engineer - Acme", falling back to the id for a deleted job. */
-function jobLine(item: AIQueueItem): string {
-  if (item.jobTitle && item.jobCompany) return `${item.jobTitle} - ${item.jobCompany}`
+/**
+ * "Senior Engineer - Acme", falling back to the id for a deleted job.
+ *
+ * Three cases, because a job row can be partially populated and the two
+ * failures are not the same:
+ *
+ * - both present: `Title - Company`, the normal case.
+ * - neither present: `Job <id>`. The job row is genuinely gone, and the
+ *   id is the only thing that still identifies the task.
+ * - exactly one present: the half we DO have plus the id. The job
+ *   exists but one field is missing or blank (a scraped posting with no
+ *   company, a title that was never filled in). Dropping to a bare
+ *   `Job <id>` there would throw away real information the main process
+ *   just sent us, which is the same user-visible loss as the bug this
+ *   whole change is about; keeping the id alongside keeps the row
+ *   unambiguous, since two different jobs can easily share a title. A
+ *   dangling `Title - ` is never rendered.
+ */
+function jobLine(item: QueueItemView): string {
+  const title = item.jobTitle?.trim() ?? ''
+  const company = item.jobCompany?.trim() ?? ''
+  if (title && company) return `${title} - ${company}`
+  if (title) return `${title} - Job ${item.jobId}`
+  if (company) return `${company} - Job ${item.jobId}`
   return `Job ${item.jobId}`
 }
 
@@ -37,13 +66,13 @@ function jobLine(item: AIQueueItem): string {
 const QueueRow = memo(function QueueRow({
   item, position, statusText, error, busy, onRetry, onRemove,
 }: {
-  item: AIQueueItem
+  item: QueueItemView
   position: number
   statusText: string
   error: string | null
   busy: boolean
-  onRetry: (item: AIQueueItem) => void
-  onRemove: (item: AIQueueItem) => void
+  onRetry: (item: QueueItemView) => void
+  onRemove: (item: QueueItemView) => void
 }) {
   return (
     <li

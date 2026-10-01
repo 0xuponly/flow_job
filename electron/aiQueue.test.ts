@@ -55,7 +55,7 @@ vi.mock('./database', () => ({
 
 import { AUTO_REGEN_MAX, AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX } from './types'
 import { withAiOperation } from './ai'
-import { processQueue, enqueue, listQueueInPickOrder, retryQueueItem, clearQueue, reclaimInterruptedItems, startQueueProcessor, stopQueueProcessor } from './aiQueue'
+import { processQueue, enqueue, listQueueInPickOrder, retryQueueItem, removeQueueItem, clearQueue, reclaimInterruptedItems, startQueueProcessor, stopQueueProcessor } from './aiQueue'
 import { scoreOneJobInBackground } from './fitScorer'
 import { tailorJobDocsForJob } from './tailorJobDocs'
 import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, clearAIQueue, getJob, getDocument, listJobDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
@@ -1190,6 +1190,99 @@ describe('clearQueue', () => {
   it('reports zero rather than failing on an already-empty queue', () => {
     mockedClear.mockReturnValue(0)
     expect(clearQueue().removed).toBe(0)
+  })
+
+  it('returns the ENRICHED view, so Clear cannot blank the labels', () => {
+    // The Clear button is the same trap one control over: the renderer
+    // replaces its whole list from `result.queue`, so raw rows here
+    // would strip jobTitle / jobCompany from every row exactly as a
+    // remove did. The old annotation said `AIQueueItem[]` and so
+    // advertised the raw shape while the body returned the view — these
+    // assertions are what make the annotation and the body agree.
+    mockedClear.mockReturnValue(0)
+    mockedGetQueue.mockReturnValue([queueItem({ id: 1, jobId: 7 })])
+    mockedGetJob.mockImplementation(
+      (id: number) => ({ id, score: 0.5, title: `Engineer ${id}`, company: `Acme ${id}` }) as Job
+    )
+    const [row] = clearQueue().queue
+    expect(row.jobTitle).toBe('Engineer 7')
+    expect(row.jobCompany).toBe('Acme 7')
+  })
+
+  it('returns null display fields for a job deleted before the clear', () => {
+    mockedClear.mockReturnValue(0)
+    mockedGetQueue.mockReturnValue([queueItem({ id: 1, jobId: 7 })])
+    mockedGetJob.mockReturnValue(undefined)
+    const [row] = clearQueue().queue
+    expect(row.jobTitle).toBeNull()
+    expect(row.jobCompany).toBeNull()
+  })
+})
+
+// `aiQueue:remove` is where the bug actually lived: it answered with
+// `db.getAIQueue()` (raw rows, no jobTitle / jobCompany) while list and
+// retry answered with the enriched view. The renderer swaps its entire
+// list for whatever a call returns, and `jobLine()` falls back to
+// `Job <id>` for a row missing the display fields — so removing ONE task
+// renamed EVERY other row. `removeQueueItem` exists so that path cannot
+// answer with a different shape than its siblings.
+describe('removeQueueItem', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockedGetQueue.mockReturnValue([])
+    mockedGetJob.mockImplementation(
+      (id: number) => ({ id, score: 0.5, title: `Engineer ${id}`, company: `Acme ${id}` }) as Job
+    )
+  })
+
+  it('delegates the single-row delete to the store', () => {
+    mockedGetQueue.mockReturnValue([queueItem({ id: 1 }), queueItem({ id: 2 })])
+    removeQueueItem(1)
+    expect(mockedRemove).toHaveBeenCalledTimes(1)
+    expect(mockedRemove).toHaveBeenCalledWith(1)
+  })
+
+  /**
+   * The store model the real one has: `removeAIQueueItem` filters the
+   * row out, and the next `getAIQueue()` no longer sees it. Without
+   * this the returned list still contains the deleted row and these
+   * cases would be asserting on a queue that was never actually pruned.
+   */
+  function storeWith(rows: AIQueueItem[]): void {
+    mockedGetQueue.mockImplementation(() => rows.filter((q) => !mockedRemove.mock.calls.some(([id]) => id === q.id)))
+  }
+
+  it('returns the remaining rows with their job fields attached', () => {
+    // The rows the user did NOT touch are the ones that lost their
+    // labels, so they are the ones worth asserting on.
+    storeWith([queueItem({ id: 1, jobId: 7 }), queueItem({ id: 2, jobId: 8 })])
+    const rows = removeQueueItem(1)
+    expect(rows.map((r) => r.id)).toEqual([2])
+    expect(rows.map((r) => r.jobTitle)).toEqual(['Engineer 8'])
+    expect(rows.map((r) => r.jobCompany)).toEqual(['Acme 8'])
+  })
+
+  it('returns the queue in pick order, like list and retry do', () => {
+    storeWith([
+      queueItem({ id: 2, type: 'verify', jobId: 2 }),
+      queueItem({ id: 1, type: 'score_fit', jobId: 1 })
+    ])
+    expect(removeQueueItem(99).map((r) => r.id)).toEqual([1, 2])
+  })
+
+  it('leaves the display fields null for a deleted job', () => {
+    storeWith([queueItem({ id: 1, jobId: 7 })])
+    mockedGetJob.mockReturnValue(undefined)
+    const [row] = removeQueueItem(99)
+    expect(row.jobTitle).toBeNull()
+    expect(row.jobCompany).toBeNull()
+  })
+
+  it('answers with the same keys listQueueInPickOrder does', () => {
+    storeWith([queueItem({ id: 1, jobId: 7 }), queueItem({ id: 2, jobId: 8 })])
+    const fromList = listQueueInPickOrder()[0]
+    const fromRemove = removeQueueItem(2)[0]
+    expect(Object.keys(fromRemove).sort()).toEqual(Object.keys(fromList).sort())
   })
 })
 

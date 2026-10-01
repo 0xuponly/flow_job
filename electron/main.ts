@@ -52,7 +52,7 @@ function stripHmac(manifest: Record<string, unknown>): Record<string, unknown> {
   return manifest
 }
 import { formatLocation } from './utils'
-import { startQueueProcessor, stopQueueProcessor, enqueue, listQueueInPickOrder, retryQueueItem, clearQueue } from './aiQueue'
+import { startQueueProcessor, stopQueueProcessor, enqueue, listQueueInPickOrder, retryQueueItem, removeQueueItem, clearQueue } from './aiQueue'
 import { scheduleNextAutoScan, cancelAutoScan, markScanStarted, markScanCompleted, restartAutoScanTimer } from './autoScan'
 import { scheduleNextFitAutoScore, restartFitAutoScoreTimer, enqueueScoreFitBacklog } from './fitAutoScore'
 import {
@@ -132,6 +132,7 @@ import type {
   Job,
   JobStatus,
   NotificationSource,
+  QueueItemView,
   ScanFilters,
   ScanResult,
   Settings,
@@ -1051,7 +1052,7 @@ function registerIpc(): void {
   // Returns the queue in pick order (score_fit first, then fit DESC)
   // rather than raw store order, so the renderer's Queue panel shows
   // the order the processor will actually use.
-  ipcMain.handle('aiQueue:list', () => listQueueInPickOrder())
+  ipcMain.handle('aiQueue:list', (): QueueItemView[] => listQueueInPickOrder())
 
   ipcMain.handle('boards:list', () => {
     // Per-board enabled flag, sourced from settings.disabled_boards.
@@ -1065,13 +1066,20 @@ function registerIpc(): void {
   })
   ipcMain.handle('boards:health', () => db.getBoardHealth())
   ipcMain.handle('boards:scanEstimate', (_e, boardNames: string[]) => computeScanEstimate(boardNames))
-  ipcMain.handle('aiQueue:retry', (_e, id: number) => retryQueueItem(id))
-  ipcMain.handle('aiQueue:remove', (_e, id: number) => {
-    db.removeAIQueueItem(id)
-    return db.getAIQueue()
-  })
+  ipcMain.handle('aiQueue:retry', (_e, id: number): QueueItemView[] => retryQueueItem(id))
+  // Returns the enriched pick-order view, not `db.getAIQueue()`. Every
+  // queue-returning handler below answers with the SAME shape: raw rows
+  // carry no jobTitle / jobCompany, and the Queue panel falls through to
+  // its `Job <id>` fallback for a row missing them. Since the renderer
+  // replaces its whole list with the response, one handler returning raw
+  // rows blanked the title on every OTHER row too — deleting an
+  // unrelated task silently renamed all of them to `Job <id>`. The
+  // annotations below are the point: `QueueItemView[]` is not satisfied
+  // by `AIQueueItem[]`, so a handler that returns the raw shape is a
+  // compile error rather than a UI regression.
+  ipcMain.handle('aiQueue:remove', (_e, id: number): QueueItemView[] => removeQueueItem(id))
   // Irreversible. The renderer confirms with the user before calling.
-  ipcMain.handle('aiQueue:clear', () => clearQueue())
+  ipcMain.handle('aiQueue:clear', (): { removed: number; queue: QueueItemView[] } => clearQueue())
 
   ipcMain.handle('shell:openExternal', (_e, url: string) => {
     if (typeof url !== 'string') return

@@ -1,6 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
-  AIQueueItem,
   ApiModelConfig,
   Application,
   CreateJobInput,
@@ -13,6 +12,7 @@ import type {
   KeywordResult,
   NotificationRow,
   NotificationSource,
+  QueueItemView,
   ScanFilters,
   ScanResult,
   ScanStatus,
@@ -90,12 +90,12 @@ export interface Api {
   clearSeenUrls: () => Promise<void>
   clearAllData: () => Promise<void>
   retrofitLocations: () => Promise<{ updated: number; total: number }>
-  listAIQueue: () => Promise<AIQueueItem[]>
+  listAIQueue: () => Promise<QueueItemView[]>
   listBoards: () => Promise<{ name: string; useBrowser: boolean; enabled: boolean }[]>
   getBoardHealth: () => Promise<Record<string, number[]>>
-  retryAIQueueItem: (id: number) => Promise<AIQueueItem[]>
-  removeAIQueueItem: (id: number) => Promise<AIQueueItem[]>
-  clearAIQueue: () => Promise<{ removed: number; queue: AIQueueItem[] }>
+  retryAIQueueItem: (id: number) => Promise<QueueItemView[]>
+  removeAIQueueItem: (id: number) => Promise<QueueItemView[]>
+  clearAIQueue: () => Promise<{ removed: number; queue: QueueItemView[] }>
   openExternal: (url: string) => Promise<void>
   getSecurityStatus: () => Promise<{ mode: 'sealed' | 'plaintext-fallback' | 'uninitialized' }>
   listBlacklistedCompanies: () => Promise<string[]>
