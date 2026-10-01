@@ -1,9 +1,15 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import QueuePanel from './QueuePanel'
-import type { AIQueueItem } from '../types'
+import type { QueueItemView } from '../types'
 
-function item(overrides: Partial<AIQueueItem> = {}): AIQueueItem {
+/**
+ * A row as the backend now sends it: the enriched view, with both
+ * display fields present. Building these through `QueueItemView` is
+ * deliberate — the panel accepts only the view, so a fixture that
+ * quietly dropped `jobTitle` would not compile.
+ */
+function item(overrides: Partial<QueueItemView> = {}): QueueItemView {
   return {
     id: 1,
     type: 'verify',
@@ -18,11 +24,11 @@ function item(overrides: Partial<AIQueueItem> = {}): AIQueueItem {
   }
 }
 
-function items(n: number): AIQueueItem[] {
+function items(n: number): QueueItemView[] {
   return Array.from({ length: n }, (_, i) => item({ id: i + 1, jobId: i + 1 }))
 }
 
-function renderPanel(rows: AIQueueItem[]) {
+function renderPanel(rows: QueueItemView[]) {
   return render(
     <QueuePanel
       items={rows}
@@ -179,5 +185,63 @@ describe('QueuePanel shrink control', () => {
     )
     expect(screen.getAllByTestId('queue-task')).toHaveLength(150)
     expect(screen.getByText('150.')).toBeInTheDocument()
+  })
+})
+
+/**
+ * `jobLine()` renders one of three shapes, and the distinction between
+ * them is the whole reason the backend has to send the enriched view:
+ * "Title - Company" for a complete job, the surviving half plus the id
+ * for a partially populated one, and `Job <id>` for a job that is gone.
+ *
+ * The middle case used to collapse into the last one, so a job with a
+ * title but no company read as if the job did not exist — the same
+ * visible loss as the raw-row bug, one level down. These are the
+ * panel-level cases; electron/queueHandlerShape.test.tsx covers the
+ * end-to-end path where a remove handed the panel raw rows.
+ */
+describe('QueuePanel job labelling', () => {
+  function labelFor(overrides: Partial<QueueItemView>): string {
+    // `cleanup` explicitly: several cases assert more than one label, and
+    // RTL only auto-cleans between tests, so the second render would find
+    // the first render's rows still mounted.
+    const { unmount } = renderPanel([item(overrides)])
+    const text = screen.getByTestId('queue-task-job').textContent ?? ''
+    unmount()
+    return text
+  }
+
+  it('joins a complete job as "Title - Company"', () => {
+    expect(labelFor({ jobTitle: 'Junior Trader', jobCompany: 'Kairon Labs' }))
+      .toBe('Junior Trader - Kairon Labs')
+  })
+
+  it('falls back to the id when the job has been deleted', () => {
+    expect(labelFor({ jobTitle: null, jobCompany: null })).toBe('Job 1')
+  })
+
+  it('treats blank strings as absent, like null', () => {
+    // A scraped posting can carry an empty company rather than a null
+    // one. Rendering `Junior Trader - ` or ` - Kairon Labs` would be
+    // worse than naming the id.
+    expect(labelFor({ jobTitle: 'Junior Trader', jobCompany: '' }))
+      .toBe('Junior Trader - Job 1')
+    expect(labelFor({ jobTitle: '', jobCompany: 'Kairon Labs' }))
+      .toBe('Kairon Labs - Job 1')
+    expect(labelFor({ jobTitle: '', jobCompany: '' })).toBe('Job 1')
+  })
+
+  it('trims whitespace-only fields instead of rendering a dangling separator', () => {
+    expect(labelFor({ jobTitle: 'Junior Trader', jobCompany: '   ' }))
+      .toBe('Junior Trader - Job 1')
+    expect(labelFor({ jobTitle: '  ', jobCompany: 'Kairon Labs' }))
+      .toBe('Kairon Labs - Job 1')
+  })
+
+  it('keeps the half it has alongside the id, so the row stays identifiable', () => {
+    // Two queued jobs can easily share a title; the id is what tells the
+    // rows apart when the label can only be half-resolved.
+    expect(labelFor({ jobTitle: 'Junior Trader', jobCompany: null }))
+      .toBe('Junior Trader - Job 1')
   })
 })

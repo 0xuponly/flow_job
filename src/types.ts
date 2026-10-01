@@ -326,16 +326,21 @@ export const AUTO_REGEN_MAX = 5
 
 export type AIQueueItemStatus = 'pending' | 'processing' | 'failed'
 
+/**
+ * A stored AI queue row, exactly as the main process persists it.
+ *
+ * Deliberately does NOT carry `jobTitle` / `jobCompany`. It used to
+ * declare them optional, which made a raw row satisfy the renderer's
+ * contract for a queue row and let a handler answer with store rows
+ * while the types still agreed: the panel's `jobLine()` falls through to
+ * its `Job <id>` fallback for a row without them, so the moment ONE
+ * queue-returning IPC returned raw rows, every row's label became
+ * `Job <id>` at once. The display fields are a view, not state — a job
+ * can be renamed or deleted at any moment, so they are resolved per
+ * list. Use `QueueItemView` for anything the UI renders.
+ */
 export interface AIQueueItem {
   id: number
-  /**
-   * Job title/company, resolved by the main process at list time rather
-   * than stored: a job can be renamed or deleted at any moment, so
-   * persisting these onto the queue row would leave the panel showing
-   * stale text. Null once the job is gone.
-   */
-  jobTitle?: string | null
-  jobCompany?: string | null
   type: AIQueueItemType
   jobId: number
   documentId?: number
@@ -356,6 +361,26 @@ export interface AIQueueItem {
   promotedAt?: number
   createdAt: number
   nextRetryAt: number
+}
+
+/**
+ * A queue row as the Queue panel consumes it: the stored row plus the
+ * job's title and company, resolved by the main process at list time.
+ *
+ * Mirrors `QueueItemView` in electron/types.ts. The two fields are
+ * REQUIRED (and nullable) rather than optional, which is the whole
+ * point: `AIQueueItem` is not assignable to this, so an IPC handler
+ * that returns raw store rows no longer type-checks and cannot be
+ * shipped as a silent one-row-rename-everything bug. Every
+ * queue-returning IPC (`aiQueue:list`, `retry`, `remove`, `clear`) is
+ * annotated to return this view.
+ *
+ * Null in both positions means the job is gone; that is the only case
+ * the panel's `Job <id>` fallback is for.
+ */
+export type QueueItemView = AIQueueItem & {
+  jobTitle: string | null
+  jobCompany: string | null
 }
 
 export const STATUS_COLORS: Record<JobStatus, string> = {

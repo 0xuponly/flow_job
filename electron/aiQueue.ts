@@ -572,6 +572,28 @@ export function retryQueueItem(id: number): QueueItemView[] {
 }
 
 /**
+ * Drop one queued task by id and hand back the refreshed queue.
+ *
+ * Additive sibling to `retryQueueItem`: it exists so that every
+ * queue-mutating entry point returns the SAME shape
+ * (`listQueueInPickOrder()`, enriched and in pick order). `remove`
+ * used to answer with `db.getAIQueue()` — raw rows, no `jobTitle` /
+ * `jobCompany` — while `list` and `retry` answered with the enriched
+ * view. The renderer stored whichever it was given, so removing one row
+ * silently dropped the title off every OTHER row at the same instant:
+ * `jobLine()` in the Queue panel falls through to its `Job <id>`
+ * fallback for each of them. The per-row delete is not what changed the
+ * other rows' labels; the response shape was.
+ *
+ * Returns the queue AFTER the removal, so the caller can set state from
+ * it without a second round trip.
+ */
+export function removeQueueItem(id: number): QueueItemView[] {
+  removeAIQueueItem(id)
+  return listQueueInPickOrder()
+}
+
+/**
  * Drop every queued task, whatever its status.
  *
  * Returns how many were removed so the caller can report it, and the
@@ -582,8 +604,16 @@ export function retryQueueItem(id: number): QueueItemView[] {
  * the processor is currently working on are not interrupted; they
  * finish and then find their row already gone, which is preferable to
  * discarding an LLM call that has already been paid for.
+ *
+ * The `queue` field is typed `QueueItemView[]`, not `AIQueueItem[]`,
+ * because that is what the body has always returned (`listQueueInPickOrder()`).
+ * The narrower annotation was a lie in the one direction that mattered:
+ * it declared the Clear path's response to be the raw row shape, so a
+ * caller (and the compiler) could not tell it apart from the buggy
+ * `aiQueue:remove`, and nothing stopped the Clear button from being
+ * wired to raw rows later. Annotations are not documentation.
  */
-export function clearQueue(): { removed: number; queue: AIQueueItem[] } {
+export function clearQueue(): { removed: number; queue: QueueItemView[] } {
   clearEpoch++
   const removed = clearAIQueue()
   return { removed, queue: listQueueInPickOrder() }

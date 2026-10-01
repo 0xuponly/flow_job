@@ -1,6 +1,5 @@
 import type {
   ApiModelConfig,
-  AIQueueItem,
   Application,
   CreateJobInput,
   DashboardStats,
@@ -13,6 +12,7 @@ import type {
   KeywordResult,
   NotificationRow,
   NotificationSource,
+  QueueItemView,
   ScanFilters,
   ScanResult,
   ScanStatus,
@@ -92,12 +92,19 @@ export interface Api {
   clearAllData: () => Promise<void>
   openExternal: (url: string) => Promise<void>
   getSecurityStatus: () => Promise<{ mode: 'sealed' | 'plaintext-fallback' | 'uninitialized' }>
-  listAIQueue: () => Promise<AIQueueItem[]>
+// Every queue-returning call resolves to `QueueItemView[]`, the
+  // enriched pick-order view. It is a view type rather than
+  // `AIQueueItem[]` because the panel renders jobTitle / jobCompany from
+  // every row it is handed, and because the renderer replaces its entire
+  // list with each response: a handler that answered with raw store rows
+  // blanked the title on all the OTHER rows. Typing the returns as the
+  // view makes that shape a compile error instead.
+  listAIQueue: () => Promise<QueueItemView[]>
   listBoards: () => Promise<{ name: string; useBrowser: boolean; enabled: boolean }[]>
   getBoardHealth: () => Promise<Record<string, number[]>>
-  retryAIQueueItem: (id: number) => Promise<AIQueueItem[]>
-  removeAIQueueItem: (id: number) => Promise<AIQueueItem[]>
-  clearAIQueue: () => Promise<{ removed: number; queue: AIQueueItem[] }>
+  retryAIQueueItem: (id: number) => Promise<QueueItemView[]>
+  removeAIQueueItem: (id: number) => Promise<QueueItemView[]>
+  clearAIQueue: () => Promise<{ removed: number; queue: QueueItemView[] }>
   listBlacklistedCompanies: () => Promise<string[]>
   addBlacklistedCompany: (name: string) => Promise<string[]>
   removeBlacklistedCompany: (name: string) => Promise<string[]>

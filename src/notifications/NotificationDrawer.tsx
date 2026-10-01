@@ -4,7 +4,7 @@ import { useNotifications } from './NotificationsProvider'
 import QueuePanel from './QueuePanel'
 import { notify } from '../components/Notifications'
 import { api } from '../api'
-import type { AIQueueItem, NotificationRow } from '../types'
+import type { NotificationRow, QueueItemView } from '../types'
 
 function formatTime(ts: number): string {
   const d = new Date(ts)
@@ -65,7 +65,7 @@ export default function NotificationDrawer() {
   const { list, isOpen, close, dismiss, dismissAll } = useNotifications()
   const [mounted, setMounted] = useState(false)
   const [panel, setPanel] = useState<Panel>('notifications')
-  const [queue, setQueue] = useState<AIQueueItem[]>([])
+  const [queue, setQueue] = useState<QueueItemView[]>([])
   const [busyId, setBusyId] = useState<number | null>(null)
   const [clearing, setClearing] = useState(false)
 
@@ -101,7 +101,7 @@ export default function NotificationDrawer() {
   // them would make a transient IPC failure look like the queue
   // drained itself.
   const runQueueAction = useCallback(
-    async (fn: (id: number) => Promise<AIQueueItem[]>, id: number) => {
+    async (fn: (id: number) => Promise<QueueItemView[]>, id: number) => {
       setBusyId(id)
       try {
         const result = await fn(id)
