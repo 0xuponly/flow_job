@@ -89,7 +89,11 @@ function defaultStore(): Store {
       // value the hardcoded HEURISTIC_FLOOR used before the setting
       // existed, so upgrading changes nothing until the user moves it.
       scan_min_match: 0.25,
-      fit_autoscore_interval_minutes: 240,
+      // Hourly. This is the value a NEW store gets, and the one the
+      // normaliser below rewrites a missing/invalid value to — so both
+      // have to say 60, or the fallback in fitAutoScore.ts is dead code
+      // and every user silently keeps the old 4h cadence.
+      fit_autoscore_interval_minutes: 60,
       locations_normalized: '',
       locations_normalized_v2: '',
       locations_normalized_v3: '',
@@ -298,7 +302,7 @@ export function loadStore(): Store {
       store.settings.scan_min_match = Math.min(1, Math.max(0, store.settings.scan_min_match))
     }
     if (typeof store.settings.fit_autoscore_interval_minutes !== 'number' || store.settings.fit_autoscore_interval_minutes <= 0) {
-      store.settings.fit_autoscore_interval_minutes = 240
+      store.settings.fit_autoscore_interval_minutes = 60
     }
     if (typeof store.settings.auto_tailor_on_scan !== 'boolean') {
       store.settings.auto_tailor_on_scan = false
@@ -1322,6 +1326,11 @@ export function bumpDocumentAutoRegenAttempts(id: number): number | null {
 //   - Jobs whose status was set explicitly by the user carry
 //     manual_status=1 and are skipped by recompute entirely, so even
 //     sourced/reviewing stick once the user chose them.
+//   - "Has a CV" / "has a cover letter" means GENERATED for this job. The
+//     base CV row (is_base = 1) is the user's master document and does not
+//     count; without that filter a job could reach 'reviewing' having had
+//     nothing generated for it. Same predicate the docs backlog sweep
+//     (electron/docsAutoQueue.ts) uses to decide what is still missing.
 export function recomputeJobStatusFromDocs(jobId: number): JobStatus | null {
   const s = loadStore()
   const jobIdx = s.jobs.findIndex((j) => j.id === jobId)
@@ -1329,7 +1338,14 @@ export function recomputeJobStatusFromDocs(jobId: number): JobStatus | null {
   const current = s.jobs[jobIdx].status
   if (s.jobs[jobIdx].manual_status === 1) return current
 
-  const docs = s.documents.filter((d) => d.job_id === jobId)
+  // `is_base` is excluded here for the same reason `listJobDocuments`
+  // excludes it: a row with is_base = 1 is the user's master CV, not
+  // anything generated for this job, and counting it let a job reach
+  // 'reviewing' with no generated CV at all. `job_id === jobId` alone is
+  // NOT sufficient — the master CV is stored with a null job_id but the
+  // column is the actual marker, and the store may hold a base row that
+  // predates the null-job_id convention.
+  const docs = s.documents.filter((d) => d.job_id === jobId && d.is_base !== 1)
   const next = nextStatusFromDocs(current, {
     hasCv: docs.some((d) => d.type === 'cv'),
     hasCl: docs.some((d) => d.type === 'cover_letter'),
@@ -2556,7 +2572,7 @@ export function clearAIQueue(): number {
  *
  * The tombstone the re-seeders consult, read straight out of the store,
  * so it is the same value in every process and every pass: an app restart,
- * the 4h fit-auto-score timer and the post-scan backlog all see it.
+ * the hourly fit-auto-score timer and the post-scan backlog all see it.
  */
 export function getQueueClearedAt(): number {
   const at = loadStore().settings.queue_cleared_at
@@ -2579,10 +2595,10 @@ function getQueueClearedMaxJobId(): number {
  * Deleting the queue rows is not enough on its own: two re-seeders walk
  * the JOBS table rather than the queue — `enqueueScoreFitBacklog` at
  * startup and after every scan, and `runFitAutoScoreBacklog` on the
- * 4h timer — and both rebuild exactly the `score_fit` rows a clear just
+ * hourly timer — and both rebuild exactly the `score_fit` rows a clear just
  * removed. The confirm dialog promises "Pending fit scores and document
  * generation will be cancelled", and a user trying to stop spend cannot
- * be told that and have the same work return four hours later.
+ * be told that and have the same work return on the next hourly tick.
  *
  * So the clear is persisted, and everything already in the store when the
  * user pressed the button is off-limits to the automatic paths:

@@ -48,7 +48,7 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     job_search_keywords: '', job_search_location: '', job_search_locations: '',
     deleted_jobs_cap: 50000, auto_scan_enabled: true, auto_scan_interval_minutes: 120,
     scan_min_match: 0.25,
-    fit_autoscore_interval_minutes: 240, locations_normalized: '',
+    fit_autoscore_interval_minutes: 60, locations_normalized: '',
     locations_normalized_v2: '', locations_normalized_v3: '', locations_normalized_v4: '',
     locations_normalized_v5: '', locations_normalized_v6: '', employment_type_normalized: '',
     work_mode_normalized: '', backup_path: '', backup_last_success_at: '',
@@ -109,11 +109,19 @@ describe('scheduleNextFitAutoScore', () => {
     expect(state.nextRunAt).toBe(Date.now() + 60 * 60 * 1000)
   })
 
-  it('defaults to 240 minutes when the setting is missing', () => {
+  it('defaults to 60 minutes when the setting is missing', () => {
     mockedGetSettings.mockReturnValue(makeSettings({ fit_autoscore_interval_minutes: undefined }))
     scheduleNextFitAutoScore()
-    expect(getFitAutoScoreState().intervalMinutes).toBe(240)
-    expect(getFitAutoScoreState().nextRunAt).toBe(Date.now() + 240 * 60 * 1000)
+    expect(getFitAutoScoreState().intervalMinutes).toBe(60)
+    expect(getFitAutoScoreState().nextRunAt).toBe(Date.now() + 60 * 60 * 1000)
+  })
+
+  it('defaults the interval constant to 60 minutes (hourly)', () => {
+    // The constant itself, so "hourly" cannot silently regress back to
+    // the old 4h default while every other test still passes against an
+    // explicitly configured interval.
+    mockedGetSettings.mockReturnValue(makeSettings({ fit_autoscore_interval_minutes: undefined }))
+    expect(getFitAutoScoreState().intervalMinutes).toBe(60)
   })
 
   it('replaces the previous timer when called again', () => {
@@ -270,12 +278,12 @@ describe('runFitAutoScoreBacklog does not stack duplicates', () => {
   })
 })
 
-// The 4h timer used to be a free, unlimited, immediate retry lane for
+// The sweep timer used to be a free, unlimited, immediate retry lane for
 // score_fit: it reset a burned-out row to `pending` with
 // nextRetryAt = now and never touched `autoRevives`, so the 4h cooldown
 // and AUTO_REVIVE_MAX budget that every other queue type honours (see
 // electron/types.ts) simply did not apply here. A job whose provider
-// rejected it forever would burn a full attempt budget every 4h, and the
+// rejected it forever would burn a full attempt budget every sweep, and the
 // budget counter would never move. This is the same test with a real
 // store: electron/queueClear.test.ts drives the durable-clear half.
 describe('runFitAutoScoreBacklog respects the revive budget and cooldown', () => {
@@ -357,7 +365,7 @@ describe('both re-seeders honour a cleared queue', () => {
     ])
   })
 
-  it('the 4h backlog skips a suppressed job and still scores a new one', () => {
+  it('the periodic backlog skips a suppressed job and still scores a new one', () => {
     mockedIsSuppressed.mockImplementation((id: number) => id === 1)
     expect(runFitAutoScoreBacklog()).toBe(1)
     expect(mockedAddAIQueueItem).toHaveBeenCalledTimes(1)

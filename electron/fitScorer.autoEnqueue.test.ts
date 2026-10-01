@@ -41,10 +41,13 @@ import {
   getAIQueue,
   getJob,
   reloadStore,
+  updateAIQueueItem,
+  updateSettings,
   updateDocumentVerification,
   updateJob
 } from './database'
 import { maybeAutoEnqueueDocs } from './fitScorer'
+import { runDocsAutoQueueBacklog } from './docsAutoQueue'
 
 const storeDir = '/tmp/flow_job-test-autoenqueue'
 const storeFiles = [
@@ -56,6 +59,10 @@ beforeEach(() => {
   if (!existsSync(storeDir)) mkdirSync(storeDir, { recursive: true })
   for (const f of storeFiles) if (existsSync(f)) unlinkSync(f)
   reloadStore()
+  // The sweep's base-CV precondition, and the trigger's switches, both read
+  // settings, so the tests below are only about the queue interaction when
+  // the defaults are the defaults.
+  updateSettings({ base_cv: 'MASTER CV', auto_doc_min_fit: 40 })
 })
 
 function seedScoredJob() {
@@ -156,5 +163,72 @@ describe('maybeAutoEnqueueDocs against the real store', () => {
     updateDocumentVerification(doc.id, 92, 'Good.')
     expect(maybeAutoEnqueueDocs(seededJobId)).toBe(false)
     expect(getAIQueue()).toEqual([])
+  })
+})
+
+// The other producer. The backlog sweep queues `generate_cv` and
+// `generate_cover_letter` as two units; `enqueue`'s duplicate guard cannot
+// match either against a `tailor_job_docs` row, so before the shared
+// coverage predicate this trigger queued its own row on top of the sweep's
+// two and the job reached three CVs and three cover letters. The full
+// cross-producer matrix (both directions, per-document granularity, the
+// toggle edge cases) lives in docsAutoQueue.crossProducer.store.test.ts;
+// what belongs here is the trigger's own half, against the real store.
+describe('maybeAutoEnqueueDocs against the sweep\'s rows', () => {
+  it('declines when the sweep has already queued this job, and adds no third row', () => {
+    const job = seedScoredJob()
+    expect(runDocsAutoQueueBacklog()).toBe(2)
+    expect(getAIQueue()).toHaveLength(2)
+
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(false)
+    expect(getAIQueue()).toHaveLength(2)
+  })
+
+  it('declines while the sweep\'s generate_cv row is processing', () => {
+    const job = seedScoredJob()
+    const row = addAIQueueItem({ type: 'generate_cv', jobId: job.id })
+    updateAIQueueItem(row.id, { status: 'processing' })
+
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(false)
+    expect(getAIQueue()).toHaveLength(1)
+  })
+
+  it('declines when only the sweep\'s cover-letter row is live', () => {
+    // It generates both documents, so this is a live second cover letter
+    // too, not an unrelated job of work.
+    const job = seedScoredJob()
+    addAIQueueItem({ type: 'generate_cover_letter', jobId: job.id })
+
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(false)
+    expect(getAIQueue()).toHaveLength(1)
+  })
+
+  it('queues when the sweep\'s row has failed: that work has not happened', () => {
+    const job = seedScoredJob()
+    const row = addAIQueueItem({ type: 'generate_cv', jobId: job.id })
+    updateAIQueueItem(row.id, { status: 'failed', attempts: 9, nextRetryAt: 0 })
+
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
+    expect(getAIQueue().map((q) => q.type).sort()).toEqual(['generate_cv', 'tailor_job_docs'])
+  })
+
+  it('queues when the live row is a regeneration of a document, not a first generation', () => {
+    const job = seedScoredJob()
+    addAIQueueItem({ type: 'generate_cv', jobId: job.id, documentId: 99 })
+
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
+    expect(getAIQueue().map((q) => q.type).sort()).toEqual(['generate_cv', 'tailor_job_docs'])
+  })
+
+  it('still refuses when cover-letter auto-queueing is off, queue empty or not', () => {
+    // `tailor_job_docs` produces both documents, so the toggle applies to
+    // it whatever the queue holds; a decline here is a refusal, not a
+    // deferral, so nothing is left owed.
+    const job = seedScoredJob()
+    updateSettings({ base_cv: 'MASTER CV', auto_doc_min_fit: 40, auto_queue_cover_letter: false })
+    addAIQueueItem({ type: 'generate_cv', jobId: job.id })
+
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(false)
+    expect(getAIQueue().map((q) => q.type)).toEqual(['generate_cv'])
   })
 })

@@ -7,7 +7,7 @@ import type { Job } from './types'
 
 const log = createLogger('fit')
 
-const DEFAULT_INTERVAL_MINUTES = 240
+const DEFAULT_INTERVAL_MINUTES = 60
 
 let timer: NodeJS.Timeout | null = null
 let timerStartedAt = 0
@@ -25,7 +25,7 @@ function clearTimer() {
 
 /**
  * Schedule the next automatic fit-score backfill. The interval is read from
- * settings (`fit_autoscore_interval_minutes`) and defaults to 4 hours. Each
+ * settings (`fit_autoscore_interval_minutes`) and defaults to 1 hour. Each
  * call replaces the previous schedule, so settings changes and manual scan
  * completions always push the next run out by a full interval.
  */
@@ -62,8 +62,8 @@ export function getFitAutoScoreState(): { intervalMinutes: number; nextRunAt: nu
  * "Needs a fit score" is a statement about the JOBS table, so both
  * re-seeding paths ask it the same way. The suppression clause is what
  * makes "Clear queue" mean what the confirm dialog says it means: work
- * the user cancelled is not rebuilt out of the jobs table four hours
- * later, on the next launch, or after the next scan. See
+ * the user cancelled is not rebuilt out of the jobs table on the next
+ * hourly tick, on the next launch, or after the next scan. See
  * `isScoreFitSuppressed`.
  */
 function needsFitScore(job: Job, cvVersion: number): boolean {
@@ -100,7 +100,7 @@ export function runFitAutoScoreBacklog(): number {
     // full fresh budget, run now. This path resurrects the way the
     // PROCESSOR does — one unit of the revive budget, parked on the 4h
     // cooldown — which is what stops a job that can never be scored from
-    // being re-woken every four hours forever. The pending/processing
+    // being re-woken on every hourly tick. The pending/processing
     // check below is the same question `enqueue` asks, asked for the
     // reason this path needs it (is anything in flight?), and it must
     // stay in step — when this checked only `pending` (as `enqueue` once
@@ -127,8 +127,15 @@ export function runFitAutoScoreBacklog(): number {
       // path a free and unlimited retry lane — the 4h cooldown and
       // AUTO_REVIVE_MAX that every other queue type honours simply did not
       // apply to score_fit, so a job whose provider was permanently
-      // rejecting it kept burning a full attempt budget every 4 hours,
+      // rejecting it kept burning a full attempt budget every sweep,
       // forever, with the budget counter never moving.
+      //
+      // This is why the cadence can move to hourly without the cooldown
+      // having to move with it. The sweep now ticks four times as often,
+      // but a row parked on the 4h cooldown fails the `nextRetryAt > now`
+      // guard for three of those four ticks, so it is still revived at
+      // most once per cooldown — the tick rate multiplies how often the
+      // sweep LOOKS, not how often a row is resurrected.
       const revives = existing.autoRevives ?? 0
       if (revives >= AUTO_REVIVE_MAX) {
         // Budget spent. Leave it failed for the user, as runPass does.

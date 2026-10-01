@@ -55,6 +55,7 @@ import { formatLocation } from './utils'
 import { startQueueProcessor, stopQueueProcessor, enqueue, listQueueInPickOrder, retryQueueItem, removeQueueItem, clearQueue } from './aiQueue'
 import { scheduleNextAutoScan, cancelAutoScan, markScanStarted, markScanCompleted, restartAutoScanTimer } from './autoScan'
 import { scheduleNextFitAutoScore, restartFitAutoScoreTimer, enqueueScoreFitBacklog } from './fitAutoScore'
+import { scheduleNextDocsAutoQueue, restartDocsAutoQueueTimer, enqueueDocsBacklog } from './docsAutoQueue'
 import {
   addNotification,
   listActiveNotifications,
@@ -324,9 +325,14 @@ function registerIpc(): void {
       // (heuristic pre-filter or LLM-error fallback paths) get picked
       // up by the persistent queue processor.
       enqueueScoreFitBacklog()
+      // Documents the same way: a scan that added jobs with no generated
+      // documents re-seeds their CV / cover-letter work now rather than
+      // waiting for the next hourly sweep.
+      enqueueDocsBacklog()
       // Push the periodic fit-score timer out by a full interval so a
       // just-completed scan does not immediately collide with the timer.
       scheduleNextFitAutoScore()
+      scheduleNextDocsAutoQueue()
       // Notify all renderers that the scan has completed (success or cancelled)
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) win.webContents.send('scan:complete', result)
@@ -527,6 +533,9 @@ function registerIpc(): void {
     }
     if ('fit_autoscore_interval_minutes' in partial) {
       restartFitAutoScoreTimer()
+      // The docs sweep reads the same setting, so it has to be re-read
+      // here too or the two would disagree about when the next run is.
+      restartDocsAutoQueueTimer()
     }
     return result
   })
@@ -1170,7 +1179,7 @@ function registerIpc(): void {
 // documented invariant: score-less rows have version null/old, so
 // they qualify; rows scored against the current CV (version match,
 // real score) are skipped.
-// Lives in ./fitAutoScore next to the 4h re-seeder — it is the same
+// Lives in ./fitAutoScore next to the hourly re-seeder — it is the same
 // question asked of the same jobs table, and the two MUST agree on
 // which jobs a "Clear queue" suppresses. It used to be a private
 // function here, which meant that half of the clear-durability
@@ -1216,8 +1225,14 @@ function runDeferredStoreWork(): void {
   // their attempts) get re-enqueued here, so the backlog drains across
   // sessions until empty.
   enqueueScoreFitBacklog()
+  // Same for documents: generation used to be queued only as a
+  // side-effect of a fit score landing (maybeAutoEnqueueDocs in
+  // fitScorer.ts), so a cleared queue lost the CV / cover-letter work
+  // permanently — nothing walked the DOCUMENTS table to bring it back.
+  enqueueDocsBacklog()
   scheduleNextAutoScan()
   scheduleNextFitAutoScore()
+  scheduleNextDocsAutoQueue()
   // Fire-and-forget: the returned `stop` is intentionally dropped
   // (the interval lives for the app's lifetime; the helper
   // double-registers are guarded inside the module).

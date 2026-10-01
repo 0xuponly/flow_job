@@ -132,7 +132,7 @@ describe('one row per piece of work, whatever status the existing row is in', ()
     it(`leaves exactly one ${status} row after repeated enqueues of the same work`, () => {
       seedRow({ type: 'regenerate_section', jobId: 4, documentId: 9, sectionName: 'Summary', status })
       // Three more triggers for the same work: a fit landing, a re-scan,
-      // the 4h autoscore tick.
+      // the hourly autoscore tick.
       for (let i = 0; i < 3; i++) {
         expect(enqueue({ type: 'regenerate_section', jobId: 4, documentId: 9, sectionName: 'Summary' })).toBeNull()
       }
@@ -370,7 +370,7 @@ describe('a manual re-add promotes to the top of its tier', () => {
   })
 
   it('leaves the order alone for an automatic re-add', () => {
-    // The background triggers (fit landing, re-scan, 4h re-seeder,
+    // The background triggers (fit landing, re-scan, hourly re-seeder,
     // follow-up chaining) must not reshuffle the queue under the user:
     // only a manual add earns a boost.
     for (const jobId of [1, 2, 3]) store.fit.set(jobId, 0.5)
@@ -435,7 +435,7 @@ describe('a promoted item spends its boost when the processor picks it up', () =
 // The widened guard must not have cost the processing case: `processing`
 // is the state the processor puts an item in BEFORE its LLM call, and
 // that window is long. A scan finishing, the startup backlog, or the
-// 4h re-seeder landing inside it must still add nothing.
+// hourly re-seeder landing inside it must still add nothing.
 describe('the processing guard still prevents a double-add during an in-flight call', () => {
   it('an automatic enqueue landing inside a long LLM call adds nothing', async () => {
     seedRow({ type: 'score_fit', jobId: 42 })
