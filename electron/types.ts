@@ -276,6 +276,27 @@ export interface Settings {
   // opt-in; this one gates the fit-landing trigger so a job added
   // before the CV was configured still gets docs once it scores.
   auto_doc_min_fit: number
+  /**
+   * Per-kind auto-queue switches (Settings > Auto-queue).
+   *
+   * Every one of these gates AUTOMATIC enqueues only. A manual user
+   * action — generate, regenerate a section, verify, tailor, quick
+   * apply — is never suppressed by them: turning auto-queueing off
+   * stops the app spending tokens on its own, and never stops the
+   * user asking for work explicitly. See the `manual` flag on
+   * `enqueue` (aiQueue.ts), which is what tells the central gate the
+   * two apart.
+   *
+   * All five default TRUE, because auto-queueing is the behaviour that
+   * shipped before these keys existed. A store written before them (or
+   * one hand-edited to a non-boolean) normalises back to `true`, so a
+   * missing key can never silently disable a feature.
+   */
+  auto_queue_fit: boolean
+  auto_queue_cv: boolean
+  auto_queue_cover_letter: boolean
+  auto_queue_verify_cv: boolean
+  auto_queue_verify_cover_letter: boolean
   quick_apply_shortcut: string | null
   // One-shot gates for status migrations. 'statuses_recomputed' backfilled
   // the original doc-derived rule; 'statuses_manual_v2' demotes jobs that

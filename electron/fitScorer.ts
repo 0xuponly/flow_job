@@ -62,6 +62,23 @@ export function maybeAutoEnqueueDocs(
   if (job.score === null) return false
 
   const settings = db.getSettings()
+  // The user's Auto-queue switches come BEFORE the fit threshold, and
+  // the reason is the return value: a caller reads `false` here as
+  // "generation was not scheduled", which is true whether the job
+  // scored low or the user turned CV auto-queueing off. Checking the
+  // threshold first would make a switch-off indistinguishable from a
+  // below-threshold score in the only signal this function has.
+  //
+  // `tailor_job_docs` generates the CV and the cover letter in one
+  // pass, so it needs both switches on. enqueue() enforces the same
+  // rule for every other caller; this is the same check one step
+  // earlier, made here so the fit-landing trigger cannot report a
+  // queue row it was never allowed to create. Manual Tailor and Quick
+  // Apply do not come through here — they are user actions and are
+  // never gated.
+  if (settings.auto_queue_cv === false || settings.auto_queue_cover_letter === false) {
+    return false
+  }
   const minFit = settings.auto_doc_min_fit ?? 40
   // `score` is stored 0-1; the setting is 0-100 (same scale as
   // auto_tailor_min_fit, normalized on migration).

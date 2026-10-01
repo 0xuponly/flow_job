@@ -166,6 +166,15 @@ export interface Settings {
   // score lands. Distinct from auto_tailor_min_fit, which only gates
   // the opt-in scan-time auto-tailor.
   auto_doc_min_fit: number
+  // Per-kind auto-queue switches (Settings > Auto-queue). Each gates
+  // AUTOMATIC queueing only — an explicit generate / verify / tailor
+  // still queues with these off. Default true; see the main-process
+  // Settings type for the full contract.
+  auto_queue_fit: boolean
+  auto_queue_cv: boolean
+  auto_queue_cover_letter: boolean
+  auto_queue_verify_cv: boolean
+  auto_queue_verify_cover_letter: boolean
   quick_apply_shortcut: string | null
   // Optional proxy URL for the browser scraper. Format: "http://user:pass@host:port"
   // or "socks5://host:port". When empty, no proxy is used.
