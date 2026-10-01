@@ -301,6 +301,31 @@ export function looksLikeHarvardCv(content: string): boolean {
 
 const DEFAULT_MAX_TOKENS = 2048
 
+// Per-attempt HTTP timeout for one model's chat/completions request.
+// 45s covers a full 2048-token generation (DEFAULT_MAX_TOKENS) on a slow
+// free-tier model, so a healthy-but-slow model is never cut off mid-answer
+// and then misreported to the user as an empty response.
+//
+// The previous 20s was picked before DEFAULT_MAX_TOKENS was capped at
+// 2048, and it was never what made a failing model cheap: measured
+// billing-error (402) responses come back in ~3.5s and rate limits (429)
+// in well under a second, both far inside any timeout. The timeout only
+// ever bounded genuinely slow generation.
+//
+// Applies PER MODEL per attempt, so a rotation of N models that all hang
+// costs up to N * this. At 11 models that is 8m15s per attempt, up from
+// 3m40s at 20s — accepted deliberately, because a generation cut off at
+// 20s is indistinguishable from an empty one by the time the user sees
+// the error.
+const DEFAULT_CALL_TIMEOUT_MS = 45_000
+
+// Ceiling for a model-configured `timeout_ms`. 10 minutes is far past any
+// real generation; it exists so a fat-fingered or hostile config cannot
+// wedge the serial queue for an hour. Values above it are clamped, not
+// rejected — a model that genuinely needs longer than the default is
+// still allowed to have it.
+const MAX_CALL_TIMEOUT_MS = 10 * 60 * 1000
+
 // Slug patterns that identify rerank/embeddings models that do not belong in
 // the chat/completions rotation. OpenRouter returns 400 when these are sent to
 // the chat endpoint.
@@ -317,6 +342,23 @@ function getMaxTokens(model?: ApiModelConfig): number {
     return model.max_tokens
   }
   return DEFAULT_MAX_TOKENS
+}
+
+// Per-model timeout for one attempt. An optional `timeout_ms` on the model
+// wins over the rotation-wide `fallbackMs`; there is deliberately no
+// settings UI for it, so the default has to be right on its own.
+//
+// A nonsense value is not trusted, it falls back. `timeout_ms: 0` would
+// abort every request on the next tick — the model looks permanently
+// broken — and an hour-long timeout would wedge the serial queue behind a
+// single dead host, which is strictly worse than the default. That covers
+// 0, negatives, NaN, ±Infinity and non-numbers. A finite value above
+// MAX_CALL_TIMEOUT_MS is clamped rather than discarded, so the field still
+// means "give this model longer" for any sane request.
+function getCallTimeoutMs(model: ApiModelConfig, fallbackMs: number): number {
+  const raw = model.timeout_ms
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return fallbackMs
+  return Math.min(raw, MAX_CALL_TIMEOUT_MS)
 }
 
 function eligibleModels(): ApiModelConfig[] {
@@ -471,23 +513,29 @@ async function tryModels(
     }
     attempted.push(key)
 
+    // Resolved per model, not per call: `timeout_ms` is a property of the
+    // model being tried, and the rotation below may try several with
+    // different ones.
+    const attemptTimeoutMs = getCallTimeoutMs(model, timeoutMs)
+
     // Opt-in per-request trace. Set FLOW_JOB_DEBUG_AI=1 in the shell before
     // launching the app to enable; the cost when disabled is one string
     // compare per request.
     if (process.env.FLOW_JOB_DEBUG_AI === '1') {
       log.ai.info(
-        `[ai] req name="${model.name}" host=${hostOf(model.base_url)} key=${fingerprintKey(model.api_key)} modelId=${model.model} max_tokens=${getMaxTokens(model)} body=${redactBody('')}`
+        `[ai] req name="${model.name}" host=${hostOf(model.base_url)} key=${fingerprintKey(model.api_key)} modelId=${model.model} max_tokens=${getMaxTokens(model)} timeout_ms=${attemptTimeoutMs} body=${redactBody('')}`
       )
     }
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (model.api_key) headers['Authorization'] = `Bearer ${model.api_key}`
       const abort = new AbortController()
-      const timer = setTimeout(() => abort.abort(), timeoutMs)
+      const timer = setTimeout(() => abort.abort(), attemptTimeoutMs)
       // Honor an external abort (e.g. scan cancel) so the in-flight
       // HTTP request tears down immediately rather than waiting the
-      // full 20s timeout. Without this, canceling a scan leaves LLM
-      // requests running server-side until the timeout.
+      // full per-attempt timeout (45s by default). Without this,
+      // canceling a scan leaves LLM requests running server-side until
+      // the timeout.
       const onExternalAbort = () => abort.abort()
       if (externalSignal) {
         if (externalSignal.aborted) abort.abort()
@@ -696,7 +744,7 @@ export async function callAI(
   systemPrompt: string,
   userPrompt: string,
   temperature = 0.7,
-  timeoutMs = 20000,
+  timeoutMs = DEFAULT_CALL_TIMEOUT_MS,
   externalSignal?: AbortSignal,
   validateResponse?: (content: string) => boolean,
   excludeModelIds?: ReadonlySet<string>
@@ -823,7 +871,7 @@ export async function extractJobKeywordsLLM(
 
   let result: Awaited<ReturnType<typeof callAI>>
   try {
-    result = await callAI(EXTRACTION_SYSTEM_PROMPT, userPrompt, 0.3, 20000, signal)
+    result = await callAI(EXTRACTION_SYSTEM_PROMPT, userPrompt, 0.3, DEFAULT_CALL_TIMEOUT_MS, signal)
   } catch (err) {
     throw new KeywordExtractionError(
       `callAI failed: ${err instanceof Error ? err.message : String(err)}`
@@ -993,7 +1041,7 @@ ${request.document_type === 'cover_letter' ? 'Write a tailored cover letter.' : 
   // enforcement in sanitizeDocument still runs downstream).
   const validator = request.document_type === 'cv' ? looksLikeHarvardCv : undefined
   try {
-    const result = await callAI(systemPrompt, userPrompt, 0.7, 20000, undefined, validator)
+    const result = await callAI(systemPrompt, userPrompt, 0.7, DEFAULT_CALL_TIMEOUT_MS, undefined, validator)
     content = result.content!
     modelUsed = result.modelUsed
   } catch (err) {
@@ -1245,7 +1293,7 @@ Evaluate how well this document is tailored for this specific job.`
     let aiResult
     try {
       aiResult = await callAI(
-        systemPrompt, userPrompt, 0.3, 20000, undefined,
+        systemPrompt, userPrompt, 0.3, DEFAULT_CALL_TIMEOUT_MS, undefined,
         undefined, exclude
       )
     } catch (err) {
@@ -1565,7 +1613,7 @@ Return the JSON object now.`
     let result
     try {
       result = await callAI(
-        systemPrompt, userPrompt, 0.2, 20000, signal,
+        systemPrompt, userPrompt, 0.2, DEFAULT_CALL_TIMEOUT_MS, signal,
         undefined, exclude
       )
     } catch (err) {

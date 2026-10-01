@@ -27,6 +27,7 @@ vi.mock('./database', () => ({
 // matching the style of the `callAI failure summary` tests above.
 
 import * as database from './database'
+import type { ApiModelConfig } from './types'
 import { callAI, withAiOperation, EXTRACTION_SYSTEM_PROMPT, extractJobKeywordsV3, KeywordExtractionError, RateLimitError, resetModelHealth, resetModelHealthByIds, scoreJobFit } from './ai'
 
 beforeEach(() => {
@@ -758,7 +759,7 @@ describe('P1.4 callAI validateResponse (deliberation gate at the rotation layer)
     })
     vi.stubGlobal('fetch', fetchMock)
     const { looksLikeHarvardCv } = await import('./ai')
-    const result = await callAI('sys', 'user', 0.7, 20000, undefined, looksLikeHarvardCv)
+    const result = await callAI('sys', 'user', 0.7, undefined, undefined, looksLikeHarvardCv)
     expect(result.content).toContain('Jane Doe')
     expect(result.modelUsed).toBe('good')
     // The bad model was tried exactly once.
@@ -774,7 +775,7 @@ describe('P1.4 callAI validateResponse (deliberation gate at the rotation layer)
       choices: [{ message: { content: 'We need to follow the template exactly. But we need...' } }]
     }), { status: 200 })))
     const { looksLikeHarvardCv } = await import('./ai')
-    await expect(callAI('sys', 'user', 0.7, 20000, undefined, looksLikeHarvardCv))
+    await expect(callAI('sys', 'user', 0.7, undefined, undefined, looksLikeHarvardCv))
       .rejects.toThrow(/failed validation|looksLikeHarvardCv|did not pass/i)
   })
 })
@@ -1601,5 +1602,241 @@ describe('AI operation serialization', () => {
       withAiOperation(async () => { await callAI('sys', 'third') })
     ])
     expect(state.order).toEqual(['first', 'second', 'third'])
+  })
+})
+
+// The per-attempt HTTP timeout. It was 20s as a bare literal in
+// callAI's signature and at four call sites; it is now one named
+// constant, DEFAULT_CALL_TIMEOUT_MS = 45_000, optionally overridable per
+// model via `timeout_ms` (no settings UI — the default has to be right
+// on its own).
+//
+// Every test here reads the delay actually handed to the abort timer
+// rather than a re-statement of the constant, so a test cannot pass while
+// the code under it arms a 20s timer.
+describe('per-attempt call timeout', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    resetModelHealth()
+  })
+
+  // Records the delay of every setTimeout the request path arms, and still
+  // calls through — the abort timer has to keep working for the test that
+  // hangs a request until it fires.
+  function captureTimerDelays() {
+    const delays: number[] = []
+    const real = globalThis.setTimeout
+    // Restored by the vi.restoreAllMocks() in beforeEach.
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+      fn: (...a: unknown[]) => void,
+      ms?: number,
+      ...rest: unknown[]
+    ) => {
+      if (typeof ms === 'number') delays.push(ms)
+      return real(fn, ms, ...rest)
+    }) as unknown as typeof globalThis.setTimeout)
+    return { delays }
+  }
+
+  function okResponse() {
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 })
+  }
+
+  // Typed rather than `as any` (the older tests in this file use `as any`
+  // because their mocks omit fields): a mistyped `timeout_ms` here would
+  // then be a typecheck error rather than a silently-ignored key.
+  function modelConfig(over: Partial<ApiModelConfig> = {}): ApiModelConfig {
+    return { id: 'm1', name: 'a', enabled: true, base_url: 'https://example.invalid', model: 'a', api_key: 'k', ...over }
+  }
+
+  it('arms the per-attempt abort timer at 45s by default, not 20s', async () => {
+    // 20s predates the DEFAULT_MAX_TOKENS=2048 cap and cut off legitimate
+    // slow generations, which were then reported to the user as empty
+    // responses. It was never what made a failing model cheap: measured
+    // 402s come back in ~3.5s and 429s in well under a second.
+    vi.spyOn(database, 'listApiModels').mockReturnValue([modelConfig()])
+    vi.stubGlobal('fetch', vi.fn(async () => okResponse()))
+    const { delays } = captureTimerDelays()
+
+    const result = await callAI('sys', 'user')
+    expect(result.content).toBe('ok')
+    expect(delays).toContain(45_000)
+    expect(delays).not.toContain(20_000)
+  })
+
+  it('arms 45s on every call that does not pass a timeout of its own', async () => {
+    // The four real call sites (keyword extraction, verify, score, tailor)
+    // each pass the constant explicitly rather than relying on the default
+    // parameter — that they do is pinned by the grep guard below, and
+    // what matters here is that no call site silently reintroduces a
+    // different number: three calls at the three temperatures those sites
+    // use all arm 45s.
+    vi.spyOn(database, 'listApiModels').mockReturnValue([modelConfig()])
+    const fetchMock = vi.fn(async () => okResponse())
+    vi.stubGlobal('fetch', fetchMock)
+    const { delays } = captureTimerDelays()
+
+    await callAI('sys', 'user1', 0.3)
+    await callAI('sys', 'user2', 0.7)
+    await callAI('sys', 'user3', 0.2)
+    expect(delays).toEqual([45_000, 45_000, 45_000])
+  })
+
+  it('honours a model-level timeout_ms over the default', async () => {
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      modelConfig({ id: 'slowpoke', name: 'slow', model: 'slow', timeout_ms: 90_000 })
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => okResponse()))
+    const { delays } = captureTimerDelays()
+
+    await callAI('sys', 'user')
+    expect(delays).toEqual([90_000])
+    expect(delays).not.toContain(45_000)
+  })
+
+  it('resolves the timeout per model, not per call, across a rotation', async () => {
+    // The override belongs to the model being tried. A rotation over a
+    // configured model and a default one must arm both timers at their
+    // own value, in order.
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      modelConfig({ id: 'slow', name: 'slow', model: 'slow', timeout_ms: 90_000 }),
+      modelConfig({ id: 'plain', name: 'plain', model: 'plain' })
+    ])
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      const model = JSON.parse(init.body as string).model
+      // First model fails transiently so the rotation moves to the second.
+      return model === 'slow' ? new Response('nope', { status: 500 }) : okResponse()
+    }))
+    const { delays } = captureTimerDelays()
+
+    const result = await callAI('sys', 'user')
+    expect(result.content).toBe('ok')
+    expect(delays).toEqual([90_000, 45_000])
+  })
+
+  it('clamps a finite timeout_ms above the 10-minute ceiling', async () => {
+    // Chosen ceiling: 10 minutes (MAX_CALL_TIMEOUT_MS). Generous past any
+    // real generation, and far short of "wedges the serial queue for an
+    // hour". Clamped, not discarded, so a model that genuinely needs
+    // longer than the default can still say so.
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      modelConfig({ timeout_ms: 3_600_000 })
+    ])
+    vi.stubGlobal('fetch', vi.fn(async () => okResponse()))
+    const { delays } = captureTimerDelays()
+
+    await callAI('sys', 'user')
+    expect(delays).toEqual([600_000])
+  })
+
+  const nonsense: [string, number][] = [
+    ['zero', 0],
+    ['negative', -1],
+    ['NaN', NaN],
+    ['Infinity', Infinity],
+    ['-Infinity', -Infinity]
+  ]
+  it.each(nonsense)('falls back to the 45s default for a %s timeout_ms', async (_label, timeoutMs) => {
+    // Trusting a nonsense value is strictly worse than the default:
+    // 0 aborts every request on the next tick (the model looks
+    // permanently broken) and an hour would wedge the queue behind one
+    // dead host. Note NaN is the one that matters most in practice —
+    // Math.min(NaN, x) is NaN, and setTimeout(fn, NaN) fires immediately,
+    // so an unvalidated NaN would silently behave as 0.
+    vi.spyOn(database, 'listApiModels').mockReturnValue([modelConfig({ timeout_ms: timeoutMs })])
+    vi.stubGlobal('fetch', vi.fn(async () => okResponse()))
+    const { delays } = captureTimerDelays()
+
+    const result = await callAI('sys', 'user')
+    expect(result.content).toBe('ok')
+    expect(delays).toEqual([45_000])
+  })
+
+  it('actually aborts on the resolved timeout, and reports it as a timeout', async () => {
+    // The delay assertions above would all still pass if the resolved
+    // value were never wired to the abort. Hang the request and let a
+    // 1ms override fire it for real.
+    vi.spyOn(database, 'listApiModels').mockReturnValue([
+      modelConfig({ id: 'hang', name: 'hang', model: 'hang', timeout_ms: 1 })
+    ])
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new Error('The operation was aborted')))
+    })))
+
+    await expect(callAI('sys', 'user')).rejects.toThrow(/hang: timeout/)
+  })
+
+  it('leaves a model without timeout_ms exactly as it was', async () => {
+    // Additive and optional: the field is absent, so the default applies
+    // and nothing else about the request changes (same URL, same body,
+    // same max_tokens).
+    vi.spyOn(database, 'listApiModels').mockReturnValue([modelConfig()])
+    const fetchMock = vi.fn(async () => okResponse())
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await callAI('sys', 'user')
+    expect(result.content).toBe('ok')
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    expect(init.body).not.toContain('timeout')
+    expect(JSON.parse(init.body as string)).toEqual({
+      model: 'a',
+      messages: [
+        { role: 'system', content: 'sys' },
+        { role: 'user', content: 'user' }
+      ],
+      temperature: 0.7,
+      max_tokens: 2048
+    })
+  })
+})
+
+// A bare 20000 is exactly the kind of literal that rots: it lived in
+// callAI's signature and at four call sites, all of which had to be found
+// by hand to change a number the code already had a name for. These are
+// greps with teeth — they fail the moment anyone reintroduces one.
+describe('no bare numeric timeout literal at any callAI call site', () => {
+  it('finds no 20000 passed to callAI in ai.ts or ai.test.ts', async () => {
+    const fs = await import('fs')
+    const path = await import('path')
+    for (const file of ['ai.ts', 'ai.test.ts']) {
+      const src = fs.readFileSync(path.join(__dirname, file), 'utf-8')
+      // `[^)]*` spans newlines, so the multi-line call sites are covered
+      // along with the single-line ones, and the signature itself counts
+      // as a call site (it ends at its own closing paren).
+      const offenders = src.match(/callAI\([^)]*\b20000\b/g)
+      expect(offenders, `${file} still passes a literal 20000: ${offenders}`).toBeNull()
+    }
+  })
+
+  it('finds no bare number in any callAI call site’s timeout position', async () => {
+    // The same rot wearing a different number: 30000, 30_000, 2000. The
+    // 4th argument is the timeout, and it must be the constant, the
+    // parameter, or omitted — never a typed-in value that can drift away
+    // from the default it is supposed to mirror.
+    const fs = await import('fs')
+    const path = await import('path')
+    for (const file of ['ai.ts', 'ai.test.ts']) {
+      const src = fs.readFileSync(path.join(__dirname, file), 'utf-8')
+      const callSites = src.match(/callAI\([^)]*\)/g) ?? []
+      expect(callSites.length).toBeGreaterThan(0)
+      const bareTimeouts = callSites.filter((c) => {
+        const fourth = c.slice('callAI('.length, -1).split(',')[3]?.trim()
+        return fourth !== undefined && /^\d[\d_]*$/.test(fourth)
+      })
+      expect(bareTimeouts, `${file} passes a bare number as a timeout: ${bareTimeouts}`).toEqual([])
+    }
+  })
+
+  it('keeps the default and every call site on the named constant', async () => {
+    const fs = await import('fs')
+    const path = await import('path')
+    const src = fs.readFileSync(path.join(__dirname, 'ai.ts'), 'utf-8')
+    // One source of truth, and callAI's signature reads from it — a
+    // second copy of the number in the signature is the rot this guards.
+    expect(src).toMatch(/const DEFAULT_CALL_TIMEOUT_MS = 45_000/)
+    expect(src).toMatch(/timeoutMs = DEFAULT_CALL_TIMEOUT_MS/)
+    // The four call sites that used to carry a literal now name it.
+    const named = src.match(/callAI\([^)]*DEFAULT_CALL_TIMEOUT_MS[^)]*\)/g) ?? []
+    expect(named.length).toBe(5) // 4 call sites + callAI's own signature
   })
 })
