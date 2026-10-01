@@ -728,12 +728,13 @@ export function clearQueue(): { removed: number; queue: QueueItemView[] } {
  * every queue row goes through, rather than at the call sites, for two
  * reasons:
  *
- *  1. It cannot be bypassed. There are six automatic producers of
+ *  1. It cannot be bypassed. There are seven automatic producers of
  *     work today (the fit-landing trigger in fitScorer, the scan-time
  *     auto-tailor in jobSearch, the processor's own generation→review
  *     chaining, its review→regenerate loop and its
- *     tailor_job_docs→review fan-out in this file, and the fit
- *     re-seeder in fitAutoScore) and more arrive with every feature
+ *     tailor_job_docs→review fan-out in this file, the fit
+ *     re-seeder in fitAutoScore, and the documents backlog sweep in
+ *     docsAutoQueue) and more arrive with every feature
  *     that queues work. A per-call-site check is a rule that only holds
  *     for the callers that remembered it.
  *  2. A refusal has to be uniform. If two callers disagreed about

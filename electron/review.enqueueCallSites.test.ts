@@ -122,10 +122,10 @@ function callSites(): CallSite[] {
  */
 const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]> = {
   'electron/main.ts': [
-    { line: 388, manual: true, why: 'documents:verify — the Verify button' },
-    { line: 401, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
-    { line: 577, manual: true, why: 'ai:tailor — Tailor / Generate' },
-    { line: 593, manual: true, why: 'tailor:quickApply — Quick Apply' }
+    { line: 394, manual: true, why: 'documents:verify — the Verify button' },
+    { line: 407, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
+    { line: 586, manual: true, why: 'ai:tailor — Tailor / Generate' },
+    { line: 602, manual: true, why: 'tailor:quickApply — Quick Apply' }
   ],
   'electron/aiQueue.ts': [
     { line: 177, manual: false, why: 'processor: generation finished, chain the review' },
@@ -133,13 +133,16 @@ const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]
     { line: 307, manual: false, why: 'processor: tailor_job_docs finished, review each new document' }
   ],
   'electron/fitScorer.ts': [
-    { line: 107, manual: false, why: 'fit-landing trigger: a job cleared the fit threshold' }
+    { line: 133, manual: false, why: 'fit-landing trigger: a job cleared the fit threshold' }
   ],
   'electron/fitAutoScore.ts': [
-    { line: 184, manual: false, why: 'session-start / post-scan fit-score re-seeder' }
+    { line: 191, manual: false, why: 'session-start / post-scan fit-score re-seeder' }
   ],
   'electron/jobSearch.ts': [
     { line: 1513, manual: false, why: 'scan-time auto-tailor, gated by auto_tailor_on_scan + fit' }
+  ],
+  'electron/docsAutoQueue.ts': [
+    { line: 363, manual: false, why: 'documents backlog sweep — the app re-seeding a cleared queue' }
   ]
 }
 
@@ -528,15 +531,16 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
     // reviewer trusts instead of counting — which is exactly how the two
     // ungated revival lanes stayed invisible.
     //
-    // What the tree actually has: six automatic `enqueue` call sites
+    // What the tree actually has: seven automatic `enqueue` call sites
     // (the four manual ones are in main.ts and pinned above).
     const automatic = callSites().filter((c) => !c.manual)
     expect(automatic.map((c) => `${c.where}:${c.line}`).sort()).toEqual([
       'electron/aiQueue.ts:177',
       'electron/aiQueue.ts:234',
       'electron/aiQueue.ts:307',
-      'electron/fitAutoScore.ts:184',
-      'electron/fitScorer.ts:107',
+      'electron/docsAutoQueue.ts:363',
+      'electron/fitAutoScore.ts:191',
+      'electron/fitScorer.ts:133',
       'electron/jobSearch.ts:1513'
     ])
 
