@@ -214,9 +214,17 @@ describe('a failed row is revived in place rather than re-added', () => {
 
   it('makes the revived row due immediately, not on the old backoff', () => {
     seedRow({ type: 'score_fit', jobId: 42, status: 'failed', attempts: 5, nextRetryAt: Date.now() + 3_600_000 })
+    // The upper bound is read *after* the enqueue. `revivePatch()` stamps
+    // `nextRetryAt: Date.now()`, so a clock reading taken beforehand is by
+    // construction earlier than the stamp and the two only agree when the
+    // whole call lands inside one millisecond. Burning ~3ms of wall clock
+    // between the two reads makes the old form of this assertion fail every
+    // time; the contract the queue implements is that the row is due now,
+    // which is `nextRetryAt <= now` at aiQueue.ts:515.
     const before = Date.now()
     enqueue({ type: 'score_fit', jobId: 42 })
-    expect(store.rows[0].nextRetryAt).toBeLessThanOrEqual(before)
+    expect(store.rows[0].nextRetryAt).toBeLessThanOrEqual(Date.now())
+    expect(store.rows[0].nextRetryAt).toBeGreaterThanOrEqual(before)
   })
 
   it('leaves the auto-revive counter alone', () => {
@@ -241,7 +249,20 @@ describe('a failed row is revived in place rather than re-added', () => {
     seedRow({ id: 2, type: 'score_fit', jobId: 43, status: 'failed' })
     retryQueueItem(2)
     const viaRetry = store.writes[0].patch
-    expect(viaEnqueue).toEqual(viaRetry)
+
+    // Every field except the deadline has to match exactly. `nextRetryAt` is
+    // `Date.now()` read independently by each call, so a whole-patch
+    // `toEqual` fails whenever the millisecond ticks between the two writes --
+    // which is what a descheduled worker makes happen, and it did: this was
+    // the one remaining intermittent failure in a 16-spinner run. The
+    // deadline is checked separately, against the clock, below.
+    const { nextRetryAt: enqueueAt, ...enqueueRest } = viaEnqueue
+    const { nextRetryAt: retryAt, ...retryRest } = viaRetry
+    expect(enqueueRest).toEqual(retryRest)
+    // And both deadlines are "now" rather than a backoff or the old
+    // nextRetryAt, which is the property the deadline is there to carry.
+    expect(enqueueAt).toBeLessThanOrEqual(Date.now())
+    expect(retryAt).toBeLessThanOrEqual(Date.now())
   })
 
   it('does not write at all when an automatic enqueue lands on a healthy row', () => {
