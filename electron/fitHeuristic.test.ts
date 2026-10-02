@@ -1035,7 +1035,19 @@ describe('determinism', () => {
  * inside the headroom, and paying 500-2000 extra scorings on every run would
  * spend test time and push the whole test towards the 5s test timeout for
  * nothing.
+ *
+ * The 1000-listing test also carries its own wall-clock budget, because 1000
+ * synchronous scorings take 0.4s of CPU and there is no way to make that cost
+ * less wall time on a busier machine -- only a slower machine buys it. Under 16
+ * competing CPU spinners a full-suite run measured 2261ms, 3997ms and 3727ms
+ * for this test, right against the 5000ms default, which is why it still timed
+ * out intermittently after the CPU change. 15s leaves margin over the worst of
+ * those and stays a bound. The guard against a slow scorer is the CPU
+ * assertion above, not this number: the wall clock is reported so a failure
+ * says how much of it was the machine.
  */
+const SCAN_WALL_CLOCK_BUDGET_MS = 15_000
+
 describe('performance guard', () => {
   const filler =
     'We partner with commercial teams across the organization and support internal stakeholders through planning cycles, governance reviews, and quarterly planning exercises with measurable outcomes. '
@@ -1079,5 +1091,5 @@ describe('performance guard', () => {
       }
     })
     expect(cpu, `1000 scorings used ${cpu.toFixed(0)}ms of CPU over ${wall.toFixed(0)}ms of wall clock`).toBeLessThan(1500)
-  })
+  }, SCAN_WALL_CLOCK_BUDGET_MS)
 })
