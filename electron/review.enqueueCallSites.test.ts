@@ -128,9 +128,9 @@ const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]
     { line: 602, manual: true, why: 'tailor:quickApply — Quick Apply' }
   ],
   'electron/aiQueue.ts': [
-    { line: 177, manual: false, why: 'processor: generation finished, chain the review' },
-    { line: 234, manual: false, why: 'processor: review failed, auto-regenerate the document' },
-    { line: 307, manual: false, why: 'processor: tailor_job_docs finished, review each new document' }
+    { line: 266, manual: false, why: 'processor: generation finished, chain the review' },
+    { line: 323, manual: false, why: 'processor: review failed, auto-regenerate the document' },
+    { line: 396, manual: false, why: 'processor: tailor_job_docs finished, review each new document' }
   ],
   'electron/fitScorer.ts': [
     { line: 133, manual: false, why: 'fit-landing trigger: a job cleared the fit threshold' }
@@ -535,9 +535,9 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
     // (the four manual ones are in main.ts and pinned above).
     const automatic = callSites().filter((c) => !c.manual)
     expect(automatic.map((c) => `${c.where}:${c.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:177',
-      'electron/aiQueue.ts:234',
-      'electron/aiQueue.ts:307',
+      'electron/aiQueue.ts:266',
+      'electron/aiQueue.ts:323',
+      'electron/aiQueue.ts:396',
       'electron/docsAutoQueue.ts:363',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:133',
@@ -555,8 +555,8 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
       new RegExp(`There are ${WORDS[automatic.length]} automatic producers`)
     )
     // Every producer it names, including the fan-out this comment used
-    // to omit (aiQueue.ts:307 — a different producer from the
-    // generation → review chaining at :177, which fires for a directly
+    // to omit (aiQueue.ts:396 — a different producer from the
+    // generation → review chaining at :266, which fires for a directly
     // queued generate_*).
     expect(claim).toMatch(/fit-landing trigger in fitScorer/)
     expect(claim).toMatch(/scan-time auto-tailor in jobSearch/)

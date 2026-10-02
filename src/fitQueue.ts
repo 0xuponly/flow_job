@@ -165,8 +165,21 @@ export function queueItemLabel(item: AIQueueItem): string {
  * next be attempted. A pending item with a future `nextRetryAt` is
  * waiting out a rate-limit backoff, so the countdown is the useful
  * thing to show.
+ *
+ * Takes the view's `stranded` flag as well as the stored row. That one
+ * case has to be distinguished from everything else, because the row's
+ * own fields say `processing` — the app's default wording for a task it
+ * is working on, which is a promise it is not keeping here.
  */
-export function queueItemStatusText(item: AIQueueItem, now: number = Date.now()): string {
+export function queueItemStatusText(
+  item: AIQueueItem & { stranded?: boolean },
+  now: number = Date.now()
+): string {
+  // Before the `processing` branch, which would otherwise claim this is
+  // running. A crash left the row mid-task, so "Processing…" on a row
+  // nothing is processing is the wrong half of the conversation and it
+  // is what made the stranded state invisible.
+  if (item.stranded === true) return 'Stopped — the app closed while this was running'
   if (item.status === 'processing') return 'Processing…'
   if (item.status === 'failed') {
     // A failed item with revive budget left is not stranded — the

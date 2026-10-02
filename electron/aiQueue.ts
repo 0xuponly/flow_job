@@ -61,6 +61,13 @@ function priorityTier(type: AIQueueItem['type']): number {
  * Unlike `processQueue` this does not mutate any item's status: it is
  * a read-only view for display. Ordering re-reads `job.score` on each
  * call, so a fit that lands between polls is reflected on the next one.
+ *
+ * `stranded` is the third read-time field, and the only one that is not
+ * a property of the job: it says the row is `processing` but no run in
+ * THIS process owns it (see `isStranded`). The Queue panel offers Retry
+ * for those, because the startup reclaim deliberately leaves a gated
+ * automatic row exactly as the crash left it and nothing else in the
+ * app would ever move it again.
  */
 export function listQueueInPickOrder(): QueueItemView[] {
   const rows = pickOrder(getAIQueue())
@@ -73,8 +80,81 @@ export function listQueueInPickOrder(): QueueItemView[] {
   }
   return rows.map((item) => {
     const job = jobFor(item.jobId)
-    return { ...item, jobTitle: job?.title ?? null, jobCompany: job?.company ?? null }
+    return {
+      ...item,
+      jobTitle: job?.title ?? null,
+      jobCompany: job?.company ?? null,
+      stranded: isStranded(item)
+    }
   })
+}
+
+/**
+ * Is this `processing` row a crash leftover rather than a live run?
+ *
+ * `status: 'processing'` alone cannot tell the two apart. The processor
+ * writes exactly one thing when it claims a row (`status`, alongside
+ * `promotedAt`), and this item carries no `startedAt`, no heartbeat and
+ * no lease — so at list time a row this process is working on and a row
+ * a killed app left mid-generation are the same fields. The only
+ * honest discriminator is memory: which rows were already `processing`
+ * in the store before this process started.
+ *
+ * `strandedRowIds` is that answer, and it is deliberately not persisted.
+ * It is a statement about THIS process rather than about the row, and it
+ * dies with the process — which is what makes it safe: a row it names
+ * can only be one this process has never claimed, so it cannot be a run
+ * the user is watching right now.
+ *
+ * The set is keyed by id, and ids come from a monotonic `nextId` that
+ * `clearAIQueue` deliberately does not rewind, so an id here can never
+ * be handed out again to an unrelated row.
+ */
+function isStranded(item: AIQueueItem): boolean {
+  return item.status === 'processing' && strandedRowIds.has(item.id)
+}
+
+/**
+ * Rows `processing` when this process started, i.e. the ones a crash
+ * left behind. Populated once, by the startup reclaim, and pruned the
+ * moment this process takes a row for itself.
+ */
+const strandedRowIds = new Set<number>()
+
+/** Whether the startup snapshot has been taken yet. */
+let startupStrandedNoted = false
+
+/**
+ * Record the rows that were `processing` before this process began.
+ *
+ * Runs on the FIRST `reclaimInterruptedItems` call — which is the one
+ * `startQueueProcessor` makes, before the first pass — and only on that
+ * one. That "once" is load-bearing: `reclaimInterruptedItems` scans for
+ * rows left `processing`, and a row this process is actively working on
+ * looks identical to one from a previous process. Snapshotting on every
+ * call would eventually record a live run as stranded and put a Retry
+ * button on a row the user is watching work; snapshotting at startup
+ * cannot, because nothing in this process has claimed anything yet at
+ * that moment.
+ *
+ * It records EVERY `processing` row, including the ones the reclaim is
+ * about to requeue — those become `pending` in the same pass and
+ * `isStranded` re-reads their status, so they never qualify.
+ */
+function noteStrandedRows(items: AIQueueItem[]): void {
+  if (startupStrandedNoted) return
+  startupStrandedNoted = true
+  for (const item of items) {
+    if (item.status === 'processing') strandedRowIds.add(item.id)
+  }
+}
+
+/**
+ * Forget a row the processor has just taken: it is no longer a crash
+ * leftover, it is a live run this process owns. Called at the claim.
+ */
+function clearStranded(id: number): void {
+  strandedRowIds.delete(id)
 }
 
 function pickOrder(items: AIQueueItem[]): AIQueueItem[] {
@@ -138,6 +218,15 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
     // undo. Every pass goes through this write, so a boost cannot
     // outlive the run that was meant to consume it.
     if (!updateAIQueueItem(item.id, { status: 'processing', promotedAt: undefined })) return
+
+    // The row is ours from here, so it stops being a crash leftover.
+    // A row the startup reclaim skipped is still in `strandedRowIds`
+    // until somebody claims it — the user flipping a switch back on
+    // mid-session revives it, and this is that moment. Without this the
+    // panel would offer Retry on a row that is running right now, and
+    // pressing it would hand the same work to the processor a second
+    // time.
+    clearStranded(item.id)
 
     // One queue item is one operation and holds the AI slot for its
     // whole duration, so it cannot interleave with a direct renderer
@@ -437,9 +526,21 @@ let clearEpoch = 0
  * unattended spend the switch says the user bought out of. Either way
  * the row is not lost: it is visible in the panel, and Retry resumes it
  * ungated.
+ *
+ * Not requeueing a row is what makes the panel's job non-trivial, and
+ * the note above is only true now that the panel can see one. The rows
+ * skipped here stay `processing` with nobody working on them, so this
+ * function first records them (`noteStrandedRows`) and `listQueueInPickOrder`
+ * reports them as `stranded`, which is what puts a Retry button on them.
+ * That is the whole escape hatch for a gated automatic row: the app
+ * refuses to spend on it, and the user can always ask.
  */
 export function reclaimInterruptedItems(): void {
-  for (const item of getAIQueue()) {
+  const rows = getAIQueue()
+  // First, and before anything is written, so the snapshot describes the
+  // store as this process found it rather than as this pass left it.
+  noteStrandedRows(rows)
+  for (const item of rows) {
     if (item.status !== 'processing') continue
     if (!mayReviveUnattended(item)) continue
     updateAIQueueItem(item.id, {
@@ -460,6 +561,13 @@ export function startQueueProcessor(intervalMs = 30000): void {
 }
 
 export function stopQueueProcessor(): void {
+  // The stranded set describes the rows THIS process found interrupted.
+  // Once the processor is stopped nothing is claiming anything, so the
+  // record is stale: dropped here, which also means the next
+  // `startQueueProcessor` takes a fresh snapshot through its own startup
+  // reclaim rather than inheriting this one's.
+  strandedRowIds.clear()
+  startupStrandedNoted = false
   if (processorTimer) {
     clearInterval(processorTimer)
     processorTimer = null
@@ -607,6 +715,18 @@ function revivePatch(): Partial<AIQueueItem> {
  * already decide to do, they can only re-run what it decided and that
  * failed. Which is why it does not go through `enqueue` and so needs no
  * gate of its own.
+ *
+ * Status-agnostic on purpose, and it has to be. `revivePatch` sets the
+ * row to `pending` and due now whatever it was doing, so this works on a
+ * row left `processing` by a crash as well as on a `failed` one — which
+ * is the only way out of the state `reclaimInterruptedItems` deliberately
+ * parks a gated automatic row in. A function that answered `null` for
+ * `processing` would leave the panel's button a decoration.
+ *
+ * It also does not clear the stranded record: the row is no longer
+ * stranded the moment it stops being `processing`, which is all
+ * `isStranded` looks at, and the processor forgets the id again when it
+ * claims the row.
  */
 export function retryQueueItem(id: number): QueueItemView[] {
   updateAIQueueItem(id, revivePatch())

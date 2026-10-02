@@ -57,6 +57,30 @@ function jobLine(item: QueueItemView): string {
 }
 
 /**
+ * May the user press Retry on this row?
+ *
+ * A `failed` row always may — that has been the button's whole contract.
+ *
+ * A STRANDED row may too, and that is the case this file exists for. A
+ * crash leaves its row `processing` with nothing running; the app
+ * deliberately does not resume it when the relevant Auto-queue switch is
+ * off, because that spend is what the user turned off. That is the right
+ * call, but on its own it made the row a dead end: no run, no retry
+ * button, and no sign it would ever move again — the user had no way to
+ * re-ask for work they had already asked for once. Offering Retry here
+ * puts the decision back where it belongs: the app will not spend on its
+ * own, the user still can.
+ *
+ * A row that IS being worked on does not get one. `stranded` is the main
+ * process saying no run in this session owns the row, so a genuinely
+ * live `processing` row reads false here and renders as it always did —
+ * Retry on a running task would put the same work in the queue twice.
+ */
+function canRetry(item: QueueItemView): boolean {
+  return item.status === 'failed' || item.stranded === true
+}
+
+/**
  * One row, memoized on its own props.
  *
  * The status text is computed here rather than in the parent so the
@@ -105,7 +129,7 @@ const QueueRow = memo(function QueueRow({
           )}
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
-          {item.status === 'failed' && (
+          {canRetry(item) && (
             <button
               type="button"
               className="btn btn-primary btn-sm"

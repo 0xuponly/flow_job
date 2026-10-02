@@ -390,6 +390,14 @@ export interface AIQueueItem {
 export type QueueItemView = AIQueueItem & {
   jobTitle: string | null
   jobCompany: string | null
+  /**
+   * The row claims to be `processing` but no run in this app session
+   * owns it — a crash left it that way and the app did not resume it on
+   * its own. Mirrors the main-process view field, which resolves it per
+   * list rather than storing it; optional here because a row built by a
+   * test or by hand simply has no opinion, and absent reads as false.
+   */
+  stranded?: boolean
 }
 
 export const STATUS_COLORS: Record<JobStatus, string> = {

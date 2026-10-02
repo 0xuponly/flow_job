@@ -58,3 +58,55 @@ describe('the rendered status agrees with the main process on the budget', () =>
     expect(text).toMatch(/needs attention/i)
   })
 })
+
+/**
+ * A row a crash left `processing`, with nothing running on it.
+ *
+ * The status line is the only thing telling the user this row is stuck,
+ * because the app has decided not to resume it (the Auto-queue switch for
+ * its type is off) and will offer a Retry button instead. "Processing…"
+ * there is the app claiming to be working on a task it is not working on
+ * — which is exactly why the state went unnoticed — so this one case has
+ * to be worded separately from every other `processing` row.
+ */
+describe('a row a crash left processing', () => {
+  const stranded: AIQueueItem & { stranded: boolean } = {
+    id: 1,
+    type: 'generate_cv',
+    jobId: 1,
+    status: 'processing',
+    attempts: 1,
+    createdAt: 0,
+    nextRetryAt: 0,
+    stranded: true
+  }
+
+  it('does not claim to be processing', () => {
+    expect(queueItemStatusText(stranded)).not.toMatch(/processing/i)
+  })
+
+  it('says what happened, in plain terms', () => {
+    // The app closing is the thing the user did, so it is the thing to
+    // name. It also pairs with a button: the row is not lost, the user can
+    // ask for it again.
+    const text = queueItemStatusText(stranded)
+    expect(text).toMatch(/stopped/i)
+    expect(text).toMatch(/app closed/i)
+  })
+
+  it('leaks no internal state into the row', () => {
+    // The panel shows the user's work, not the queue's mechanics: no field
+    // name, no gate, no status key, no budget. None of it is actionable
+    // for the user — they press Retry.
+    expect(queueItemStatusText(stranded).toLowerCase()).not.toMatch(
+      /stranded|processing|auto_queue|manualqueued|mayrevive|auto_revive|attempt|gated|switch/
+    )
+  })
+
+  it('leaves a row that is genuinely being worked on reading as one', () => {
+    // The control: `stranded` is per row, so it cannot colour every
+    // `processing` row in the panel.
+    expect(queueItemStatusText({ ...stranded, stranded: false })).toBe('Processing…')
+    expect(queueItemStatusText({ ...stranded, stranded: undefined })).toBe('Processing…')
+  })
+})
