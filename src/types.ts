@@ -159,12 +159,9 @@ export interface Settings {
   // are hidden from the scan page picker AND skipped by the main-
   // process scan loop. Empty array = all boards enabled.
   disabled_boards: string[]
-  auto_tailor_on_scan: boolean
-  auto_tailor_min_fit: number
-  // P1.7 (BRIEF5 §4): fit-score threshold (0-100) at or above which a
-  // job auto-enqueues document generation + AI review once its fit
-  // score lands. Distinct from auto_tailor_min_fit, which only gates
-  // the opt-in scan-time auto-tailor.
+  // Fit-score threshold (0-100) at or above which a job auto-enqueues
+  // document generation + AI review once its fit score lands. No UI
+  // writes it: it lived in the retired Scan tab "Auto-Queue" section.
   auto_doc_min_fit: number
   // Per-kind auto-queue switches (Settings > Auto-queue). Each gates
   // AUTOMATIC queueing only — an explicit generate / verify / tailor

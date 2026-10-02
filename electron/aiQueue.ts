@@ -678,9 +678,9 @@ export function clearQueue(): { removed: number; queue: QueueItemView[] } {
  * `manual: true` is the caller's claim that a person asked for this
  * (the direct Verify / Regenerate / Tailor / Quick Apply actions). It
  * is what earns the promotion; automatic re-adds — the fit-landing
- * trigger, the scan-time auto-tailor, the hourly re-seeder, the processor's
- * own follow-up chaining — deliberately do not promote, or every
- * background tick would reshuffle the queue under the user.
+ * trigger, the documents backlog sweep, the hourly re-seeder, the
+ * processor's own follow-up chaining — deliberately do not promote, or
+ * every background tick would reshuffle the queue under the user.
  *
  * The return value is unchanged and load-bearing: `null` means "not
  * newly added" (it was already queued, revived, or promoted), a row
@@ -728,10 +728,9 @@ export function clearQueue(): { removed: number; queue: QueueItemView[] } {
  * every queue row goes through, rather than at the call sites, for two
  * reasons:
  *
- *  1. It cannot be bypassed. There are seven automatic producers of
- *     work today (the fit-landing trigger in fitScorer, the scan-time
- *     auto-tailor in jobSearch, the processor's own generation→review
- *     chaining, its review→regenerate loop and its
+ *  1. It cannot be bypassed. There are six automatic producers of
+ *     work today (the fit-landing trigger in fitScorer, the processor's
+ *     own generation→review chaining, its review→regenerate loop and its
  *     tailor_job_docs→review fan-out in this file, the fit
  *     re-seeder in fitAutoScore, and the documents backlog sweep in
  *     docsAutoQueue) and more arrive with every feature
