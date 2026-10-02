@@ -179,7 +179,16 @@ export function queueItemStatusText(
   // running. A crash left the row mid-task, so "Processing…" on a row
   // nothing is processing is the wrong half of the conversation and it
   // is what made the stranded state invisible.
-  if (item.stranded === true) return 'Stopped — the app closed while this was running'
+  //
+  // "before this finished", not "while this was running": the flag is
+  // reachable whenever the previous app process ended with the row
+  // mid-task, which includes a crash, a force-kill, a segfault and a lost
+  // power — not only a quit the user chose. Every one of those is the app
+  // going away; only the first is the app going away ON PURPOSE, and the
+  // row has no way to tell them apart, so the wording must not imply one.
+  // Naming the interruption at all is still worth it: it is why the task
+  // stopped, and it pairs with the Retry button that starts it again.
+  if (item.stranded === true) return 'Stopped — the app closed before this finished'
   if (item.status === 'processing') return 'Processing…'
   if (item.status === 'failed') {
     // A failed item with revive budget left is not stranded — the

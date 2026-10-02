@@ -128,9 +128,9 @@ const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]
     { line: 602, manual: true, why: 'tailor:quickApply — Quick Apply' }
   ],
   'electron/aiQueue.ts': [
-    { line: 266, manual: false, why: 'processor: generation finished, chain the review' },
-    { line: 323, manual: false, why: 'processor: review failed, auto-regenerate the document' },
-    { line: 396, manual: false, why: 'processor: tailor_job_docs finished, review each new document' }
+    { line: 355, manual: false, why: 'processor: generation finished, chain the review' },
+    { line: 412, manual: false, why: 'processor: review failed, auto-regenerate the document' },
+    { line: 485, manual: false, why: 'processor: tailor_job_docs finished, review each new document' }
   ],
   'electron/fitScorer.ts': [
     { line: 133, manual: false, why: 'fit-landing trigger: a job cleared the fit threshold' }
@@ -535,9 +535,9 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
     // (the four manual ones are in main.ts and pinned above).
     const automatic = callSites().filter((c) => !c.manual)
     expect(automatic.map((c) => `${c.where}:${c.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:266',
-      'electron/aiQueue.ts:323',
-      'electron/aiQueue.ts:396',
+      'electron/aiQueue.ts:355',
+      'electron/aiQueue.ts:412',
+      'electron/aiQueue.ts:485',
       'electron/docsAutoQueue.ts:363',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:133',

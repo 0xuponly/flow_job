@@ -73,8 +73,14 @@ function jobLine(item: QueueItemView): string {
  *
  * A row that IS being worked on does not get one. `stranded` is the main
  * process saying no run in this session owns the row, so a genuinely
- * live `processing` row reads false here and renders as it always did —
- * Retry on a running task would put the same work in the queue twice.
+ * live `processing` row reads false here and renders as it always did.
+ * That is not cosmetic: the main process's in-flight run removes its own
+ * row when it finishes, so a Retry that landed on a live row would have
+ * the run delete the row the user just asked to re-run — the re-request
+ * swallowed and the task gone from the panel. `retryQueueItem` refuses
+ * such a row for the same reason; this is what keeps the button off it in
+ * the first place, and the panel is the one place that can be working
+ * from a stale picture of which rows are live (it polls every 10s).
  */
 function canRetry(item: QueueItemView): boolean {
   return item.status === 'failed' || item.stranded === true

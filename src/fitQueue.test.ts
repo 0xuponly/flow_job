@@ -86,12 +86,21 @@ describe('a row a crash left processing', () => {
   })
 
   it('says what happened, in plain terms', () => {
-    // The app closing is the thing the user did, so it is the thing to
-    // name. It also pairs with a button: the row is not lost, the user can
-    // ask for it again.
+    // It names the interruption, which is the useful half: it is why the
+    // task stopped, and it pairs with a button that starts it again.
+    //
+    // What it must not do is put words in the user's mouth. The flag is
+    // reachable whenever the previous app process ended with the row
+    // mid-task — a crash, a force-kill, a segfault, a lost power — and none
+    // of those is the app "closing while this was running" in the sense a
+    // user would read it. The store cannot tell a quit from a kill, so the
+    // copy has to be true for both: the app is gone, and this did not
+    // finish.
     const text = queueItemStatusText(stranded)
     expect(text).toMatch(/stopped/i)
     expect(text).toMatch(/app closed/i)
+    expect(text).toMatch(/before this finished/i)
+    expect(text).not.toMatch(/closed while/i)
   })
 
   it('leaks no internal state into the row', () => {
