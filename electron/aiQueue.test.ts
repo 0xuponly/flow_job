@@ -897,11 +897,26 @@ describe('reclaiming interrupted items', () => {
   it('makes a reclaimed item due immediately rather than waiting out a backoff', () => {
     // The interruption already cost the user the wait; re-running now
     // is the whole point of reclaiming.
+    //
+    // The upper bound has to be read *after* the call, not before.
+    // `reclaimInterruptedItems` stamps `nextRetryAt: Date.now()` from inside
+    // its loop, so a `Date.now()` captured beforehand is by construction
+    // earlier than the stamp and the two only agree when the whole call
+    // happens to land inside one millisecond. Reproduced deterministically by
+    // burning ~3ms of wall clock between the two reads: with the old
+    // assertion the test fails every time, with this one it passes.
+    //
+    // Reading the clock afterwards states the contract the queue actually
+    // implements -- `runPass` treats an item as due when
+    // `nextRetryAt <= Date.now()` (aiQueue.ts:515) -- instead of a relation
+    // between two `Date.now()` calls 3ms apart. The lower bound is kept so a
+    // stamp from before this test started would still fail.
     const before = Date.now()
     mockedGetQueue.mockReturnValue([queueItem({ id: 7, status: 'processing' })])
     reclaimInterruptedItems()
     const patch = mockedUpdate.mock.calls[0][1] as { nextRetryAt: number }
-    expect(patch.nextRetryAt).toBeLessThanOrEqual(before)
+    expect(patch.nextRetryAt).toBeLessThanOrEqual(Date.now())
+    expect(patch.nextRetryAt).toBeGreaterThanOrEqual(before)
   })
 
   it('leaves pending and failed items alone', () => {
