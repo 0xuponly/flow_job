@@ -268,13 +268,18 @@ export interface Settings {
   aggregator_himalayas_enabled: boolean
   ats_boards: AtsBoard[]
   disabled_boards: string[]
-  auto_tailor_on_scan: boolean
-  auto_tailor_min_fit: number
-  // P1.7 (BRIEF5 §4): fit-score threshold (0-100) at or above which a
-  // job auto-enqueues document generation + AI review. Distinct from
-  // auto_tailor_min_fit, which only gates the *scan-time* auto-tailor
-  // opt-in; this one gates the fit-landing trigger so a job added
-  // before the CV was configured still gets docs once it scores.
+  /**
+   * Fit-score threshold (0-100) at or above which a job auto-enqueues
+   * document generation + AI review, read by the one shared eligibility
+   * predicate (`autoDocQueueEligible`, electron/docAutoQueue.ts) that
+   * both the fit-landing trigger and the documents backlog sweep ask.
+   *
+   * No UI writes this key any more: it lived in the Scan tab's "Auto-Queue"
+   * section, retired with that section, and the Auto-queue tab holds only
+   * the five switches below. A store that already has a value keeps it —
+   * 40 is the fallback when the key is absent, and normalisation still
+   * rescales a 0-1 value.
+   */
   auto_doc_min_fit: number
   /**
    * Per-kind auto-queue switches (Settings > Auto-queue).
