@@ -987,37 +987,97 @@ describe('determinism', () => {
   })
 })
 
+/**
+ * The scorer runs once per listing, thousands of times per scan, so it has to
+ * stay cheap. Same synthetic 12k-word posting the keyword extractor is
+ * guarded on, plus a guard on the size real postings actually are.
+ *
+ * These guards measure CPU, not wall clock, and that is the whole point.
+ *
+ * The property worth guarding is "the scorer burns little CPU", not "the
+ * scorer returns within N ms of wall clock on whatever machine happens to be
+ * running the suite". A wall-clock bound measures the machine as much as it
+ * measures the scorer: a worker descheduled by its siblings, or a CI box with
+ * something else on it, inflates wall clock without the scorer getting any
+ * slower. Measured here, 1000 scorings of a realistic posting:
+ *
+ *              idle           under 24 competing CPU spinners
+ *     wall     409-425ms      2390-2745ms    <- 6x swing, all of it the box
+ *     cpu      409-428ms       743-768ms     <- 1.9x swing
+ *
+ * Wall clock moved 6x and CPU moved under 2x for byte-identical work, so the
+ * old `elapsed < 1000` bound was failing on scheduling rather than on the
+ * scorer. Both tests below assert CPU. The wall-clock number is reported in
+ * the failure message so a slow run still says what it cost.
+ *
+ * The budgets are set from those measurements, not from the old wall-clock
+ * numbers:
+ *
+ *   - 1000 realistic listings: ~420ms of CPU idle, ~770ms loaded. Budgeted at
+ *     1500ms. The old budget was 1000ms, but 1.3x over the worst loaded
+ *     measurement would not have been a stable guard. What 1500ms buys is
+ *     verified rather than assumed: running the whole scorer N times inside
+ *     the wrapper leaves every other test in the file green and this one red
+ *     at 4x (1723ms of CPU), still green at 3x (1260ms). So the guard holds
+ *     a 3x regression and fails a 4x one.
+ *   - one 12k-word posting: ~34ms of CPU idle, ~50ms loaded. The 2000ms
+ *     budget is carried over unchanged and is now measured against CPU, so it
+ *     has ~40x headroom in every condition measured.
+ *
+ * `process.cpuUsage()` is process-wide rather than per-thread. Under this
+ * config each worker runs one isolated file at a time and this file is pure
+ * synchronous scoring with no timers or async work, so the delta across the
+ * measured loop is that loop's own CPU. A file that started background work
+ * would need a different instrument.
+ *
+ * No warm-up run: V8's interpreter ramp is worth ~4% of the CPU figure here
+ * (425ms for the first 1000 calls against 409ms once tiered up), which is far
+ * inside the headroom, and paying 500-2000 extra scorings on every run would
+ * spend test time and push the whole test towards the 5s test timeout for
+ * nothing.
+ */
 describe('performance guard', () => {
-  // The scorer runs once per listing, thousands of times per scan, so it has
-  // to stay cheap. Same synthetic 12k-word posting the keyword extractor is
-  // guarded on, plus a guard on the size real postings actually are.
   const filler =
     'We partner with commercial teams across the organization and support internal stakeholders through planning cycles, governance reviews, and quarterly planning exercises with measurable outcomes. '
   const skills = 'Requirements include python and kafka and postgres and kubernetes and terraform and spark and airflow and redis and golang. '
   const big = ['Staff Platform Engineer', ''].join('\n') + (filler + skills).repeat(320)
 
-  it('scores a 12k-word posting well under the 2s bound', () => {
-    expect(big.split(/\s+/).length).toBeGreaterThan(10000)
-    const started = performance.now()
-    const score = scoreCompatibilityStructured({
+  const engCv = `${CV_ENG}\nLed platform teams, delivered services, quarterly planning cycles.`
+
+  /** Wall ms and CPU ms for one run of `body`. */
+  function timed(body: () => void): { wall: number; cpu: number } {
+    const wallStart = performance.now()
+    const cpuStart = process.cpuUsage()
+    body()
+    const used = process.cpuUsage(cpuStart)
+    return { wall: performance.now() - wallStart, cpu: (used.user + used.system) / 1000 }
+  }
+
+  function scoreBigPosting(): number {
+    return scoreCompatibilityStructured({
       title: 'Staff Platform Engineer',
       description: big,
       requirements: null,
       location: null,
-      baseCv: `${CV_ENG}\nLed platform teams, delivered services, quarterly planning cycles.`
+      baseCv: engCv
     })
-    const elapsed = performance.now() - started
-    expect(score).toBeGreaterThan(0)
-    expect(elapsed, `scoring took ${elapsed.toFixed(0)}ms`).toBeLessThan(2000)
+  }
+
+  it('scores a 12k-word posting well under the 2s bound', () => {
+    expect(big.split(/\s+/).length).toBeGreaterThan(10000)
+    expect(scoreBigPosting()).toBeGreaterThan(0)
+
+    const { wall, cpu } = timed(scoreBigPosting)
+    expect(cpu, `scoring used ${cpu.toFixed(0)}ms of CPU over ${wall.toFixed(0)}ms of wall clock`).toBeLessThan(2000)
   })
 
   it('scores realistic postings fast enough for a scan (1000 listings under 1s)', () => {
     const posting = ['Financial Analyst, Reporting', ''].join('\n') + (filler + skills).repeat(2)
-    const started = performance.now()
-    for (let i = 0; i < 1000; i++) {
-      scoreCompatibility('Financial Analyst, Reporting', `${posting} posting ${i}`, CV_FINANCE)
-    }
-    const elapsed = performance.now() - started
-    expect(elapsed, `1000 scorings took ${elapsed.toFixed(0)}ms`).toBeLessThan(1000)
+    const { wall, cpu } = timed(() => {
+      for (let i = 0; i < 1000; i++) {
+        scoreCompatibility('Financial Analyst, Reporting', `${posting} posting ${i}`, CV_FINANCE)
+      }
+    })
+    expect(cpu, `1000 scorings used ${cpu.toFixed(0)}ms of CPU over ${wall.toFixed(0)}ms of wall clock`).toBeLessThan(1500)
   })
 })
