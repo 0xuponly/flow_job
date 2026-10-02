@@ -13,8 +13,7 @@ function isScraperClassificationError(err: unknown): err is ScraperClassificatio
     typeof (err as { reason?: string }).reason === 'string'
   )
 }
-import { createLogger, log as categoryLog } from './logger'
-import { enqueue } from './aiQueue'
+import { createLogger } from './logger'
 
 // File-backed category logger. Writes to <userData>/logs/scanner.log.
 const log = createLogger('scanner')
@@ -1482,38 +1481,6 @@ export async function scanAllBoards(
   }
 
   result.durationMs = Date.now() - startedAt
-
-  // Auto-tailor on scan (Task 3). When the user has the feature on and
-  // the job's fit score clears the configured minimum, queue a
-  // tailor_job_docs task for each admitted job. The 50/25 guardrail:
-  // if more than 50 jobs pass the match filters in a single scan, only
-  // the top 25 (by fit score) get auto-tailored — the rest must be
-  // handled via the Quick Apply row action. The cap_hit log line is
-  // what surfaces the toast in the renderer.
-  if (settings.auto_tailor_on_scan && result.addedJobs.length > 0) {
-    let autoTailorEligible = result.addedJobs
-    if (result.addedJobs.length > 50) {
-      categoryLog.tailor.warn('cap_hit', { total: result.addedJobs.length, cap: 50 })
-      // Re-fetch per-job to read the live score (addedJobs only carries
-      // id/title/company per `project-scan-results-lists-added-jobs`).
-      const withScores = listJobs()
-        .filter((j) => result.addedJobs.some((a) => a.id === j.id))
-        .map((j) => ({ id: j.id, score: j.score ?? 0 }))
-      autoTailorEligible = withScores
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 25)
-    }
-    for (const j of autoTailorEligible) {
-      // `withScores` above already attached the live score to each entry
-      // (`{ id, score }`), so re-reading the entire store per item via
-      // `listJobs().find(...)` would re-parse the encrypted file on every
-      // iteration. Use the score that was just looked up.
-      const score = j.score
-      if (score >= settings.auto_tailor_min_fit / 100) {
-        enqueue({ type: 'tailor_job_docs', jobId: j.id })
-      }
-    }
-  }
 
   // Recycle the shared Camoufox singleton now that the scan is done.
   // Without this it accumulates leaked tabs/threads across scans (one

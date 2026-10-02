@@ -123,8 +123,6 @@ function defaultStore(): Store {
       backup_path: '',      backup_last_success_at: '',
       backup_last_error: '',
       passphrase: '',
-      auto_tailor_on_scan: false,
-      auto_tailor_min_fit: 90,
       // P1.7 (BRIEF5 §4): fit threshold for auto document generation.
       auto_doc_min_fit: 40,
       // Auto-queue switches (Settings > Auto-queue). All true: this is
@@ -304,28 +302,16 @@ export function loadStore(): Store {
     if (typeof store.settings.fit_autoscore_interval_minutes !== 'number' || store.settings.fit_autoscore_interval_minutes <= 0) {
       store.settings.fit_autoscore_interval_minutes = 60
     }
-    if (typeof store.settings.auto_tailor_on_scan !== 'boolean') {
-      store.settings.auto_tailor_on_scan = false
-    }
-    if (typeof store.settings.auto_tailor_min_fit !== 'number') {
-      store.settings.auto_tailor_min_fit = 90
-    } else if (store.settings.auto_tailor_min_fit > 0 && store.settings.auto_tailor_min_fit <= 1) {
-      // Migrate from the pre-2026-07-22 0-1 scale to the 0-100 percent
-      // scale. The threshold is "<= 1" so the new defaults (90) and any
-      // user-set value in 0-100 are untouched.
-      store.settings.auto_tailor_min_fit = Math.round(store.settings.auto_tailor_min_fit * 100)
-    }
     // P1.7 (BRIEF5 §4): backfill the auto-doc generation threshold.
-    // Same 0-1 → 0-100 normalization as auto_tailor_min_fit so a
-    // hand-edited store with the fractional scale still works.
+    // The 0-1 → 0-100 normalization is here for a store that predates the
+    // 0-100 scale, so a hand-edited fractional value still works.
     if (typeof store.settings.auto_doc_min_fit !== 'number') {
       store.settings.auto_doc_min_fit = 40
     } else if (store.settings.auto_doc_min_fit > 0 && store.settings.auto_doc_min_fit <= 1) {
       store.settings.auto_doc_min_fit = Math.round(store.settings.auto_doc_min_fit * 100)
     }
-    // Backfill the auto-queue switches. Same pattern as
-    // auto_tailor_on_scan above: anything that is not already a boolean
-    // becomes `true`.
+    // Backfill the auto-queue switches: anything that is not already a
+    // boolean becomes `true`.
     //
     // The direction matters more here than it does for the scan
     // settings above. These keys gate automatic work, so "unreadable"
@@ -346,6 +332,14 @@ export function loadStore(): Store {
     if (typeof store.settings.quick_apply_shortcut !== 'string' && store.settings.quick_apply_shortcut !== null) {
       store.settings.quick_apply_shortcut = null
     }
+    // `auto_tailor_on_scan` and `auto_tailor_min_fit` are RETIRED (the Scan
+    // tab's "Auto-Queue" section and its scan-time producer are gone) and
+    // are deliberately NOT deleted from a store that still carries them.
+    // Nothing reads them — an unknown key in `settings` is inert, it is
+    // carried through the load and written back untouched — whereas
+    // stripping them means rewriting every user's settings file, which
+    // touches every other key's persisted value as collateral and buys
+    // nothing. Leave them until something else decides otherwise.
     if (!Array.isArray(store.settings.disabled_boards)) {
       // Per-board on/off list, populated by the Settings > Boards tab.
       // Strings are board names matching `BOARDS[].name` in

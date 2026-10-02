@@ -702,34 +702,34 @@ describe('the tab matches the controls already in this file', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 8. The second, unlinked "Auto-Queue" the Scan tab still shows.
+// 8. The second, unlinked "Auto-Queue" the Scan tab used to show — RETIRED.
 // ---------------------------------------------------------------------------
 
-describe('the Scan tab still has its own "Auto-Queue" control', () => {
-  it('the scan-time auto-tailor switch is not one of the five, and the new tab cannot see it', async () => {
-    // Two places in Settings now say "Auto-Queue" and disagree. The Scan
-    // tab's own Auto-Queue section still owns `auto_tailor_on_scan`,
-    // which is not one of the five switches and is not listed on the new
-    // tab. A user who turns off "Auto-queue CV generation" and then
-    // reads the Scan tab is told, in the app's own words, that the app
-    // will "Queue CV + cover letter tailoring when a new job is added" —
-    // a promise the gate silently breaks (proved at the queue level in
-    // electron/review.enqueueCallSites.test.ts). Reported, not fixed:
-    // whether the two controls should merge is a design decision.
+describe('the Scan tab no longer has its own "Auto-Queue" control', () => {
+  it('is gone, and the new tab never had a row for it', async () => {
+    // This block used to report the defect it now pins the fix for: two
+    // places in Settings said "Auto-Queue" and disagreed, the Scan tab's
+    // owning `auto_tailor_on_scan` with the copy "Queue CV + cover letter
+    // tailoring when a new job is added" was a switch to nothing once
+    // `auto_queue_cv` was off, and merging the two was a design decision.
+    // The decision was to retire it: the Scan tab's whole Auto-Queue
+    // section, its `auto_tailor_min_fit` slider and the scan-time producer
+    // behind it are gone, and nothing replaced them.
+    //
+    // So the Scan tab's half of the claim is inverted here rather than
+    // deleted, and the new tab's half is unchanged: it never had a row for
+    // the retired switch, and it must not grow one now that the other
+    // control is gone. Five switches, five.
     render(<SettingsPage />)
     fireEvent.click(await screen.findByRole('button', { name: /^Scan$/i }))
-    const scanAutoQueue = (await screen.findByRole('checkbox', {
-      name: /Queue CV \+ cover letter tailoring when a new job is added/i
-    })) as HTMLInputElement
-    // It is still its own control, saved by the Scan tab's Save button
-    // rather than immediately.
-    expect(store.auto_tailor_on_scan).toBe(false)
-    fireEvent.click(scanAutoQueue)
-    expect(scanAutoQueue).toBeChecked()
-    expect(vi.mocked(api.updateSettings)).not.toHaveBeenCalled()
-
-    // The new tab has no row for it, so there is no way to see or change
-    // it from there.
+    expect(
+      await screen.findByLabelText(/Skip listings matching less than/i)
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('checkbox', { name: /Queue CV \+ cover letter tailoring/i })
+    ).toBeNull()
+    expect(screen.queryByText('Auto-Queue', { selector: '.section-title' })).toBeNull()
+    // The switch is not one of the five and the new tab has no row for it.
     fireEvent.click(await screen.findByRole('button', { name: /^Auto-queue$/i }))
     await screen.findByLabelText(/Auto-queue fit scoring/i)
     expect(switches()).toHaveLength(5)

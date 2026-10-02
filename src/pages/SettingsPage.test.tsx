@@ -184,6 +184,139 @@ describe('SettingsPage scan_min_match (the scan match floor)', () => {
   })
 })
 
+describe('SettingsPage Scan tab — the retired Auto-Queue section', () => {
+  // The Scan tab used to carry its own "Auto-Queue" section: a switch that
+  // promised "Queue CV + cover letter tailoring when a new job is added",
+  // a fit-score slider under it, and the auto-doc fit threshold beside it.
+  // It is retired, not moved: the Auto-queue tab owns the five switches and
+  // there is no replacement control anywhere. So these assert the section
+  // is GONE, and — just as load-bearing — that the tab still holds
+  // everything it holds now, because "removed one section" and "removed the
+  // whole tab" look identical from the outside.
+  //
+  // The fixture above still carries `auto_tailor_on_scan` and
+  // `auto_tailor_min_fit`, on purpose: a store written by an older build
+  // still sends them to the renderer, and the page must render over them.
+
+  async function openScanTab() {
+    render(<SettingsPage />)
+    fireEvent.click(await screen.findByRole('button', { name: /^Scan$/i }))
+    // The Match Filter heading is the last thing before the retired
+    // section, so waiting on it means the tab's content is mounted.
+    await screen.findByLabelText(/Skip listings matching less than/i)
+  }
+
+  /** The section headings the Scan tab renders, in order. */
+  function sectionTitles(): string[] {
+    return Array.from(document.querySelectorAll('.settings-page .section-title')).map(
+      (n) => n.textContent ?? ''
+    )
+  }
+
+  /** Every number input on the tab, by value. */
+  function numberInputs(): HTMLInputElement[] {
+    return Array.from(
+      document.querySelectorAll<HTMLInputElement>('.settings-page input[type="number"]')
+    )
+  }
+
+  it('renders no Auto-Queue section, and no switch that promised scan-time tailoring', async () => {
+    await openScanTab()
+    expect(sectionTitles()).not.toContain('Auto-Queue')
+    expect(
+      screen.queryByRole('checkbox', { name: /Queue CV \+ cover letter tailoring/i })
+    ).toBeNull()
+    expect(screen.queryByText(/Queue CV \+ cover letter tailoring/i)).toBeNull()
+    // And the copy the section was found by, so this is not just "the
+    // heading moved somewhere else on the page".
+    expect(screen.queryByText(/Only for jobs with fit score at or above/i)).toBeNull()
+  })
+
+  it('has no fit-score slider left — only the two number fields the tab still owns', async () => {
+    // Counted, not pattern-matched: the retired section held TWO number
+    // inputs (auto_tailor_min_fit, auto_doc_min_fit), so "the slider is
+    // gone" is only true if the tab is down to the auto-scan interval and
+    // the match floor. A future control added here fails this, which is the
+    // point — the retirement must not quietly become a relocation.
+    await openScanTab()
+    const inputs = numberInputs()
+    expect(inputs.map((i) => i.value)).toEqual([
+      '120', // auto_scan_interval_minutes
+      '0.25' // scan_min_match
+    ])
+    expect(screen.queryByText(/Auto-generate documents when a job/i)).toBeNull()
+  })
+
+  it('keeps the Auto-Scan section, interval and all', async () => {
+    await openScanTab()
+    expect(sectionTitles()).toEqual(['Auto-Scan', 'Match Filter'])
+    expect(
+      await screen.findByRole('checkbox', { name: /Run job scan automatically in the background/i })
+    ).toBeChecked()
+    expect(screen.getByText(/minutes after the last scan completes/i)).toBeInTheDocument()
+    expect(screen.getByText(/Auto-scans use all job boards/i)).toBeInTheDocument()
+  })
+
+  it('keeps the Match Filter and its copy', async () => {
+    await openScanTab()
+    const input = screen.getByLabelText(/Skip listings matching less than/i)
+    expect(input).toHaveValue(0.25)
+    expect(
+      screen.getByText(/compares each listing against your base CV/i)
+    ).toBeInTheDocument()
+  })
+
+  it('still saves the fields that are left, through the Scan tab Save button', async () => {
+    // The Save button is the tab's own affordance and both surviving
+    // controls use it. Retiring the section must not have retired the save
+    // path with it.
+    await openScanTab()
+    vi.mocked(api.updateSettings).mockClear()
+    fireEvent.change(screen.getByLabelText(/Skip listings matching less than/i), {
+      target: { value: '0.4' }
+    })
+    fireEvent.change(numberInputs()[0], { target: { value: '45' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save settings/i }))
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalled())
+    expect(vi.mocked(api.updateSettings).mock.calls[0][0]).toMatchObject({
+      auto_scan_interval_minutes: 45,
+      scan_min_match: 0.4
+    })
+    // The tab's Save posts the whole settings object, so the retired keys
+    // ride along exactly as the store held them. What must not happen is
+    // the page writing them: unchanged here means the payload is the loaded
+    // object, not a new value the retired section used to produce.
+    const saved = vi.mocked(api.updateSettings).mock.calls[0][0] as Record<string, unknown>
+    expect(saved.auto_tailor_on_scan).toBe(false)
+    expect(saved.auto_tailor_min_fit).toBe(0)
+  })
+
+  it('renders over a store that still carries the retired keys', async () => {
+    // A pre-retirement store sends both keys to the renderer. The page must
+    // not read them, must not render a control for them, and must not
+    // throw on the shape. Asserted against the fixture that has them.
+    vi.mocked(api.getSettings).mockResolvedValue({
+      ...baseSettings,
+      auto_tailor_on_scan: true,
+      auto_tailor_min_fit: 90
+    } as never)
+    await openScanTab()
+    expect(sectionTitles()).toEqual(['Auto-Scan', 'Match Filter'])
+    expect(
+      screen.queryByRole('checkbox', { name: /Queue CV \+ cover letter tailoring/i })
+    ).toBeNull()
+  })
+
+  it('puts no sixth switch on the Auto-queue tab, and does not lose a fifth', async () => {
+    // The retirement must not have been answered with a replacement. The
+    // tab is five switches and only five.
+    render(<SettingsPage />)
+    fireEvent.click(await screen.findByRole('button', { name: /^Auto-queue$/i }))
+    await screen.findByLabelText(/Auto-queue fit scoring/i)
+    expect(screen.getAllByRole('checkbox')).toHaveLength(5)
+  })
+})
+
 describe('SettingsPage API key inheritance', () => {
   // The model cards render one password input per configured model, in
   // list order, so index N is the Nth model's key.

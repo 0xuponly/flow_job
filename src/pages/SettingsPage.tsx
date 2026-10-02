@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { ApiModelConfig, Settings } from '../types'
-import { AUTO_REGEN_MAX, PASSING_REVIEW_SCORE } from '../types'
 import { notify } from '../components/Notifications'
 import { LocationPicker } from '../components/LocationPicker'
 import { parseLocationPicks } from '../utils'
@@ -769,58 +768,6 @@ export default function SettingsPage() {
                 to catch more. Needs a base CV: with none configured there is nothing to compare against,
                 so nothing is skipped.
               </p>
-            </div>
-          </div>
-          <div className="section-title">Auto-Queue</div>
-          <div className="card">
-            <div className="form-group">
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <input
-                  type="checkbox"
-                  checked={settings.auto_tailor_on_scan}
-                  onChange={(e) => {
-                    update('auto_tailor_on_scan', e.target.checked)
-                  }}
-                />
-                Queue CV + cover letter tailoring when a new job is added
-              </label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, marginLeft: 24 }}>
-                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Only for jobs with fit score at or above</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={100}
-                  step={1}
-                  style={{ width: 80 }}
-                  value={settings.auto_tailor_min_fit}
-                  onChange={(e) => {
-                    const n = parseFloat(e.target.value)
-                    if (!isNaN(n) && n >= 0 && n <= 100) update('auto_tailor_min_fit', n)
-                  }}
-                />
-                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>%</span>
-              </div>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, marginLeft: 24 }}>
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                Auto-generate documents when a job&apos;s fit score reaches
-              </span>
-              <input
-                type="number"
-                min={0}
-                max={100}
-                step={1}
-                style={{ width: 80 }}
-                value={settings.auto_doc_min_fit}
-                onChange={(e) => {
-                  const n = parseFloat(e.target.value)
-                  if (!isNaN(n) && n >= 0 && n <= 100) update('auto_doc_min_fit', n)
-                }}
-              />
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                % (generation + AI review, auto-regenerates up to {AUTO_REGEN_MAX}x if the
-                review scores below {PASSING_REVIEW_SCORE})
-              </span>
             </div>
           </div>
         </>
