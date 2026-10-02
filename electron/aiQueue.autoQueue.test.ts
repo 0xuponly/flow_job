@@ -135,13 +135,18 @@ describe('auto_queue_cv off', () => {
     expect(rows('tailor_job_docs')).toEqual([jobId])
   })
 
-  it('stops the fit-landing trigger from queueing generation', () => {
+  it('stops the fit-landing trigger from queueing CV generation', () => {
     // maybeAutoEnqueueDocs is the fit-scoring path that reaches for
-    // document generation on its own.
+    // document generation on its own. It queues PER DOCUMENT UNIT now, so
+    // "CV auto-queueing off" means the CV unit and not the cover letter:
+    // the cover letter still gets its row, which is the whole point of the
+    // per-unit shape and the reason the trigger no longer queues the
+    // both-documents `tailor_job_docs` row.
     updateSettings({ auto_queue_cv: false })
     const jobId = addScoredJob()
-    expect(maybeAutoEnqueueDocs(jobId)).toBe(false)
-    expect(rows('tailor_job_docs')).toEqual([])
+    expect(maybeAutoEnqueueDocs(jobId)).toBe(true)
+    expect(rows('generate_cv')).toEqual([])
+    expect(rows('generate_cover_letter')).toEqual([jobId])
   })
 
   it('leaves automatic cover-letter generation alone', () => {
@@ -350,29 +355,38 @@ describe('regenerate_section has no switch', () => {
 describe('the fit-landing trigger', () => {
   it('queues generation with both generation switches on', () => {
     // The other half of the maybeAutoEnqueueDocs contract: the trigger
-    // still works when the user has left auto-queueing on.
+    // still works when the user has left auto-queueing on. It queues the
+    // MISSING UNITS, one row each — never the both-documents
+    // `tailor_job_docs` row, which cannot honour one toggle without
+    // doing the other and which regenerated a CV the sweep had left alone.
     const jobId = addScoredJob()
     expect(maybeAutoEnqueueDocs(jobId)).toBe(true)
-    expect(rows('tailor_job_docs')).toEqual([jobId])
-  })
-
-  it('stops when the cover-letter switch alone is off', () => {
-    // The one item writes both documents, so it needs both.
-    const jobId = addScoredJob()
-    updateSettings({ auto_queue_cover_letter: false })
-    expect(maybeAutoEnqueueDocs(jobId)).toBe(false)
+    expect(rows('generate_cv')).toEqual([jobId])
+    expect(rows('generate_cover_letter')).toEqual([jobId])
     expect(rows('tailor_job_docs')).toEqual([])
   })
 
+  it('still stops the CV unit when the cover-letter switch alone is off', () => {
+    // The mirror of the previous test, and the case `tailor_job_docs`
+    // could not express: with the cover letter off, a CV-only trigger is
+    // a legitimate answer.
+    const jobId = addScoredJob()
+    updateSettings({ auto_queue_cover_letter: false })
+    expect(maybeAutoEnqueueDocs(jobId)).toBe(true)
+    expect(rows('generate_cover_letter')).toEqual([])
+    expect(rows('generate_cv')).toEqual([jobId])
+  })
+
   it('does not even revive a failed generation row when a switch is off', () => {
-    // enqueue() is not reached, so there is no row to revive: the user
-    // turned this off and nothing wakes up on their behalf.
+    // Nothing wakes up on the user's behalf for the unit they turned off,
+    // and the dead row they already had is not resurrected to produce it.
     const jobId = addScoredJob()
     const row = addAIQueueItem({ type: 'tailor_job_docs', jobId })
     row.status = 'failed'
     updateSettings({ auto_queue_cv: false })
-    expect(maybeAutoEnqueueDocs(jobId)).toBe(false)
+    maybeAutoEnqueueDocs(jobId)
     expect(getAIQueue().filter((q) => q.type === 'tailor_job_docs')[0].status).toBe('failed')
+    expect(rows('generate_cv')).toEqual([])
   })
 })
 

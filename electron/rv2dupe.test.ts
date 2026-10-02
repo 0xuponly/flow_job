@@ -400,17 +400,29 @@ function body(src: string, signature: string): string {
 // import line on its own — the prior reviewer proved that by gutting
 // maybeAutoEnqueueDocs to `return false` and watching 15 tests stay green —
 // so every structural assertion below requires the `if (` and the arguments.
-const TRIGGER_CALL =
-  /if \(jobDocWorkInFlight\(db\.getAIQueue\(\), jobId, \['cv', 'cover_letter'\]\)\) return false/
+// The trigger asks about ONE document type — the unit it is about to
+// queue — exactly as the sweep does. It used to ask about
+// `['cv', 'cover_letter']`, which is the both-documents `tailor_job_docs`
+// unit's question, and that mismatch between the two producers' questions
+// is the residual duplicate this file's Finding 1 measured.
+const TRIGGER_CALL = /if \(jobDocWorkInFlight\(queue, jobId, \[unit\.docType\]\)\) continue/
 const SWEEP_CALL = /if \(jobDocWorkInFlight\(queue, job\.id, \[unit\.docType\]\)\) continue/
 
 describe('2. both directions CALL jobDocWorkInFlight', () => {
-  it('the fit-landing trigger calls it, asking about BOTH documents', () => {
+  it('the fit-landing trigger calls it, asking about the unit it is queuing', () => {
     const b = body(code(readFileSync('electron/fitScorer.ts', 'utf8')), 'export function maybeAutoEnqueueDocs(')
     expect(b).toMatch(TRIGGER_CALL)
     // Exactly one call: two calls in one function is how a second
     // implementation starts.
     expect(b.match(/jobDocWorkInFlight\(/g) ?? []).toHaveLength(1)
+  })
+
+  it('the trigger no longer queues the both-documents row', () => {
+    // Structural, because it is the shape of the fix and a behavioural test
+    // cannot say "no producer anywhere enqueues this type".
+    const trigger = code(readFileSync('electron/fitScorer.ts', 'utf8'))
+    expect(trigger).not.toContain('tailor_job_docs')
+    expect(trigger).toMatch(/enqueue\(\{ type: unit\.queueType, jobId \}\)/)
   })
 
   it('BOTH sweep paths call it, once each, per unit', () => {
@@ -456,13 +468,13 @@ describe('2. both directions CALL jobDocWorkInFlight', () => {
     expect(rowsOf(job.id)).toHaveLength(2)
   })
 
-  it("BEHAVIOUR: with the trigger's row live, the sweep queues nothing", () => {
+  it("BEHAVIOUR: with the trigger's rows live, the sweep queues nothing", () => {
     const job = eligibleJob()
     expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
     // A gutted sweep returns 2 here and two more rows appear.
     expect(runDocsAutoQueueBacklog()).toBe(0)
     expect(enqueueDocsBacklog()).toBe(0)
-    expect(rowsOf(job.id)).toHaveLength(1)
+    expect(rowsOf(job.id)).toHaveLength(2)
   })
 
   it('BEHAVIOUR: a PROCESSING row counts, not just a pending one', () => {
@@ -478,8 +490,11 @@ describe('2. both directions CALL jobDocWorkInFlight', () => {
     const job = eligibleJob()
     const row = addAIQueueItem({ type: 'generate_cv', jobId: job.id })
     updateAIQueueItem(row.id, { status: 'failed', attempts: 9, nextRetryAt: 0 })
+    // The CV unit revives the dead row (charged to the budget) and the
+    // cover-letter unit is queued; no second CV row appears.
     expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
-    expect(typeList(job.id)).toEqual(['generate_cv', 'tailor_job_docs'])
+    expect(typeList(job.id)).toEqual(['generate_cover_letter', 'generate_cv'])
+    expect(rowsOf(job.id).filter((q) => q.type === 'generate_cv')).toHaveLength(1)
   })
 
   it('BEHAVIOUR: a regeneration row (carries a documentId) covers nothing', () => {
@@ -540,16 +555,17 @@ describe('2. both directions CALL jobDocWorkInFlight', () => {
 // ---------------------------------------------------------------------------
 
 describe('3. the deferred work actually completes the job', () => {
-  it("a live generate_cv row stops the trigger, and the sweep still queues the cover letter", () => {
+  it("a live generate_cv row stops the trigger on the CV, and the cover letter is still queued", () => {
     // The exact edge the predicate's per-unit granularity exists for: a
     // blanket "is this job covered?" here trades a duplicate CV for a job
     // with NO cover letter and nothing queued to produce one.
     const job = eligibleJob()
     addAIQueueItem({ type: 'generate_cv', jobId: job.id })
 
-    expect(maybeAutoEnqueueDocs(job.id)).toBe(false)
-    expect(runDocsAutoQueueBacklog()).toBe(1)
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
     expect(typeList(job.id)).toEqual(['generate_cover_letter', 'generate_cv'])
+    // ...and the sweep, arriving afterwards, has nothing left to add.
+    expect(runDocsAutoQueueBacklog()).toBe(0)
   })
 
   it('...and that pair completes BOTH documents end to end', async () => {
@@ -557,8 +573,8 @@ describe('3. the deferred work actually completes the job', () => {
     const job = eligibleJob()
     addAIQueueItem({ type: 'generate_cv', jobId: job.id })
 
-    expect(maybeAutoEnqueueDocs(job.id)).toBe(false)
-    expect(runDocsAutoQueueBacklog()).toBe(1)
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
+    expect(runDocsAutoQueueBacklog()).toBe(0)
     await pump()
 
     expect(docsOf(job.id, 'cv')).toHaveLength(1)
@@ -570,9 +586,9 @@ describe('3. the deferred work actually completes the job', () => {
   it('the mirror image, for the cover letter', () => {
     const job = eligibleJob()
     addAIQueueItem({ type: 'generate_cover_letter', jobId: job.id })
-    expect(maybeAutoEnqueueDocs(job.id)).toBe(false)
-    expect(runDocsAutoQueueBacklog()).toBe(1)
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
     expect(typeList(job.id)).toEqual(['generate_cover_letter', 'generate_cv'])
+    expect(runDocsAutoQueueBacklog()).toBe(0)
   })
 
   // --- the state the BRIEF asked me to hunt for, in every reachable shape ---
@@ -666,7 +682,7 @@ describe('3. the deferred work actually completes the job', () => {
     expect(calls).toEqual(spent)
   })
 
-  it('FINDING: a job whose CV is mid-REVIEW — the two producers disagree', async () => {
+  it('FINDING (now FIXED): a job whose CV is mid-REVIEW — both producers queue only the cover letter', async () => {
     // THE RESIDUAL DUPLICATE. `jobDocWorkInFlight` answers "is a first
     // generation of one of these documents in flight?" and `verify` /
     // documentId-carrying rows are deliberately excluded — a review or a
@@ -698,10 +714,11 @@ describe('3. the deferred work actually completes the job', () => {
     expect(typeList(job.id)).toEqual(['generate_cover_letter', 'verify'])
   })
 
-  it('FINDING: ...and the trigger\'s answer to the same job is a fresh CV', async () => {
-    // The identical starting state as the case above, one test earlier in
-    // time, so the two answers are the two producers' answers and not two
-    // different setups.
+  it('FINDING (now FIXED): ...and the trigger now gives the SAME answer', async () => {
+    // Identical starting state to the case above, one test earlier in time,
+    // so the two answers are the two producers' answers and not two
+    // different setups. The trigger used to queue `tailor_job_docs` here,
+    // which REGENERATED the CV the sweep had deliberately left alone.
     vi.useRealTimers()
     const calls = provider()
     const job = eligibleJob()
@@ -710,29 +727,27 @@ describe('3. the deferred work actually completes the job', () => {
     expect(docsOf(job.id, 'cv')).toHaveLength(1)
     expect(typeList(job.id)).toEqual(['verify'])
 
-    // ANSWER B, the trigger's. The CV is not reviewed yet, so
-    // `autoDocQueueEligible` admits the job, and no live first-generation
-    // row exists — so it queues `tailor_job_docs`, which produces both
-    // documents including the one already on disk.
     expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
-    expect(typeList(job.id)).toEqual(['tailor_job_docs', 'verify'])
+    expect(typeList(job.id)).toEqual(['generate_cover_letter', 'verify'])
 
     await pump()
 
-    // One job. THREE cv documents and TWO cover letters, every one of them
-    // billed. (Two of the CVs because `tailor_job_docs` double-writes — see
-    // finding 2 — so the trigger's own row contributes two where the sweep's
-    // contributes one.)
-    expect(docsOf(job.id, 'cv')).toHaveLength(3)
-    expect(docsOf(job.id, 'cover_letter')).toHaveLength(2)
-    expect(calls.cv).toBe(2)
+    // THE MONEY. One job, ONE cv document and ONE cover letter, from one
+    // tailoring call each. This case used to end at THREE cv documents and
+    // TWO cover letters.
+    expect(docsOf(job.id, 'cv')).toHaveLength(1)
+    expect(docsOf(job.id, 'cover_letter')).toHaveLength(1)
+    expect(calls.cv).toBe(1)
+    expect(calls.cl).toBe(1)
   })
 
-  it('FINDING: the regeneration loop is invisible to the trigger too', () => {
+  it('FINDING (now FIXED): the regeneration loop no longer duplicates the CV either', () => {
     // The excluded `documentId` case, which is a far wider window than a
     // review: from the moment the review fails until AUTO_REGEN_MAX is
-    // reached, a `generate_cv` row carrying the CV's id is in flight and the
-    // predicate says the CV is not covered.
+    // reached, a `generate_cv` row carrying the CV's id is in flight. The
+    // predicate still excludes it — a rebuild produces no MISSING document
+    // — but the trigger now consults `docTypeMissing` first, and the CV is
+    // not missing, so it never gets as far as the predicate for that unit.
     vi.useRealTimers()
     provider()
     const job = eligibleJob()
@@ -743,10 +758,10 @@ describe('3. the deferred work actually completes the job', () => {
       addAIQueueItem({ type: 'generate_cv', jobId: job.id, documentId: cvDoc.id })
       expect(typeList(job.id)).toEqual(['generate_cv', 'verify'])
 
-      // The trigger does not see it, because a documentId means "rebuild a
-      // document that exists".
+      // The CV exists, so the CV unit is not even considered; only the
+      // cover letter is queued.
       expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
-      expect(typeList(job.id)).toEqual(['generate_cv', 'tailor_job_docs', 'verify'])
+      expect(typeList(job.id)).toEqual(['generate_cover_letter', 'generate_cv', 'verify'])
     })
   })
 
@@ -770,9 +785,14 @@ describe('3. the deferred work actually completes the job', () => {
     expect(enqueueDocsBacklog()).toBe(0)
     expect(rowsOf(job.id)).toHaveLength(2)
 
-    // ...and the trigger, which has no budget of its own, is the one that
-    // will spend here.
-    expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
+    // ...and the trigger, which used to have no budget of its own and would
+    // have spent here on every landing, now refuses the same rows for the
+    // same reason: `planDocUnit` is the sweep's own bounded planner.
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(false)
+    expect(rowsOf(job.id)).toHaveLength(2)
+    for (const row of rowsOf(job.id)) {
+      expect(row.autoRevives, row.type).toBe(AUTO_REVIVE_MAX)
+    }
   })
 })
 
@@ -787,100 +807,134 @@ describe('3. the deferred work actually completes the job', () => {
 // ---------------------------------------------------------------------------
 
 describe('4. the fitScorer.ts conflict resolution', () => {
-  // The switch check, as a CALL-shaped `if`, not a mention in prose.
-  const SWITCHES =
-    /if \(settings\.auto_queue_cv === false \|\| settings\.auto_queue_cover_letter === false\) \{\s*return false\s*\}/
-  const ELIGIBLE = /if \(!autoDocQueueEligible\(job, settings, db\.listDocuments\(jobId\)\)\) return false/
+  // The per-unit switch gate, as a CALL-shaped `if`, not a mention in prose.
+  const UNITS = /for \(const unit of docUnits\(autoQueueFlags\(settings\)\)\)/g
+  const SWITCH = /if \(!unit\.enabled\) continue/
+  const ELIGIBLE = /if \(!autoDocQueueEligible\(job, settings, docs\)\) return false/
 
-  it('both halves are present in maybeAutoEnqueueDocs, switches first', () => {
+  it('both halves are present in maybeAutoEnqueueDocs, gate first', () => {
     const b = body(code(readFileSync('electron/fitScorer.ts', 'utf8')), 'export function maybeAutoEnqueueDocs(')
-    expect(b).toMatch(SWITCHES)
+    expect(b).toMatch(UNITS)
+    expect(b).toMatch(SWITCH)
     expect(b).toMatch(ELIGIBLE)
     expect(b).toMatch(TRIGGER_CALL)
-    // Order is a claim the comment makes ("come BEFORE the fit threshold,
-    // and the reason is the return value"): a caller reads `false` as
-    // "generation was not scheduled", which is true either way, so the
-    // order is about the comment's honesty rather than behaviour. Pinned
-    // anyway, since the comment asserts it.
-    expect(b.indexOf('auto_queue_cv === false')).toBeLessThan(b.indexOf('autoDocQueueEligible('))
-    expect(b.indexOf('autoDocQueueEligible(')).toBeLessThan(b.indexOf('jobDocWorkInFlight('))
+    // One pass over the shared unit list, and the job-level gate before
+    // it. Order is a claim the comment makes; pinned because the comment
+    // asserts it.
+    expect(b.match(UNITS)).toHaveLength(1)
+    expect(b.indexOf('autoDocQueueEligible(')).toBeLessThan(b.indexOf('docUnits('))
+    expect(b.indexOf('docTypeMissing(')).toBeLessThan(b.indexOf('jobDocWorkInFlight('))
+    expect(b.indexOf('jobDocWorkInFlight(')).toBeLessThan(b.indexOf('planDocUnit('))
   })
 
-  it('either switch off means the trigger queues nothing', () => {
+  it('either switch off stops THAT unit and only that unit', () => {
+    // Both keys are written every round: `updateSettings` merges, so a
+    // one-key update would inherit the previous round's `false`.
     for (const off of ['auto_queue_cv', 'auto_queue_cover_letter'] as const) {
+      const on = off === 'auto_queue_cv'
+        ? { auto_queue_cv: false, auto_queue_cover_letter: true }
+        : { auto_queue_cv: true, auto_queue_cover_letter: false }
       const job = eligibleJob()
-      updateSettings({ [off]: false })
-      expect(maybeAutoEnqueueDocs(job.id), off).toBe(false)
+      updateSettings(on)
       expect(rowsOf(job.id), off).toHaveLength(0)
+      expect(maybeAutoEnqueueDocs(job.id), off).toBe(true)
+      expect(typeList(job.id), off).toEqual(
+        off === 'auto_queue_cv' ? ['generate_cover_letter'] : ['generate_cv']
+      )
     }
+    // Both off: nothing at all.
+    const job = eligibleJob()
+    updateSettings({ auto_queue_cv: false, auto_queue_cover_letter: false })
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(false)
+    expect(rowsOf(job.id)).toHaveLength(0)
   })
 
-  it('both switches on, and no live work, means the trigger queues', () => {
+  it('both switches on, and no live work, means the trigger queues both units', () => {
     const job = eligibleJob()
     updateSettings({ auto_queue_cv: true, auto_queue_cover_letter: true })
     expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
-    expect(typeList(job.id)).toEqual(['tailor_job_docs'])
+    expect(typeList(job.id)).toEqual(['generate_cover_letter', 'generate_cv'])
   })
 
   it('neither half shadows the other: all eight combinations of (switches, live rows)', () => {
     // The truth table both halves jointly produce. Read as
-    // [cv switch, cover-letter switch] -> may the trigger queue?
-    const table: [boolean, boolean, boolean, boolean][] = [
-      //  cv     cl     withLiveRows  mayQueue
-      [true, true, false, true],
-      [true, true, true, false],
-      [true, false, false, false],
-      [true, false, true, false],
-      [false, true, false, false],
-      [false, true, true, false],
-      [false, false, false, false],
-      [false, false, true, false]
+    // [cv switch, cover-letter switch, a live generate_cv row] ->
+    // [may the trigger queue, which rows it may leave]. The trigger and
+    // the sweep are per unit, so the answer is a SET of unit types, not a
+    // boolean.
+    const table: [boolean, boolean, boolean, string[]][] = [
+      //  cv     cl     liveCv   rows the trigger ADDS
+      [true, true, false, ['generate_cover_letter', 'generate_cv']],
+      [true, true, true, ['generate_cover_letter']],
+      [true, false, false, ['generate_cv']],
+      [true, false, true, []],
+      [false, true, false, ['generate_cover_letter']],
+      [false, true, true, ['generate_cover_letter']],
+      [false, false, false, []],
+      [false, false, true, []]
     ]
-    for (const [cv, cl, liveRows, mayQueue] of table) {
+    for (const [cv, cl, liveRows, expected] of table) {
       updateSettings({ auto_queue_cv: cv, auto_queue_cover_letter: cl })
       const job = eligibleJob()
       if (liveRows) addAIQueueItem({ type: 'generate_cv', jobId: job.id })
-      expect(maybeAutoEnqueueDocs(job.id), `cv=${cv} cl=${cl} live=${liveRows}`).toBe(mayQueue)
-      const expectedRows = liveRows || mayQueue ? 1 : 0
-      expect(rowsOf(job.id).length, `cv=${cv} cl=${cl} live=${liveRows}`).toBe(expectedRows)
+      const before = typeList(job.id)
+      expect(maybeAutoEnqueueDocs(job.id), `cv=${cv} cl=${cl} live=${liveRows}`).toBe(
+        expected.length > 0
+      )
+      expect(
+        rowsOf(job.id)
+          .map((q) => q.type)
+          .sort(),
+        `cv=${cv} cl=${cl} live=${liveRows}`
+      ).toEqual([...before, ...expected].sort())
     }
   })
 
-  it('SOUNDNESS: the trigger\'s inline switch rule agrees with enqueue\'s central one, in all four', async () => {
-    // The thing a conflict resolution can get wrong: `enqueue` is the
-    // central gate (`autoQueueAllows`: `tailor_job_docs` needs BOTH
-    // switches) and the trigger also has a copy of that rule one step
-    // earlier, so it can report a row it was never allowed to create. If
+  it('SOUNDNESS: the trigger never reports a row its per-unit toggle forbids', async () => {
+    // The thing a gate can get wrong: `enqueue` is the central gate
+    // (`autoQueueAllows`) and the trigger reads the same switches one step
+    // earlier, so it can report work it was never allowed to create. If
     // the two ever disagree, `maybeAutoEnqueueDocs`'s boolean — the only
     // signal its four callers have — becomes a lie.
     //
-    // Two fresh jobs per combination, because the first call would leave a
-    // row the second one's dedupe guard would trip over.
+    // Per unit, because that is the shape now: `enqueue` is asked about
+    // `generate_cv` / `generate_cover_letter`, which each need only their
+    // own switch.
+    const { enqueue } = await import('./aiQueue')
     for (const cv of [true, false]) {
       for (const cl of [true, false]) {
-        updateSettings({ auto_queue_cv: cv, auto_queue_cover_letter: cl })
-        const viaTrigger = eligibleJob()
-        const reported = maybeAutoEnqueueDocs(viaTrigger.id)
+        for (const type of ['generate_cv', 'generate_cover_letter'] as const) {
+          updateSettings({ auto_queue_cv: cv, auto_queue_cover_letter: cl })
+          const viaTrigger = eligibleJob()
+          maybeAutoEnqueueDocs(viaTrigger.id)
+          const reported = rowsOf(viaTrigger.id).map((q) => q.type).includes(type)
 
-        const viaEnqueue = eligibleJob()
-        const { enqueue } = await import('./aiQueue')
-        const created = enqueue({ type: 'tailor_job_docs', jobId: viaEnqueue.id }) !== null
+          const viaEnqueue = eligibleJob()
+          const created = enqueue({ type, jobId: viaEnqueue.id }) !== null
 
-        expect(reported, `cv=${cv} cl=${cl}: trigger said ${reported}, enqueue said ${created}`).toBe(created)
+          expect(reported, `cv=${cv} cl=${cl} ${type}: trigger said ${reported}, enqueue said ${created}`).toBe(
+            created
+          )
+        }
       }
     }
   })
 
   it('SOUNDNESS: the trigger reads the switches with the same tolerance as the rest of the tree', () => {
     // `!== false` everywhere else, so an absent or hand-edited key must not
-    // disable anything. The trigger's `=== false` is the same rule written
-    // the other way round; these are the values that would tell them apart.
+    // disable anything. The trigger reads through the same `autoQueueFlags`
+    // the sweep uses; these are the values that would tell the two spellings
+    // apart if they had drifted.
     for (const odd of [undefined, null, 0, 1, 'false', 'true']) {
       updateSettings({ auto_queue_cv: odd, auto_queue_cover_letter: odd } as never)
       const job = eligibleJob()
       // Both spellings resolve to "on" for every value except literal
-      // `false`, so the trigger queues.
+      // `false`, so the trigger queues both units.
       expect(maybeAutoEnqueueDocs(job.id), JSON.stringify(odd)).toBe(true)
+      expect(typeList(job.id), JSON.stringify(odd)).toEqual([
+        'generate_cover_letter',
+        'generate_cv'
+      ])
     }
     // And literal `false` is the only value that is off.
     updateSettings({ auto_queue_cv: false, auto_queue_cover_letter: false })
@@ -896,34 +950,41 @@ describe('4. the fitScorer.ts conflict resolution', () => {
 // ---------------------------------------------------------------------------
 
 describe('residual defects, pinned for the record', () => {
-  it('FINDING: `tailor_job_docs` writes each document TWICE, on its own', async () => {
-    // `tailorJobDocsForJob` calls `tailorDocument`, which for a first
-    // generation calls `createDocument` (ai.ts:1180), and then calls
-    // `writeDocuments`, which INSERTS a second row (database.ts:1041-1055).
-    // So one `tailor_job_docs` row — one tailoring call, one review, one
-    // billed generation — lands two identical document rows.
+  it('FIXED: `tailor_job_docs` writes each document ONCE, on its own', async () => {
+    // The double write, measured rather than argued. `tailorJobDocsForJob`
+    // called `tailorDocument`, which for a first generation calls
+    // `createDocument` (ai.ts:1180) and PUSHES the row, and then called
+    // `writeDocuments`, which INSERTED a second row for the same document
+    // (database.ts:1041-1055). One tailoring call, one review, one billed
+    // generation — and TWO `cv` rows and TWO `cover_letter` rows, one of
+    // each orphaned, never reviewed, never deleted.
     //
-    // This is pre-existing and out of scope for the fix, but it is why the
-    // trigger path's numbers in the finding above are 3 CVs and 2 cover
-    // letters rather than 2 and 1, and it means the trigger path on its own
-    // has always shown a user two of everything.
+    // This is why the trigger path's numbers in the finding above used to
+    // be 3 CVs and 2 cover letters rather than 2 and 1.
+    //
+    // Driven through a manually queued `tailor_job_docs` row (Quick
+    // Apply's shape) rather than through the trigger, because the trigger
+    // no longer queues that type at all — this defect belongs to the
+    // `tailor_job_docs` path itself, whatever queued it.
     const calls = provider()
     const job = eligibleJob()
-    expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
+    addAIQueueItem({ type: 'tailor_job_docs', jobId: job.id })
     await pump()
 
     // One tailoring of each document...
     expect(calls.cv).toBe(1)
     expect(calls.cl).toBe(1)
-    // ...and TWO rows of each.
-    expect(docsOf(job.id, 'cv')).toHaveLength(2)
-    expect(docsOf(job.id, 'cover_letter')).toHaveLength(2)
+    // ...and ONE row of each. Two of each before.
+    expect(docsOf(job.id, 'cv')).toHaveLength(1)
+    expect(docsOf(job.id, 'cover_letter')).toHaveLength(1)
+    // Both rows are the ones the review chain saw, so both were reviewed:
+    // no orphan left behind holding an unreviewed duplicate.
+    expect(getAIQueue()).toHaveLength(0)
+    expect(calls.review).toBe(2)
 
-    // The SWEEP path, by contrast, writes one of each, because it goes
-    // through `generate_cv` / `generate_cover_letter` (aiQueue.ts:159) and
-    // that case creates its document and stops. So the two producers do not
-    // just differ on WHETHER to regenerate — they differ on how many rows
-    // they leave behind for the same work.
+    // And the SWEEP path, which never went through `writeDocuments`, still
+    // writes one of each — so the two producers now agree on how many rows
+    // they leave behind for the same work, not just on whether to work.
     wipe()
     addApiModel({ name: 'm', base_url: 'https://llm.test/v1', api_key: 'k', model: 'm', enabled: true })
     updateSettings({ base_cv: 'MASTER', auto_doc_min_fit: 40 })
@@ -1090,11 +1151,24 @@ describe('5. the five previously-fixed defects are still fixed', () => {
   })
 
   it('DEFECT 4: a live tailor_job_docs row stops the sweep, on both paths', () => {
+    // The both-documents row is still recognised — it is what Quick Apply
+    // queues — and it covers BOTH units, in both directions. The trigger
+    // itself no longer produces one (it queues the missing units), so this
+    // row is seeded the way a person creates it.
+    const job = eligibleJob()
+    addAIQueueItem({ type: 'tailor_job_docs', jobId: job.id })
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(false)
+    expect(runDocsAutoQueueBacklog()).toBe(0)
+    expect(enqueueDocsBacklog()).toBe(0)
+    expect(rowsOf(job.id)).toHaveLength(1)
+  })
+
+  it('DEFECT 4: the trigger\'s own rows stop the sweep on both paths', () => {
     const job = eligibleJob()
     expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
     expect(runDocsAutoQueueBacklog()).toBe(0)
     expect(enqueueDocsBacklog()).toBe(0)
-    expect(rowsOf(job.id)).toHaveLength(1)
+    expect(rowsOf(job.id)).toHaveLength(2)
   })
 
   it('DEFECT 5: the prior reviewer\'s zzReviewDocsweep.test.ts is absent', () => {
@@ -1114,6 +1188,9 @@ describe('5. the five previously-fixed defects are still fixed', () => {
     expect(typeof enqueue).toBe('function')
 
     const rows: { where: string; line: number; manual: boolean }[] = []
+    // `electron/jobSearch.ts` used to be scanned for the scan-time
+    // auto-tailor, which was the seventh automatic producer and is retired;
+    // it no longer holds an `enqueue(` call site at all.
     const files = ['electron/main.ts', 'electron/aiQueue.ts', 'electron/fitScorer.ts', 'electron/fitAutoScore.ts', 'electron/jobSearch.ts', 'electron/docsAutoQueue.ts']
     for (const file of files) {
       // Strip block comments across the WHOLE file first (with the line
@@ -1128,7 +1205,8 @@ describe('5. the five previously-fixed defects are still fixed', () => {
     }
 
     // Four manual sites, all in main.ts, all inside an IPC handler whose
-    // channel is a user action; seven automatic sites, none of them.
+    // channel is a user action; six automatic sites, none of them — the
+    // scan-time auto-tailor that was the seventh is retired.
     expect(rows.filter((r) => r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
       'electron/main.ts:394',
       'electron/main.ts:407',
@@ -1139,10 +1217,9 @@ describe('5. the five previously-fixed defects are still fixed', () => {
       'electron/aiQueue.ts:177',
       'electron/aiQueue.ts:234',
       'electron/aiQueue.ts:307',
-      'electron/docsAutoQueue.ts:363',
+      'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
-      'electron/fitScorer.ts:133',
-      'electron/jobSearch.ts:1513'
+      'electron/fitScorer.ts:136'
     ])
 
     // Polarity, checked against the source rather than the table: each
@@ -1339,46 +1416,181 @@ describe('the revival-rate bound: the SWEEP lane, 30 simulated days', () => {
   })
 })
 
-describe('the revival-rate bound: the FIT-TRIGGER lane, which has no bound', () => {
-  it('spends 2 generations per fit landing, every day, for 30 days', async () => {
-    // THE SECOND NUMBER, and it is the one the prior review did not
-    // measure. `maybeAutoEnqueueDocs` has no revive budget and no cooldown
-    // of its own: it calls `enqueue`, whose duplicate path revives a
-    // `failed` row with `revivePatch()` (attempts reset, nextRetryAt now,
-    // `autoRevives` untouched) — the same write the sweep's fix was careful
-    // NOT to use.
+describe('the revival-rate bound: the FIT-TRIGGER lane', () => {
+  it('is 80 attempts for the whole 30 days — the SAME bound as the sweep', async () => {
+    // THE SECOND NUMBER, re-measured after the fix.
     //
-    // It is worse than that, because there is nothing left to bound: when
-    // both documents fail, `tailorJobDocsForJob` writes no document and
-    // throws nothing, so `processItem` treats the item as a SUCCESS and
-    // removes it. The queue therefore holds no record at all, and every
-    // subsequent fit landing adds a brand-new row.
+    // It used to be 428. `maybeAutoEnqueueDocs` had no revive budget and
+    // no cooldown of its own: it called `enqueue`, whose duplicate path
+    // revives a `failed` row with `revivePatch()` (attempts reset,
+    // nextRetryAt now, `autoRevives` untouched) — the same write the
+    // sweep's fix was careful NOT to use. And there was nothing left to
+    // bound even that: when both documents failed, `tailorJobDocsForJob`
+    // wrote no document and threw nothing, so `processItem` treated the
+    // item as a SUCCESS and removed it. The queue held no record, so every
+    // subsequent fit landing added a brand-new row with a full fresh
+    // attempt budget. 80 from the sweep plus 12 a day from the trigger,
+    // forever.
     //
-    // Reachability in production is narrower than "every four hours": the
-    // hourly fit re-seeder only queues `score_fit` for jobs whose score is
-    // missing or whose `fit_score_version` is stale, so this repeats once
-    // per fit landing — a Recompute Fit, a CV edit that bumps
-    // `cv_version` for every job, a `score_fit` retry. It needs user
-    // action, which is why this is reported rather than called a leak, but
-    // it is unbounded in the number of fit landings and completely silent.
+    // Two changes close it, and they compose:
+    //   1. the trigger queues `generate_cv` / `generate_cover_letter`,
+    //      whose processor cases THROW on failure — so a failed generation
+    //      now leaves a row, and there is per-unit state to charge;
+    //   2. the trigger plans through the sweep's own `planDocUnit` and
+    //      writes the sweep's own `revivePatchForAutomatic`, so a landing
+    //      on a dead row spends `autoRevives` and parks on the 4h
+    //      cooldown instead of resurrecting it for free.
+    //
+    // ARITHMETIC (identical to the sweep lane):
+    //   per document unit, per life:  (1 + AUTO_REVIVE_MAX) cycles
+    //                                x 10 rate-limited attempts each
+    //                                = 10 x (AUTO_REVIVE_MAX + 1) = 40
+    //   a job has 2 units            = 80 attempts per job, EVER
+    //   a fit landing can only add a row when the unit has NO row at all,
+    //   and can only revive inside that same shared 40-per-unit budget,
+    //   so no number of landings moves the total.
     const r = await thirtyDays(true)
     console.log(
       `[rv2dupe] sweep + fit-trigger lane: ATTEMPTS=${r.attempts} ` +
         `(cv=${r.cv} cl=${r.cl} on the wire) per-day=[${r.perDay.join(',')}]`
     )
 
-    // Day one is the sweep's whole budget: the two sweep rows are the only
-    // thing the queue holds for most of it, and the trigger's rows ride in
-    // the gaps. From day two the sweep is out of budget entirely and the
-    // trigger is the only thing spending — 6 landings a day, 2 documents
-    // each, every day, with nothing to stop it.
-    expect(r.perDay[0]).toBe(80)
-    const tail = r.perDay.slice(1)
-    expect(tail).toHaveLength(29)
-    for (const d of tail) expect(d).toBe(12)
-    expect(r.attempts).toBe(80 + 29 * 12)
-    expect(r.attempts).toBe(428)
-    // The wire-level cost shows the same shape: 5.35x the sweep lane's.
-    expect(r.cv + r.cl).toBeGreaterThan(10 * (AUTO_REVIVE_MAX + 1) * 2)
+    // The literal number and the formula it comes from.
+    expect(r.attempts).toBe(10 * (AUTO_REVIVE_MAX + 1) * 2)
+    expect(r.attempts).toBe(80)
+    // Day one, and nothing after — the sweep lane's shape exactly. It was
+    // [80, 12 x 29] before the fix.
+    expect(r.perDay).toEqual([80, ...new Array(29).fill(0)])
+    // Nothing succeeded, so nothing exists and the whole 80 is waste.
+    expect(docsOf(r.jobId, 'cv')).toHaveLength(0)
+    expect(docsOf(r.jobId, 'cover_letter')).toHaveLength(0)
+    // And it is no longer strictly worse than the sweep lane on the wire.
+    expect(r.cv + r.cl).toBeLessThanOrEqual(10 * (AUTO_REVIVE_MAX + 1) * 2)
+  })
+
+  it('a job that DOES succeed spends nothing on later landings', async () => {
+    // The bound's other half: the worst case above is a job that can never
+    // be generated. The ordinary case — the one that decides whether the
+    // trigger is a leak — is zero.
+    vi.useRealTimers()
+    const calls = provider()
+    const job = eligibleJob()
+    const start = Date.now()
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
+    await pump()
+    const spent = { ...calls }
+    expect(calls.cv).toBe(1)
+    expect(calls.cl).toBe(1)
+
+    // 30 days, 720 fit landings on a 4-hourly loop, every sweep and
+    // startup path alongside them.
+    for (let hour = 0; hour < 30 * 24; hour++) {
+      vi.setSystemTime(start + hour * HOUR)
+      maybeAutoEnqueueDocs(job.id)
+      enqueueDocsBacklog()
+      runDocsAutoQueueBacklog()
+      await pump(60, 1)
+    }
+    // Zero further generations, and still exactly one CV and one cover
+    // letter: both documents exist and passed review, so neither unit is
+    // missing and the trigger has nothing to say.
+    expect(calls).toEqual(spent)
+    expect(docsOf(job.id, 'cv')).toHaveLength(1)
+    expect(docsOf(job.id, 'cover_letter')).toHaveLength(1)
+    expect(getAIQueue()).toHaveLength(0)
+  })
+
+  it('no second spend inside the 4h cooldown', async () => {
+    // A dead row that still has budget is parked by the revival, and a
+    // landing inside the window must not pull it forward. This is the
+    // specific write the sweep's fix made and the trigger used to skip:
+    // `enqueue`'s `revivePatch` sets `nextRetryAt: Date.now()`.
+    const job = eligibleJob()
+    const row = addAIQueueItem({ type: 'generate_cv', jobId: job.id })
+    updateAIQueueItem(row.id, { status: 'failed', attempts: 12, autoRevives: 0, nextRetryAt: 0 })
+
+    const first = Date.now()
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
+    const revived = rowsOf(job.id).find((q) => q.id === row.id)!
+    expect(revived.status).toBe('pending')
+    expect(revived.autoRevives).toBe(1)
+    expect(revived.nextRetryAt).toBeGreaterThanOrEqual(first + 4 * 60 * 60 * 1000)
+
+    // Landings every 15 minutes, all of them INSIDE the 4h window (15 x
+    // 15min = 225min < 240min): nothing is spent, nothing is charged, and
+    // no second row appears. Before the fix each of these was a fresh
+    // `tailor_job_docs` row and a fresh pair of tailorings.
+    for (let i = 1; i <= 15; i++) {
+      vi.setSystemTime(first + i * 15 * 60 * 1000)
+      maybeAutoEnqueueDocs(job.id)
+      const still = rowsOf(job.id).find((q) => q.id === row.id)!
+      expect(still.autoRevives, `landing ${i}`).toBe(1)
+      expect(still.nextRetryAt, `landing ${i}`).toBeGreaterThan(Date.now())
+    }
+    expect(rowsOf(job.id).filter((q) => q.type === 'generate_cv')).toHaveLength(1)
+
+    // While the revived row is `pending` the trigger spends nothing at all:
+    // `jobDocWorkInFlight` sees a live row, so it never reaches the planner.
+    const pending = rowsOf(job.id).find((q) => q.id === row.id)!
+    expect(pending.status).toBe('pending')
+    vi.setSystemTime(first + 17 * 15 * 60 * 1000)
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(false)
+    expect(rowsOf(job.id).find((q) => q.id === row.id)!.autoRevives).toBe(1)
+
+    // One processor failure later, past the window, it MAY be revived
+    // again — a cooldown, not a lock — and it spends a second unit of the
+    // shared budget doing so. That is what makes the whole thing finite.
+    updateAIQueueItem(row.id, { status: 'failed', attempts: 12 })
+    maybeAutoEnqueueDocs(job.id)
+    const after = rowsOf(job.id).find((q) => q.id === row.id)!
+    expect(after.autoRevives).toBe(2)
+    expect(after.nextRetryAt).toBeGreaterThan(Date.now())
+  })
+
+  it('the budget is PER JOB: two jobs each get the whole 80', async () => {
+    // Per job, not global: the counter is on the row, and the rows are per
+    // job. A shared budget would starve every job after the first.
+    vi.useRealTimers()
+    const a = eligibleJob()
+    const b = eligibleJob()
+    const start = Date.now()
+    const attemptsOf = (): Map<number, number> =>
+      new Map(getAIQueue().map((q) => [q.id, q.attempts]))
+
+    let attempts = 0
+    for (let hour = 0; hour < 30 * 24; hour++) {
+      vi.setSystemTime(start + hour * HOUR)
+      for (const job of [a, b]) maybeAutoEnqueueDocs(job.id)
+      for (let step = 0; step < 200; step++) {
+        const { processQueue } = await import('./aiQueue')
+        const { resetModelHealth } = await import('./ai')
+        resetModelHealth()
+        const runnable = getAIQueue().filter(
+          (q) => q.status === 'pending' || (q.status === 'failed' && (q.autoRevives ?? 0) < AUTO_REVIVE_MAX)
+        )
+        if (runnable.length === 0) break
+        const next = Math.min(...runnable.map((q) => q.nextRetryAt))
+        if (next > Date.now()) {
+          if (next > start + (hour + 1) * HOUR) break
+          vi.setSystemTime(next)
+        }
+        const before = attemptsOf()
+        await processQueue()
+        for (const row of getAIQueue()) {
+          const prev = before.get(row.id) ?? 0
+          if (row.attempts > prev) attempts += row.attempts - prev
+          else if (prev > 0) attempts += 1
+          else attempts += row.attempts
+        }
+      }
+    }
+
+    // 80 each, not 80 between them.
+    expect(attempts).toBe(2 * 10 * (AUTO_REVIVE_MAX + 1) * 2)
+    expect(attempts).toBe(160)
+    expect(rowsOf(a.id)).toHaveLength(2)
+    expect(rowsOf(b.id)).toHaveLength(2)
+    for (const row of rowsOf(a.id)) expect(row.autoRevives).toBe(AUTO_REVIVE_MAX)
+    for (const row of rowsOf(b.id)) expect(row.autoRevives).toBe(AUTO_REVIVE_MAX)
   })
 })

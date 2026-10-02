@@ -88,7 +88,7 @@ export interface Document {
   // cap is hit the document is flagged for manual attention — its
   // verification_score stays < 80 and no further regeneration is
   // auto-queued. Optional because legacy rows (and the
-  // writeDocuments/createDocument construction sites) predate the
+  // createDocument construction sites) predate the
   // field; readers must treat undefined as 0.
   auto_regen_attempts?: number
   created_at: string

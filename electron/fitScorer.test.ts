@@ -8,7 +8,8 @@ vi.mock('./database', () => ({
   getSettings: vi.fn(),
   updateJob: vi.fn(),
   listDocuments: vi.fn(() => []),
-  getAIQueue: vi.fn(() => [])
+  getAIQueue: vi.fn(() => []),
+  updateAIQueueItem: vi.fn(() => undefined)
 }))
 
 vi.mock('./aiQueue', () => ({
@@ -39,10 +40,11 @@ vi.mock('./logger', () => {
   }
 })
 
-import { getJob, getSettings, updateJob, listDocuments, getAIQueue } from './database'
+import { getJob, getSettings, updateJob, listDocuments, getAIQueue, updateAIQueueItem } from './database'
 import { scoreJobFit } from './ai'
 import { enqueue } from './aiQueue'
 import { scoreOneJobInBackground, maybeAutoEnqueueDocs } from './fitScorer'
+import { AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX } from './types'
 import type { AIQueueItem } from './types'
 
 const mockedGetJob = vi.mocked(getJob)
@@ -52,6 +54,7 @@ const mockedScore = vi.mocked(scoreJobFit)
 const mockedEnqueue = vi.mocked(enqueue)
 const mockedListDocuments = vi.mocked(listDocuments)
 const mockedGetQueue = vi.mocked(getAIQueue)
+const mockedUpdateAIQueueItem = vi.mocked(updateAIQueueItem)
 
 const fakeJob = {
   id: 7,
@@ -232,11 +235,22 @@ describe('P1.7 maybeAutoEnqueueDocs (fit >= auto_doc_min_fit -> enqueue generati
     mockedGetQueue.mockReturnValue([])
   })
 
+  // The trigger queues the MISSING UNITS — `generate_cv` and/or
+  // `generate_cover_letter`, one row each — and never the both-documents
+  // `tailor_job_docs` row. That unit cannot honour one toggle without doing
+  // the other, and on the other producer's ordering it regenerated a CV
+  // the sweep had deliberately left alone.
+  const queuedTypes = (): string[] => mockedEnqueue.mock.calls.map((c) => (c[0] as { type: string }).type)
+
   it('enqueues generation when the fit score clears the threshold', () => {
     mockedGetJob.mockReturnValue({ ...fakeJob, score: 0.85 } as any)
     mockedGetSettings.mockReturnValue({ auto_doc_min_fit: 40 } as any)
     expect(maybeAutoEnqueueDocs(7)).toBe(true)
-    expect(mockedEnqueue).toHaveBeenCalledWith({ type: 'tailor_job_docs', jobId: 7 })
+    expect(mockedEnqueue.mock.calls.map((c) => c[0])).toEqual([
+      { type: 'generate_cv', jobId: 7 },
+      { type: 'generate_cover_letter', jobId: 7 }
+    ])
+    expect(queuedTypes()).not.toContain('tailor_job_docs')
   })
 
   it('enqueues at exactly the threshold boundary (fit 40 with auto_doc_min_fit 40)', () => {
@@ -271,32 +285,66 @@ describe('P1.7 maybeAutoEnqueueDocs (fit >= auto_doc_min_fit -> enqueue generati
     expect(mockedEnqueue).not.toHaveBeenCalled()
   })
 
+  it('queues only the MISSING unit when the other document already exists', () => {
+    // THE defect this trigger had. It asked "is this job's document work
+    // in flight?" and answered it per DOCUMENT TYPE on one side and for
+    // the both-documents unit on the other, so the two producers disagreed:
+    // the sweep left the existing CV alone and queued only the cover
+    // letter, and the trigger queued a row that regenerated the CV.
+    // Now it asks `docTypeMissing`, so the CV is not even considered.
+    mockedGetJob.mockReturnValue({ ...fakeJob, score: 0.9 } as any)
+    mockedGetSettings.mockReturnValue({ auto_doc_min_fit: 40 } as any)
+    mockedListDocuments.mockReturnValue([
+      { id: 1, job_id: 7, type: 'cv', is_base: 0, verification_score: null }
+    ] as any)
+    expect(maybeAutoEnqueueDocs(7)).toBe(true)
+    expect(mockedEnqueue.mock.calls.map((c) => c[0])).toEqual([
+      { type: 'generate_cover_letter', jobId: 7 }
+    ])
+  })
+
   it('still enqueues when an existing doc review is below the passing bar', () => {
     mockedGetJob.mockReturnValue({ ...fakeJob, score: 0.9 } as any)
     mockedGetSettings.mockReturnValue({ auto_doc_min_fit: 40 } as any)
     mockedListDocuments.mockReturnValue([
-      { id: 1, job_id: 7, type: 'cv', verification_score: 55 }
+      { id: 1, job_id: 7, type: 'cv', is_base: 0, verification_score: 55 }
     ] as any)
     expect(maybeAutoEnqueueDocs(7)).toBe(true)
-    expect(mockedEnqueue).toHaveBeenCalled()
+    // The CV exists but scored below the bar, so it is not "missing" —
+    // only the cover letter is. Regenerating the CV is the sweep's job
+    // (`autoDocQueueEligible`'s "not already shippable" condition), and
+    // asking for it here too is how the two producers collided.
+    expect(queuedTypes()).toEqual(['generate_cover_letter'])
+  })
+
+  it("the user's MASTER CV does not count as this job's generated CV", () => {
+    // `listDocuments` unions the base CV in for display. Treating it as
+    // this job's CV would make every job in the store look complete.
+    mockedGetJob.mockReturnValue({ ...fakeJob, score: 0.9 } as any)
+    mockedGetSettings.mockReturnValue({ auto_doc_min_fit: 40 } as any)
+    mockedListDocuments.mockReturnValue([
+      { id: 1, job_id: null, type: 'cv', is_base: 1, verification_score: null }
+    ] as any)
+    expect(maybeAutoEnqueueDocs(7)).toBe(true)
+    expect(queuedTypes()).toEqual(['generate_cv', 'generate_cover_letter'])
   })
 
   it('does not stack duplicates when a generation item is already queued', () => {
-    // Duplicate suppression for `tailor_job_docs` rows is `enqueue`'s
-    // guard, not a second copy of the rule here: enqueue returns null when
-    // an identical item is already pending OR processing, and the return
-    // value has to follow it — otherwise this function reports work it did
-    // not do.
+    // Duplicate suppression for the unit rows is `enqueue`'s guard, not a
+    // second copy of the rule here: enqueue returns null when an identical
+    // item is already pending OR processing, and the return value has to
+    // follow it — otherwise this function reports work it did not do.
     mockedGetJob.mockReturnValue({ ...fakeJob, score: 0.9 } as any)
     mockedGetSettings.mockReturnValue({ auto_doc_min_fit: 40 } as any)
     mockedEnqueue.mockReturnValue(null as unknown as AIQueueItem)
     expect(maybeAutoEnqueueDocs(7)).toBe(false)
     // It asked enqueue, rather than checking the queue itself first.
-    expect(mockedEnqueue).toHaveBeenCalledWith({ type: 'tailor_job_docs', jobId: 7 })
+    expect(mockedEnqueue).toHaveBeenCalledWith({ type: 'generate_cv', jobId: 7 })
+    expect(mockedEnqueue).toHaveBeenCalledWith({ type: 'generate_cover_letter', jobId: 7 })
     // ...and the one queue read it does make is the shared
     // cross-producer check (`jobDocWorkInFlight`), not a private scan for
-    // `tailor_job_docs` rows. Exactly one read: a second would be the
-    // second copy of the same rule.
+    // row types. Exactly one read: a second would be the second copy of
+    // the same rule.
     expect(mockedGetQueue).toHaveBeenCalledTimes(1)
   })
 
@@ -314,27 +362,30 @@ describe('P1.7 maybeAutoEnqueueDocs (fit >= auto_doc_min_fit -> enqueue generati
       mockedEnqueue.mockReturnValue({ id: 99 } as unknown as AIQueueItem)
     })
 
-    it('declines when a generate_cv row is pending', () => {
+    it('declines the CV unit when a generate_cv row is pending, and still queues the cover letter', () => {
       mockedGetQueue.mockReturnValue([liveRow()])
-      expect(maybeAutoEnqueueDocs(7)).toBe(false)
-      expect(mockedEnqueue).not.toHaveBeenCalled()
+      expect(maybeAutoEnqueueDocs(7)).toBe(true)
+      expect(mockedEnqueue.mock.calls.map((c) => c[0])).toEqual([
+        { type: 'generate_cover_letter', jobId: 7 }
+      ])
     })
 
-    it('declines when a generate_cv row is processing', () => {
+    it('declines the CV unit when a generate_cv row is processing', () => {
       mockedGetQueue.mockReturnValue([liveRow({ status: 'processing' })])
-      expect(maybeAutoEnqueueDocs(7)).toBe(false)
-      expect(mockedEnqueue).not.toHaveBeenCalled()
+      expect(maybeAutoEnqueueDocs(7)).toBe(true)
+      expect(queuedTypes()).not.toContain('generate_cv')
     })
 
-    it('declines when a generate_cover_letter row is pending', () => {
-      // It produces both documents, so a live cover-letter row is a live
-      // second cover letter just as much as a live CV row is a second CV.
+    it('declines the cover-letter unit when its row is pending', () => {
       mockedGetQueue.mockReturnValue([liveRow({ type: 'generate_cover_letter' })])
-      expect(maybeAutoEnqueueDocs(7)).toBe(false)
-      expect(mockedEnqueue).not.toHaveBeenCalled()
+      expect(maybeAutoEnqueueDocs(7)).toBe(true)
+      expect(mockedEnqueue.mock.calls.map((c) => c[0])).toEqual([
+        { type: 'generate_cv', jobId: 7 }
+      ])
     })
 
     it('declines when a tailor_job_docs row is pending (before enqueue is asked)', () => {
+      // It produces both documents, so it covers both units.
       mockedGetQueue.mockReturnValue([liveRow({ type: 'tailor_job_docs' })])
       expect(maybeAutoEnqueueDocs(7)).toBe(false)
       expect(mockedEnqueue).not.toHaveBeenCalled()
@@ -343,7 +394,7 @@ describe('P1.7 maybeAutoEnqueueDocs (fit >= auto_doc_min_fit -> enqueue generati
     it('ignores another job\'s rows', () => {
       mockedGetQueue.mockReturnValue([liveRow({ jobId: 8 })])
       expect(maybeAutoEnqueueDocs(7)).toBe(true)
-      expect(mockedEnqueue).toHaveBeenCalledWith({ type: 'tailor_job_docs', jobId: 7 })
+      expect(queuedTypes()).toEqual(['generate_cv', 'generate_cover_letter'])
     })
 
     it('does not treat a regeneration row as coverage of a first generation', () => {
@@ -352,24 +403,60 @@ describe('P1.7 maybeAutoEnqueueDocs (fit >= auto_doc_min_fit -> enqueue generati
       // generation, so it must not suppress this job's CV.
       mockedGetQueue.mockReturnValue([liveRow({ documentId: 42 })])
       expect(maybeAutoEnqueueDocs(7)).toBe(true)
+      expect(queuedTypes()).toEqual(['generate_cv', 'generate_cover_letter'])
     })
 
     it('does not treat a failed row as in flight', () => {
-      mockedGetQueue.mockReturnValue([liveRow({ status: 'failed' })])
+      // It is not in flight, so this unit's work still needs doing — and
+      // the dead row is the trigger's to resurrect, charged to the budget.
+      mockedGetQueue.mockReturnValue([liveRow({ status: 'failed', nextRetryAt: 0 })])
       expect(maybeAutoEnqueueDocs(7)).toBe(true)
+      expect(queuedTypes()).toEqual(['generate_cover_letter'])
+      expect(mockedUpdateAIQueueItem).toHaveBeenCalledWith(1, expect.objectContaining({
+        status: 'pending',
+        autoRevives: 1
+      }))
     })
 
-    it('still checks the toggles before the queue: cover letters off declines either way', () => {
+    it('does not resurrect a failed row whose revive budget is spent', () => {
+      // The bound. A trigger that lands on every score change must not be
+      // able to buy a generation per landing.
+      mockedGetQueue.mockReturnValue([
+        liveRow({ status: 'failed', autoRevives: AUTO_REVIVE_MAX, nextRetryAt: 0 })
+      ])
+      expect(maybeAutoEnqueueDocs(7)).toBe(true)
+      expect(queuedTypes()).toEqual(['generate_cover_letter'])
+      expect(mockedUpdateAIQueueItem).not.toHaveBeenCalled()
+    })
+
+    it('does not pull a failed row forward before its cooldown has elapsed', () => {
+      mockedGetQueue.mockReturnValue([
+        liveRow({ status: 'failed', autoRevives: 0, nextRetryAt: Date.now() + AUTO_REVIVE_COOLDOWN_MS })
+      ])
+      expect(maybeAutoEnqueueDocs(7)).toBe(true)
+      expect(queuedTypes()).toEqual(['generate_cover_letter'])
+      expect(mockedUpdateAIQueueItem).not.toHaveBeenCalled()
+    })
+
+    it('still checks the toggles before the queue: cover letters off declines the cover letter', () => {
       mockedGetSettings.mockReturnValue({ auto_doc_min_fit: 40, auto_queue_cover_letter: false } as any)
       mockedGetQueue.mockReturnValue([liveRow()])
+      // The CV has its own live row, so the trigger declines the CV, and
+      // the cover letter is switched off, so the trigger declines that too:
+      // a deferral can never be read as "something else will finish this
+      // job" when the only other producer has the same toggle.
       expect(maybeAutoEnqueueDocs(7)).toBe(false)
       expect(mockedEnqueue).not.toHaveBeenCalled()
-      // ...and with the queue empty the toggle is still what stopped it,
-      // so the deferral can never be read as "something else will finish
-      // this job".
+    })
+
+    it('CV auto-queueing off: the cover letter is still queued, the CV is not', () => {
+      // The per-unit shape the both-documents row could not express.
+      mockedGetSettings.mockReturnValue({ auto_doc_min_fit: 40, auto_queue_cv: false } as any)
       mockedGetQueue.mockReturnValue([])
-      expect(maybeAutoEnqueueDocs(7)).toBe(false)
-      expect(mockedEnqueue).not.toHaveBeenCalled()
+      expect(maybeAutoEnqueueDocs(7)).toBe(true)
+      expect(mockedEnqueue.mock.calls.map((c) => c[0])).toEqual([
+        { type: 'generate_cover_letter', jobId: 7 }
+      ])
     })
   })
 
@@ -417,7 +504,10 @@ describe('P1.7 maybeAutoEnqueueDocs (fit >= auto_doc_min_fit -> enqueue generati
       return { ...fakeJob, ...fields } as any
     })
     await scoreOneJobInBackground(7)
-    expect(mockedEnqueue).toHaveBeenCalledWith({ type: 'tailor_job_docs', jobId: 7 })
+    expect(mockedEnqueue.mock.calls.map((c) => c[0])).toEqual([
+      { type: 'generate_cv', jobId: 7 },
+      { type: 'generate_cover_letter', jobId: 7 }
+    ])
   })
 
   it('does not trigger when the landed score is below the threshold', async () => {

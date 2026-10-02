@@ -150,13 +150,13 @@ const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]
     { line: 307, manual: false, why: 'processor: tailor_job_docs finished, review each new document' }
   ],
   'electron/fitScorer.ts': [
-    { line: 133, manual: false, why: 'fit-landing trigger: a job cleared the fit threshold' }
+    { line: 136, manual: false, why: 'fit-landing trigger: a job cleared the fit threshold and is missing a document' }
   ],
   'electron/fitAutoScore.ts': [
     { line: 191, manual: false, why: 'session-start / post-scan fit-score re-seeder' }
   ],
   'electron/docsAutoQueue.ts': [
-    { line: 363, manual: false, why: 'documents backlog sweep — the app re-seeding a cleared queue' }
+    { line: 253, manual: false, why: 'documents backlog sweep — the app re-seeding a cleared queue' }
   ]
 }
 
@@ -330,16 +330,17 @@ beforeEach(async () => {
 
 describe('a REAL automatic caller, classified from its own source', () => {
   it('the fit-landing trigger queues nothing with the generation switches off', async () => {
-    // electron/fitScorer.ts:107 — `maybeAutoEnqueueDocs`, reached from
+    // electron/fitScorer.ts — `maybeAutoEnqueueDocs`, reached from
     // the processor's score_fit case. Automatic: nobody asked for these
     // documents; the job simply scored well. Confirmed by driving the
-    // real function, not `enqueue` with a hand-written flag.
+    // real function, not `enqueue` with a hand-written flag. With EVERY
+    // switch off there is no unit left to queue, whatever the score.
     const jobId = addJob()
     const { updateJob } = await import('./database')
     updateJob(jobId, { score: 0.9, fit_score_version: 0 })
     updateSettings(ALL_OFF)
     expect(maybeAutoEnqueueDocs(jobId)).toBe(false)
-    expect(getAIQueue().filter((q) => q.type === 'tailor_job_docs')).toHaveLength(0)
+    expect(getAIQueue()).toHaveLength(0)
   })
 
   it('and still queues with them on, so the gate is what stopped it', async () => {
@@ -347,7 +348,23 @@ describe('a REAL automatic caller, classified from its own source', () => {
     const { updateJob } = await import('./database')
     updateJob(jobId, { score: 0.9, fit_score_version: 0 })
     expect(maybeAutoEnqueueDocs(jobId)).toBe(true)
-    expect(getAIQueue().filter((q) => q.type === 'tailor_job_docs').map((q) => q.jobId)).toEqual([jobId])
+    // Per missing document type, like the sweep: two single-document rows,
+    // not one both-documents row. Each unit is gated by its OWN switch, so
+    // a partial setting is a partial queue rather than none at all.
+    const rows = getAIQueue().filter((q) => q.jobId === jobId)
+    expect(rows.map((q) => q.type).sort()).toEqual(['generate_cover_letter', 'generate_cv'])
+  })
+
+  it('queues only the enabled unit when ONE generation switch is off', async () => {
+    // The per-unit shape. `tailor_job_docs` needed both switches because
+    // it cannot honour one without doing the other, so the old trigger
+    // queued nothing at all here — an answer the sweep could not give.
+    const jobId = addJob()
+    const { updateJob } = await import('./database')
+    updateJob(jobId, { score: 0.9, fit_score_version: 0 })
+    updateSettings({ ...ALL_OFF, auto_queue_cv: true })
+    expect(maybeAutoEnqueueDocs(jobId)).toBe(true)
+    expect(getAIQueue().filter((q) => q.jobId === jobId).map((q) => q.type)).toEqual(['generate_cv'])
   })
 })
 
@@ -535,11 +552,16 @@ describe('the retired Scan tab auto-tailor', () => {
     // the both-documents row is refused anyway.
     expect(maybeAutoEnqueueDocs(jobId)).toBe(false)
     expect(getAIQueue().filter((q) => q.type === 'tailor_job_docs')).toHaveLength(0)
-    // And with the generation switches on, the only thing that queues it
-    // is the fit-landing trigger — which reads no retired key.
+    // And with the generation switches on, the only thing that queues
+    // this job's documents is the fit-landing trigger — which reads no
+    // retired key. It queues the two single-document units (see above).
     updateSettings({ auto_queue_cv: true, auto_queue_cover_letter: true })
     expect(maybeAutoEnqueueDocs(jobId)).toBe(true)
-    expect(getAIQueue().filter((q) => q.type === 'tailor_job_docs')).toHaveLength(1)
+    expect(
+      getAIQueue()
+        .filter((q) => q.type === 'generate_cv' || q.type === 'generate_cover_letter')
+        .map((q) => q.jobId)
+    ).toEqual([jobId, jobId])
   })
 })
 
@@ -564,9 +586,9 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
       'electron/aiQueue.ts:177',
       'electron/aiQueue.ts:234',
       'electron/aiQueue.ts:307',
-      'electron/docsAutoQueue.ts:363',
+      'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
-      'electron/fitScorer.ts:133'
+      'electron/fitScorer.ts:136'
     ])
 
     const src = readFileSync('electron/aiQueue.ts', 'utf8')

@@ -240,6 +240,17 @@ function tailorRows(): unknown[] {
   return getAIQueue().filter((q) => q.type === 'tailor_job_docs')
 }
 
+/**
+ * The single-document rows an automatic producer queues. The fit-landing
+ * trigger queues these per missing document type, exactly as the sweep
+ * does; it no longer queues the both-documents `tailor_job_docs` row.
+ */
+function docGenRows(): unknown[] {
+  return getAIQueue().filter(
+    (q) => q.type === 'generate_cv' || q.type === 'generate_cover_letter'
+  )
+}
+
 async function runScan(count = 1) {
   fx.count = count
   return scanAllBoards({
@@ -421,8 +432,8 @@ describe('which path actually catches a newly scanned job', () => {
     // admits the job with score=null (jobSearch.ts:732-739), the
     // re-seeder queues score_fit (fitAutoScore.ts:191), the processor
     // scores it (aiQueue.ts:257), the real score lands, and
-    // `maybeAutoEnqueueDocs` runs (fitScorer.ts:231) and enqueues
-    // `tailor_job_docs`.
+    // `maybeAutoEnqueueDocs` runs and enqueues the two missing document
+    // units.
     writeStoreWithRetiredKeys()
     reloadStore()
     fx.llmFails = true
@@ -437,7 +448,7 @@ describe('which path actually catches a newly scanned job', () => {
     await processQueue()
 
     expect(listJobs()[0].score).toBeCloseTo(0.92)
-    expect(tailorRows().map((q) => (q as { jobId: number }).jobId)).toEqual([job.id])
+    expect(docGenRows().map((q) => (q as { jobId: number }).jobId)).toEqual([job.id, job.id])
   })
 })
 
@@ -457,7 +468,11 @@ describe('the gate on a newly scanned, scored, documentless job', () => {
     // (fitScorer.ts:105).
     let job = await scanOneScored()
     expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
-    expect(tailorRows()).toHaveLength(1)
+    // One row per missing document, the same two the sweep would queue.
+    expect(docGenRows().map((q) => q.type).sort()).toEqual([
+      'generate_cover_letter',
+      'generate_cv'
+    ])
 
     // The sweep, on a fresh scan of the same store — the queue is reset by
     // the store rewrite, not by `clearAIQueue`, which would also write the
@@ -485,31 +500,48 @@ describe('the gate on a newly scanned, scored, documentless job', () => {
     expect(getAIQueue()).toEqual([])
   })
 
-  it('queues nothing with EITHER toggle off — the gate is both, not either', async () => {
-    // The trigger produces `tailor_job_docs`, which generates BOTH
-    // documents, so one switch off is enough to refuse (fitScorer.ts:97).
-    // The user asked for exactly this: CV and CL generation both on.
-    for (const partial of [
-      { auto_queue_cv: false },
-      { auto_queue_cover_letter: false },
-      { auto_queue_cv: false, auto_queue_cover_letter: false }
-    ]) {
+  it('queues each unit by its OWN toggle — the trigger and the sweep now agree', async () => {
+    // The trigger used to produce `tailor_job_docs`, which generates BOTH
+    // documents, so one switch off was enough to refuse it entirely
+    // (fitScorer.ts:97) — and that asymmetry with the sweep is exactly what
+    // a CV-only or cover-letter-only setting could not express. It queues
+    // the missing units now, so each unit is gated by its own switch, and
+    // the two producers answer identically.
+    for (const [partial, expected] of [
+      [{ auto_queue_cv: false }, ['generate_cover_letter']],
+      [{ auto_queue_cover_letter: false }, ['generate_cv']],
+      [{ auto_queue_cv: false, auto_queue_cover_letter: false }, []]
+    ] as const) {
       const job = await scanOneScored()
       updateSettings(partial)
-      expect(maybeAutoEnqueueDocs(job.id), JSON.stringify(partial)).toBe(false)
-      expect(getAIQueue(), JSON.stringify(partial)).toEqual([])
+      expect(
+        maybeAutoEnqueueDocs(job.id),
+        JSON.stringify(partial)
+      ).toBe(expected.length > 0)
+      expect(docGenRows().map((q) => q.type).sort(), JSON.stringify(partial)).toEqual([
+        ...expected
+      ])
+      // ...and the sweep says exactly the same thing on the same store.
+      const job2 = await scanOneScored()
+      updateSettings(partial)
+      enqueueDocsBacklog()
+      expect(
+        getAIQueue().filter((q) => q.jobId === job2.id).map((q) => q.type).sort(),
+        `sweep ${JSON.stringify(partial)}`
+      ).toEqual([...expected])
     }
   })
 
   it('queues the CV but not the cover letter with only the cover-letter toggle off', async () => {
-    // The sweep gates each unit by its OWN toggle (docsAutoQueue.ts:262),
-    // so a CV-only sweep is legitimate where the trigger's both-documents
-    // row is not. This is the asymmetry the shared predicate's doc comment
-    // describes, and it is the one user-visible difference between the two
-    // mechanisms.
+    // Per unit, in both mechanisms.
     await scanOneScored()
     updateSettings({ auto_queue_cover_letter: false })
     expect(enqueueDocsBacklog()).toBe(1)
+    expect(getAIQueue().map((q) => q.type)).toEqual(['generate_cv'])
+
+    const job = await scanOneScored()
+    updateSettings({ auto_queue_cover_letter: false })
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
     expect(getAIQueue().map((q) => q.type)).toEqual(['generate_cv'])
   })
 
@@ -551,16 +583,16 @@ describe('the gate on a newly scanned, scored, documentless job', () => {
     createDocument('cover_letter', 'Tailored CL', 'TAILORED', job.id)
     expect(enqueueDocsBacklog()).toBe(0)
 
-    // The trigger, unlike the sweep, asks NO question about which
-    // documents exist — only the shared predicate and what is in flight
-    // (fitScorer.ts:105-119). On a fresh scan of the same store it would
-    // re-tailor a job that is already tailored, which is safe only because
-    // it runs at score-landing and once. Asserted rather than left
-    // implied: it is the sharpest difference between the two mechanisms.
+    // The trigger asks the SAME question per unit — `docTypeMissing` — so
+    // it too queues nothing for a job that already has both documents. It
+    // used to ask no question about which documents exist and would
+    // re-tailor a job that is already tailored; that was the residual
+    // duplicate the reviewer's Finding 1 measured (a job whose CV was
+    // mid-review got a second CV from this path).
     job = await scanOneScored()
     createDocument('cv', 'Tailored CV', 'TAILORED', job.id)
     createDocument('cover_letter', 'Tailored CL', 'TAILORED', job.id)
-    expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(false)
   })
 })
 

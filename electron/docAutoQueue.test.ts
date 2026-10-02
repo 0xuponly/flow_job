@@ -242,11 +242,17 @@ describe('both callers consult the shared predicate', () => {
       .join('\n')
     expect(code).not.toContain('auto_doc_min_fit')
     expect(code).not.toContain('PASSING_REVIEW_SCORE')
-    // ...and the toggle check stays put: `tailor_job_docs` produces both
-    // documents, so it needs both switches, while the sweep gates each unit
-    // by its own. Reading them here is not duplication, removing it would be
-    // a regression.
-    expect(code).toMatch(/auto_queue_cv === false \|\| settings\.auto_queue_cover_letter === false/)
+    // ...and the toggles stay in the shared module too. The trigger used
+    // to spell out `auto_queue_cv === false || auto_queue_cover_letter ===
+    // false` here, because it queued `tailor_job_docs` and that unit needs
+    // both switches. It queues the MISSING UNIT now, so it reads the flags
+    // through the same `autoQueueFlags` / `docUnits` pair the sweep uses and
+    // gates each unit by its own toggle — which is also what makes a
+    // CV-only trigger a real answer.
+    expect(code).toMatch(/docUnits\(autoQueueFlags\(settings\)\)/)
+    expect(code).toMatch(/if \(!unit\.enabled\) continue/)
+    expect(code).not.toContain('auto_queue_cv')
+    expect(code).not.toContain('auto_queue_cover_letter')
   })
 })
 

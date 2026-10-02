@@ -7,7 +7,7 @@ import {
 } from '../src/documentRules'
 import {
   getJob,
-  writeDocuments,
+  setDocumentContent,
   writeTailorTimingFields
 } from './database'
 import { log } from './logger'
@@ -79,22 +79,34 @@ export async function tailorJobDocsForJob(jobId: number): Promise<TailorJobDocsR
   }
 
   const jobDescription = job.description ?? ''
-  const cvContent = cv.result
-    ? sanitizeDocument(cv.result.content, 'cv', jobDescription).content
-    : null
-  const clContent = cl.result
-    ? sanitizeDocument(cl.result.content, 'cover_letter', jobDescription).content
-    : null
 
-  // Atomic: write whatever docs succeeded + the timing fields + status.
-  // If both failed, write neither doc and only the error fields.
-  const ids = cvFailed && clFailed
-    ? { cvId: 0, clId: 0 }
-    : await writeDocuments({
-        jobId,
-        cvContent,
-        clContent
-      })
+  // ONE write per document, and it already happened.
+  //
+  // `tailorDocument` ends a first generation by calling `createDocument`
+  // (ai.ts), which PUSHES the row, and it returns that row's id. This
+  // function then called `writeDocuments`, which inserted a SECOND row for
+  // the same document: one tailoring call, two `cv` rows, two
+  // `cover_letter` rows, one of each orphaned — never in the review chain,
+  // never deleted, and `recomputeJobStatusFromDocs` and the Documents view
+  // seeing two of everything for one generation.
+  //
+  // What is left to store is the SANITIZED content (paragraph ceilings and
+  // rule checks, which run after the model returns and so cannot have been
+  // applied by `tailorDocument`), written back onto the row the model call
+  // created. `setDocumentContent` returns null if the user deleted the
+  // document in the gap, and that is left as-is: writing a replacement
+  // would resurrect it behind their back.
+  //
+  // A document that FAILED leaves no row at all, because `tailorDocument`
+  // throws before `createDocument` — which is what makes "write whatever
+  // succeeded" still true, and is what the old `cvFailed && clFailed`
+  // branch was for.
+  const cvContent =
+    cv.result ? sanitizeDocument(cv.result.content, 'cv', jobDescription).content : null
+  const clContent =
+    cl.result ? sanitizeDocument(cl.result.content, 'cover_letter', jobDescription).content : null
+  const cvId = cvContent ? (setDocumentContent(cv.result!.document_id, cvContent)?.id ?? 0) : 0
+  const clId = clContent ? (setDocumentContent(cl.result!.document_id, clContent)?.id ?? 0) : 0
 
   await writeTailorTimingFields({
     jobId,
@@ -110,7 +122,7 @@ export async function tailorJobDocsForJob(jobId: number): Promise<TailorJobDocsR
   // 'ready' is reserved for the user's own decision. main.ts triggers
   // recompute after the tailor IPC completes.
 
-  return { cvId: ids.cvId, clId: ids.clId, ms_cv: cv.ms, ms_cl: cl.ms }
+  return { cvId, clId, ms_cv: cv.ms, ms_cl: cl.ms }
 }
 
 async function timed<T>(

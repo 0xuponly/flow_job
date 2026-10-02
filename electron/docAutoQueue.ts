@@ -1,4 +1,4 @@
-import { PASSING_REVIEW_SCORE } from './types'
+import { AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX, PASSING_REVIEW_SCORE } from './types'
 import type { AIQueueItem, Document, Job, Settings } from './types'
 
 /**
@@ -48,10 +48,12 @@ import type { AIQueueItem, Document, Job, Settings } from './types'
  * user cleared the queue), and it is not a property of the job.
  *
  * Also not here: which documents are missing. The gate decides whether a
- * job may be worked on at all; the sweep then asks per document type which
- * unit is missing. Keeping those two questions apart is what lets the
- * trigger — which always means "both documents" — share the gate with a
- * sweep that means "just the cover letter".
+ * job may be worked on AT ALL — one answer, and the trigger and the sweep
+ * both get it. Which units are missing is the next question, asked per
+ * document type by every caller now (see `docTypeMissing` /
+ * `planDocUnit`). Keeping the two apart is what lets a cover-letter-only
+ * trigger share the gate with a CV-only sweep; fusing them is what let the
+ * two producers disagree about whether a job was covered.
  */
 export interface DocEligibilityOptions {
   /**
@@ -197,4 +199,213 @@ export function jobDocWorkInFlight(
     const produced = DOC_PRODUCING_ROWS[q.type]
     return produced !== undefined && produced.some((t) => docTypes.includes(t))
   })
+}
+
+/**
+ * The five auto-queue toggles, read TOLERENTLY: absent means on.
+ *
+ * These keys are being added to `Settings` by a concurrent branch
+ * (autotoggles). They are read through a local cast rather than through the
+ * `Settings` type so this module compiles on a tree where the keys do not
+ * exist yet and the two branches merge without either waiting on the
+ * other. The cast goes away the moment the keys land in the type.
+ *
+ * Every comparison is `!== false` rather than a plain truthiness read, so
+ * a store written before the keys existed (or one missing the key) still
+ * resolves to ON. A missing key must never disable the feature.
+ *
+ * `auto_queue_verify_cv` / `auto_queue_verify_cover_letter` are resolved
+ * here for completeness but applied in aiQueue.ts, where the `verify` rows
+ * are created: a `generate_cv` / `generate_cover_letter` item is chained to
+ * its review by the processor, so gating that chain belongs where the chain
+ * is created. `auto_queue_fit` gates the fit re-seeder in fitAutoScore.ts.
+ *
+ * Lives here, not in the sweep, because BOTH producers need it: the sweep
+ * for its per-unit gating and the fit-landing trigger for the same
+ * per-unit gating. Two readers and one tolerant read, or two tolerant
+ * reads that disagree about what "absent" means.
+ *
+ * Takes its settings as an argument rather than reading the store: this
+ * module is a pure decision module with no dependency on `./database`, so
+ * `fitScorer` and the sweep both keep one shape of "read the settings once
+ * and pass them to every predicate".
+ */
+export interface AutoQueueFlags {
+  auto_queue_fit: boolean
+  auto_queue_cv: boolean
+  auto_queue_cover_letter: boolean
+  auto_queue_verify_cv: boolean
+  auto_queue_verify_cover_letter: boolean
+}
+
+export function autoQueueFlags(settings: Settings): AutoQueueFlags {
+  const s = settings as Settings & Partial<AutoQueueFlags>
+  return {
+    auto_queue_fit: s.auto_queue_fit !== false,
+    auto_queue_cv: s.auto_queue_cv !== false,
+    auto_queue_cover_letter: s.auto_queue_cover_letter !== false,
+    auto_queue_verify_cv: s.auto_queue_verify_cv !== false,
+    auto_queue_verify_cover_letter: s.auto_queue_verify_cover_letter !== false
+  }
+}
+
+/**
+ * One document unit: a document type, the queue row type that produces it,
+ * and the toggle that gates it.
+ *
+ * `tailor_job_docs` is deliberately absent. It is the BOTH-documents unit,
+ * and it is only ever produced by a person (Quick Apply, `manual: true`).
+ * An automatic producer that queues it cannot honour one toggle without
+ * doing the other, which is why the sweep never queues it and why the
+ * fit-landing trigger stopped queueing it too: queueing the missing unit
+ * instead is both cheaper and the only shape that can respect a
+ * CV-only or cover-letter-only setting.
+ */
+export interface DocUnit {
+  docType: Document['type']
+  queueType: Extract<AIQueueItem['type'], 'generate_cv' | 'generate_cover_letter'>
+  enabled: boolean
+}
+
+export function docUnits(flags: AutoQueueFlags): DocUnit[] {
+  return [
+    { docType: 'cv', queueType: 'generate_cv', enabled: flags.auto_queue_cv },
+    {
+      docType: 'cover_letter',
+      queueType: 'generate_cover_letter',
+      enabled: flags.auto_queue_cover_letter
+    }
+  ]
+}
+
+/**
+ * Whether this job is still missing a GENERATED document of this type.
+ *
+ * "Generated" is `!is_base`, and the filter is the whole point.
+ * `listDocuments(jobId)` deliberately unions in the user's master CV (the
+ * base row, `is_base = 1`) so the Documents / JobDetail views can show it
+ * beside every job — which means a bare `some(d => d.type === 'cv')`
+ * reports a CV for EVERY job in the store and every automatic producer
+ * would enqueue nothing, ever, for exactly the users it exists to serve.
+ * The user's requirement is explicit: a document that is only the base CV
+ * the user supplied is not a generated CV and must never satisfy this
+ * check. The cover letter is the same case.
+ *
+ * (`is_base` is 0 on every generated row: `createDocument`'s `isBase`
+ * argument is only ever passed false, and the tailor path never passes it
+ * at all — see the commit body for the full reading of the column.)
+ *
+ * ONE implementation, asked by every automatic producer. The sweep asks it
+ * per unit in its loop; the fit-landing trigger asks it for the same two
+ * units before queueing anything. It used to be a private function of the
+ * sweep, which is how the trigger could end up with a second opinion: it
+ * asked "is this job covered?" and got a different answer from the one the
+ * sweep got from "is the cover letter missing?".
+ */
+export function docTypeMissing(docs: Document[], type: Document['type']): boolean {
+  return !docs.some((d) => d.type === type && !d.is_base)
+}
+
+/**
+ * The queue rows that are the SAME piece of work as `queueType` for this
+ * job, by `enqueue`'s duplicate key — (type, jobId, documentId,
+ * sectionName) — rather than by type and jobId alone.
+ *
+ * A `generate_cv` row that carries a `documentId` is an AUTO-REGENERATION
+ * of an existing document (the review->regenerate loop in aiQueue.ts), not
+ * a first generation. Treating it as this unit's row would be wrong in
+ * both directions: reviving it in place would aim a "this job has no CV"
+ * re-seed at a document that is not the CV this unit is missing, and
+ * letting it count as in-flight would suppress the fresh generation the
+ * caller is about to queue — which is reachable whenever the user
+ * deletes a CV while its regeneration row is still queued.
+ */
+function sameWorkRows(
+  queue: AIQueueItem[],
+  jobId: number,
+  queueType: AIQueueItem['type']
+): AIQueueItem[] {
+  return queue.filter(
+    (q) => q.type === queueType && q.jobId === jobId && (q.documentId ?? null) === null
+  )
+}
+
+/**
+ * 'skip'          — nothing to do, or a refusal (below).
+ * 'add'           — no row for this work at all.
+ * { revive: row } — an exhausted row that may be resurrected in place.
+ */
+export type DocUnitPlan = 'skip' | 'add' | { revive: AIQueueItem }
+
+/**
+ * Decide what, if anything, to do about one document unit of one job.
+ *
+ * Every `skip` is a refusal and says why on its branch. The revival branch
+ * is the PROCESSOR's revival, written the same way `runFitAutoScoreBacklog`
+ * writes it: one unit of the revive budget and parked on the shared
+ * cooldown. Honouring both is what keeps every automatic producer of
+ * document work from becoming a second, unlimited retry lane.
+ *
+ * ONE implementation, asked by BOTH producers — the sweep's two paths
+ * (electron/docsAutoQueue.ts) and the fit-landing trigger
+ * (electron/fitScorer.ts). That is the whole of the fit-landing trigger's
+ * cost bound: a trigger landing on a spent row is refused here exactly as
+ * a sweep tick is, so `AUTO_REVIVE_MAX` and `AUTO_REVIVE_COOLDOWN_MS` bound
+ * the trigger without any state of its own.
+ *
+ * The in-flight half of this decision is NOT here: it is
+ * `jobDocWorkInFlight`, called by all three callers before they get here,
+ * and it sees both this unit's own rows and a `tailor_job_docs` row,
+ * which produces both documents. A duplicate pair is handled there for
+ * the same reason runFitAutoScoreBacklog does it — every live row is
+ * judged, not just the first — so nothing is resurrected alongside a
+ * live one.
+ */
+export function planDocUnit(
+  jobId: number,
+  docs: Document[],
+  queue: AIQueueItem[],
+  now: number,
+  unit: DocUnit
+): DocUnitPlan {
+  if (!docTypeMissing(docs, unit.docType)) return 'skip'
+
+  const matches = sameWorkRows(queue, jobId, unit.queueType)
+  const existing = matches[0]
+  if (existing && existing.status === 'failed') {
+    if ((existing.autoRevives ?? 0) >= AUTO_REVIVE_MAX) return 'skip'
+    // Its cooldown has not elapsed. Same guard runPass applies to every
+    // row, which is why a row parked on a cooldown is never pulled
+    // forward here — and why a producer that lands every few minutes
+    // cannot spend one generation per landing.
+    if (existing.nextRetryAt > now) return 'skip'
+    return { revive: existing }
+  }
+
+  return 'add'
+}
+
+/**
+ * The bounded revival WRITE: the one patch every automatic producer of
+ * document work uses to resurrect a spent row.
+ *
+ * `enqueue`'s `revivePatch()` is deliberately NOT this — it resets
+ * `attempts` and `nextRetryAt` to now and leaves `autoRevives` alone,
+ * which is right for a person pressing Retry and unbounded for a machine
+ * that lands on a score every few minutes. Charging the budget and parking
+ * on the cooldown is what makes the revival finite.
+ *
+ * Exported so the three producers cannot each write their own.
+ */
+export function revivePatchForAutomatic(
+  row: AIQueueItem,
+  now: number
+): Partial<AIQueueItem> {
+  return {
+    status: 'pending',
+    attempts: 0,
+    autoRevives: (row.autoRevives ?? 0) + 1,
+    nextRetryAt: now + AUTO_REVIVE_COOLDOWN_MS,
+    lastError: undefined
+  }
 }
