@@ -45,3 +45,6 @@ apply-assistant-key.wrapped
 kdf.json
 manifest.json
 manifest.hmac
+
+# Review/audit verdicts and agent run state live in plans/ and must never be committed.
+REVIEW_VERDICT.md
