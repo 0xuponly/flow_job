@@ -1013,22 +1013,20 @@ describe('determinism', () => {
  * The budgets are set from those measurements, not from the old wall-clock
  * numbers:
  *
- *   - 1000 realistic listings: ~420ms of CPU idle, ~770ms loaded. Budgeted at
- *     1500ms. The old budget was 1000ms, but 1.3x over the worst loaded
- *     measurement would not have been a stable guard. What 1500ms buys is
- *     verified rather than assumed: running the whole scorer N times inside
- *     the wrapper leaves every other test in the file green and this one red
- *     at 4x (1723ms of CPU), still green at 3x (1260ms). So the guard holds
- *     a 3x regression and fails a 4x one.
+ *   - 1000 realistic listings: see SCAN_CPU_BUDGET_MS below.
  *   - one 12k-word posting: ~34ms of CPU idle, ~50ms loaded. The 2000ms
  *     budget is carried over unchanged and is now measured against CPU, so it
  *     has ~40x headroom in every condition measured.
  *
- * `process.cpuUsage()` is process-wide rather than per-thread. Under this
- * config each worker runs one isolated file at a time and this file is pure
- * synchronous scoring with no timers or async work, so the delta across the
- * measured loop is that loop's own CPU. A file that started background work
- * would need a different instrument.
+ * Each guard measures 5 times and asserts the best CPU figure. See
+ * `bestOfCpu` for why.
+ *
+ * `process.cpuUsage()` is process-wide rather than per-thread, which is why
+ * each guard takes the best of several runs -- see `bestOfCpu`. Node has no
+ * per-thread CPU clock, so a per-run figure also picks up V8's own background
+ * threads. Under this config each worker still runs one isolated file at a
+ * time and this file is pure synchronous scoring with no timers or async work,
+ * so the main thread's work is the only thing that varies between repeats.
  *
  * No warm-up run: V8's interpreter ramp is worth ~4% of the CPU figure here
  * (425ms for the first 1000 calls against 409ms once tiered up), which is far
@@ -1038,15 +1036,48 @@ describe('determinism', () => {
  *
  * The 1000-listing test also carries its own wall-clock budget, because 1000
  * synchronous scorings take 0.4s of CPU and there is no way to make that cost
- * less wall time on a busier machine -- only a slower machine buys it. Under 16
- * competing CPU spinners a full-suite run measured 2261ms, 3997ms and 3727ms
- * for this test, right against the 5000ms default, which is why it still timed
- * out intermittently after the CPU change. 15s leaves margin over the worst of
- * those and stays a bound. The guard against a slow scorer is the CPU
- * assertion above, not this number: the wall clock is reported so a failure
- * says how much of it was the machine.
+ * less wall time on a busier machine -- only a slower machine buys it. Five
+ * repeats of that under 30 competing CPU spinners measure 2.7-3.1s each, so
+ * the whole measurement is ~15s of wall clock on a badly loaded box and ~2s
+ * idle. The 60s budget is a hang detector for the five repeats, several times
+ * the worst measured. The guard against a slow scorer is the CPU assertion
+ * above, not this number: the wall clock is reported so a failure says how much
+ * of it was the machine.
  */
-const SCAN_WALL_CLOCK_BUDGET_MS = 15_000
+const SCAN_WALL_CLOCK_BUDGET_MS = 60_000
+
+/** How many times each guard measures before taking the best CPU figure. */
+const REPEATS = 5
+
+/**
+ * CPU budget for 1000 scorings of a realistic posting.
+ *
+ * The old guard asserted wall clock against 1000ms. It failed 3 runs in 5 on
+ * an untouched main, and 18 runs in 20 with the file alone -- not even the
+ * worker pool, just a busy box.
+ *
+ * Measured, 1000 scorings:
+ *
+ *              idle           under 30 competing CPU spinners (3.75x)
+ *     wall     405-486ms      2743-3104ms    <- 7x swing, all of it the box
+ *     cpu      411-486ms       715-769ms     <- under 2x
+ *
+ * so the guard asserts CPU, at the best of 5 runs, and 1500ms sits ~2x above
+ * the worst loaded figure measured. What that headroom buys is verified rather
+ * than assumed: running the whole scorer N times inside the wrapper leaves all
+ * 96 other tests in the file green and fails this one at 4x (best-of-5 CPU
+ * 1650ms) and at 6x (2410ms), while 3x stays green. So the guard holds a 3x
+ * regression and fails a 4x one.
+ *
+ * Best-of-5 is what makes the number stable rather than merely less noisy: a
+ * single measurement inflated to 1875ms on a box at load average 33, while the
+ * five repeats on that same box came out at 724, 715, 752, 721, 730ms.
+ *
+ * The earlier 1000ms figure is deliberately not kept. It was only 1.3x over the
+ * worst single loaded measurement, which is not a stable guard, and a budget
+ * chosen to make the number pass is not a guard.
+ */
+const SCAN_CPU_BUDGET_MS = 1500
 
 describe('performance guard', () => {
   const filler =
@@ -1065,6 +1096,32 @@ describe('performance guard', () => {
     return { wall: performance.now() - wallStart, cpu: (used.user + used.system) / 1000 }
   }
 
+  /**
+   * Best of `REPEATS` runs, by CPU.
+   *
+   * CPU time is much steadier than wall clock, but it is not perfectly flat:
+   * `process.cpuUsage()` is process-wide, so it also counts V8's background
+   * threads -- concurrent marking during GC, and the optimising compiler. On a
+   * badly oversubscribed box those threads get scheduled more, and a single
+   * measurement inflated from ~640ms to 1875ms that way, which is what left
+   * this test intermittently red at a 1500ms budget.
+   *
+   * Interference of any kind can only ever make a run slower, never faster, so
+   * the minimum over several runs is the closest available estimate of the
+   * interference-free cost. Taking the best is what makes the guard a statement
+   * about the scorer rather than about whatever else the machine was doing.
+   */
+  function bestOfCpu(repeats: number, body: () => void): { cpu: number; wall: number; cpuAll: number[] } {
+    const cpuAll: number[] = []
+    let best = { cpu: Infinity, wall: 0 }
+    for (let i = 0; i < repeats; i++) {
+      const run = timed(body)
+      cpuAll.push(run.cpu)
+      if (run.cpu < best.cpu) best = run
+    }
+    return { cpu: best.cpu, wall: best.wall, cpuAll }
+  }
+
   function scoreBigPosting(): number {
     return scoreCompatibilityStructured({
       title: 'Staff Platform Engineer',
@@ -1079,17 +1136,21 @@ describe('performance guard', () => {
     expect(big.split(/\s+/).length).toBeGreaterThan(10000)
     expect(scoreBigPosting()).toBeGreaterThan(0)
 
-    const { wall, cpu } = timed(scoreBigPosting)
+    const { wall, cpu } = bestOfCpu(REPEATS, scoreBigPosting)
     expect(cpu, `scoring used ${cpu.toFixed(0)}ms of CPU over ${wall.toFixed(0)}ms of wall clock`).toBeLessThan(2000)
   })
 
   it('scores realistic postings fast enough for a scan (1000 listings under 1s)', () => {
     const posting = ['Financial Analyst, Reporting', ''].join('\n') + (filler + skills).repeat(2)
-    const { wall, cpu } = timed(() => {
+    const { wall, cpu, cpuAll } = bestOfCpu(REPEATS, () => {
       for (let i = 0; i < 1000; i++) {
         scoreCompatibility('Financial Analyst, Reporting', `${posting} posting ${i}`, CV_FINANCE)
       }
     })
-    expect(cpu, `1000 scorings used ${cpu.toFixed(0)}ms of CPU over ${wall.toFixed(0)}ms of wall clock`).toBeLessThan(1500)
+    expect(
+      cpu,
+      `1000 scorings used ${cpu.toFixed(0)}ms of CPU at best of ${REPEATS}` +
+        ` (${cpuAll.map((c) => c.toFixed(0)).join(', ')}ms; best was over ${wall.toFixed(0)}ms of wall clock)`
+    ).toBeLessThan(SCAN_CPU_BUDGET_MS)
   }, SCAN_WALL_CLOCK_BUDGET_MS)
 })
