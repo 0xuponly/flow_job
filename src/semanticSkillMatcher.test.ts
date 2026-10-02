@@ -12,7 +12,7 @@
 // a float32 tensor with BigInt64Array data and throws. Running the
 // matcher tests in plain node sidesteps the jsdom interference.
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll } from 'vitest'
 import {
   initSemanticMatcher,
   isMatcherReady,
@@ -25,6 +25,13 @@ import { loadKeywordAllowlists } from './keywordAllowlists'
 import { extractPhases } from './keywordExtractor'
 
 process.env.TRANSFORMERS_CACHE = '/tmp/keywords_audit/xenova-cache'
+
+/**
+ * Budget for the one-time ONNX warm-up. 422ms idle and 2.5-2.9s under CPU
+ * load; 60s leaves room for a cold model download on a machine with no cache
+ * while still failing a genuine hang.
+ */
+const WARM_UP_TIMEOUT_MS = 60_000
 
 async function matcherReadyForTest(): Promise<boolean> {
   try {
@@ -92,7 +99,40 @@ describe('P1.1 semantic skill matcher (always-on contract)', () => {
 // entirely if the matcher can't load (vitest's standard pattern).
 const describeIf = matcherReady ? describe : describe.skip
 
+/**
+ * Every model-dependent test below runs one or two embeddings, and an
+ * embedding is the only thing in this file that costs real time. The cost is
+ * almost entirely one-time: the ONNX runtime compiles its WASM and sizes its
+ * arenas on the first inference and not again. Measured, per phrase:
+ *
+ *     init (model from disk cache)   95-355ms
+ *     'mergers and acquisitions'     0ms   -- resolved by the synonym bonus,
+ *                                            never reaches the model
+ *     'gtm strategy'                0ms   -- likewise
+ *     'data analytics'            422ms   <- FIRST real inference, pays
+ *                                            the whole runtime warm-up
+ *     'kitchen supplies'            1-6ms
+ *     'pizza delivery'              1-4ms
+ *     every later embedding          0-1ms
+ *
+ * So the warm-up was landing on whichever test happened to be first, and the
+ * one that got it was the slowest thing in the suite: 'data analytics' is the
+ * first phrase here that is not covered by a synonym bonus, which makes it the
+ * first to reach the model and the first to pay. Under CPU load that single
+ * call was measured at 2511-2860ms, and inside a full 7-worker suite it was
+ * observed at 7592ms -- past vitest's 5000ms default, which is what failed it.
+ *
+ * Paying it once in a beforeAll takes it off the individual tests entirely.
+ * Every test below then costs single-digit milliseconds and none of them needs
+ * a raised timeout of its own.
+ */
 describeIf('P1.1 semantic skill matcher (model-dependent)', () => {
+  beforeAll(async () => {
+    // A phrase with no synonym-bonus shortcut, so this genuinely reaches the
+    // model and forces the runtime to initialise.
+    await canonicalizeUnknownPhrase('data analytics', loadKeywordAllowlists())
+  }, WARM_UP_TIMEOUT_MS)
+
   it('canonicalizes "mergers and acquisitions" to "m&a" via the synonym bonus', async () => {
     const lists = loadKeywordAllowlists()
     const result = await canonicalizeUnknownPhrase('mergers and acquisitions', lists)

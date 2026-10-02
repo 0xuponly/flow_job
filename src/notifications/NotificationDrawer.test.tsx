@@ -622,6 +622,31 @@ describe('QueuePanel windowed rendering', () => {
       jobCompany: `Co ${i + 1}`
     }))
 
+  /**
+   * The panel's paging control, found by its label text.
+   *
+   * `queryByRole('button', { name })` rebuilds the whole accessibility tree
+   * and recomputes an accessible name for every element; on a rendered queue
+   * that costs ~99ms per call against ~2ms here. The paging tests below sit
+   * on 150- and 880-row queues and call this in a loop, so the role query was
+   * most of their runtime and most of their risk against the 5s test timeout.
+   * The control's accessible name is asserted directly by role in the rest of
+   * this file, on the small queues where that is cheap.
+   */
+  function pagingControl(label: RegExp): HTMLButtonElement | null {
+    for (const button of Array.from(document.querySelectorAll('button'))) {
+      if (label.test(button.textContent ?? '')) return button
+    }
+    return null
+  }
+
+  async function findPagingControl(label: RegExp): Promise<HTMLButtonElement> {
+    // The queue tab renders asynchronously after the tab click, so wait for
+    // the control the same way `findByRole` did before this was a text query.
+    await waitFor(() => expect(pagingControl(label)).not.toBeNull())
+    return pagingControl(label) as HTMLButtonElement
+  }
+
   beforeEach(() => {
     mockApi.listAIQueue.mockResolvedValue([])
   })
@@ -651,7 +676,7 @@ describe('QueuePanel windowed rendering', () => {
     await showQueueTab()
     await screen.findByText('Role 1 - Co 1')
     const before = screen.getAllByTestId('queue-task').length
-    fireEvent.click(await screen.findByRole('button', { name: /show \d+ more/i }))
+    fireEvent.click(await findPagingControl(/show \d+ more/i))
     const after = screen.getAllByTestId('queue-task').length
     expect(after).toBeGreaterThan(before)
   })
@@ -664,7 +689,7 @@ describe('QueuePanel windowed rendering', () => {
     await showQueueTab()
     await screen.findByText('Role 1 - Co 1')
     for (let i = 0; i < 10; i++) {
-      const btn = screen.queryByRole('button', { name: /show \d+ more/i })
+      const btn = pagingControl(/show \d+ more/i)
       if (!btn) break
       fireEvent.click(btn)
     }
@@ -675,7 +700,7 @@ describe('QueuePanel windowed rendering', () => {
     mockApi.listAIQueue.mockResolvedValue(many(3))
     await openDrawer()
     await showQueueTab()
-    expect(screen.queryByRole('button', { name: /show \d+ more/i })).not.toBeInTheDocument()
+    expect(pagingControl(/show \d+ more/i)).toBeNull()
   })
 
   it('collapses the window back down when the queue shrinks', async () => {
@@ -683,7 +708,7 @@ describe('QueuePanel windowed rendering', () => {
     await openDrawer()
     await showQueueTab()
     await screen.findByText('Role 1 - Co 1')
-    fireEvent.click(await screen.findByRole('button', { name: /show \d+ more/i }))
+    fireEvent.click(await findPagingControl(/show \d+ more/i))
     expect(screen.getAllByTestId('queue-task').length).toBeGreaterThan(60)
 
     // Switching away and back re-fetches; the store now has 3 items.
@@ -692,6 +717,25 @@ describe('QueuePanel windowed rendering', () => {
     fireEvent.click(screen.getByRole('tab', { name: /queue/i }))
     expect(await screen.findByText('Role 3 - Co 3')).toBeInTheDocument()
     // And the paging control is gone, since everything now fits.
+    expect(pagingControl(/show \d+ more/i)).toBeNull()
+  })
+
+  it('gives the paging control an accessible name', async () => {
+    // The tests above reach the control by label text instead of through the
+    // accessibility tree, which is only safe while something still holds it
+    // to being reachable by name. Three rows: no paging needed.
+    mockApi.listAIQueue.mockResolvedValue(many(3))
+    await openDrawer()
+    await showQueueTab()
+    await screen.findByText('Role 1 - Co 1')
     expect(screen.queryByRole('button', { name: /show \d+ more/i })).not.toBeInTheDocument()
+
+    // 90 rows: one page, one click from the end, so both controls exist at
+    // once once the window has grown past the first page.
+    mockApi.listAIQueue.mockResolvedValue(many(90))
+    fireEvent.click(screen.getByRole('tab', { name: /notifications/i }))
+    fireEvent.click(screen.getByRole('tab', { name: /queue/i }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Show 30 more' }))
+    expect(screen.getByRole('button', { name: 'Show fewer' })).toBeInTheDocument()
   })
 })

@@ -24,8 +24,8 @@ const { handlers } = vi.hoisted(() => ({
 
 vi.mock('electron', () => {
   const app = {
-    getPath: () => '/tmp/flow_job-test-queue-labels',
-    getAppPath: () => '/tmp/flow_job-test-queue-labels/app',
+    getPath: () => `/tmp/flow_job-test-queue-labels-${process.env.FLOW_JOB_TEST_RUN_ID ?? `pid${process.pid}`}`,
+    getAppPath: () => `/tmp/flow_job-test-queue-labels-${process.env.FLOW_JOB_TEST_RUN_ID ?? `pid${process.pid}`}/app`,
     getName: () => 'flow_job',
     getVersion: () => '0.0.0-test',
     setName: () => undefined,

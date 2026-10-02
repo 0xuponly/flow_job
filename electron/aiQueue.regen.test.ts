@@ -18,7 +18,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // parallel.
 vi.mock('electron', () => ({
   app: {
-    getPath: (_key: string) => '/tmp/flow_job-test-regen',
+    getPath: (_key: string) => `/tmp/flow_job-test-regen-${process.env.FLOW_JOB_TEST_RUN_ID ?? `pid${process.pid}`}`,
     getName: () => 'flow_job',
     getVersion: () => '0.0.0-test',
     on: () => undefined,
@@ -154,7 +154,7 @@ function makeJob() {
   }).job
 }
 
-const storeDir = '/tmp/flow_job-test-regen'
+const storeDir = `/tmp/flow_job-test-regen-${process.env.FLOW_JOB_TEST_RUN_ID ?? `pid${process.pid}`}`
 const storeFiles = [
   join(storeDir, 'apply-assistant-data.json'),
   join(storeDir, 'apply-assistant-key')

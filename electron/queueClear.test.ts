@@ -6,7 +6,7 @@ import { join } from 'path'
 // test FILES in parallel and both suites drive the real store, so sharing
 // one path would have them wiping each other's data mid-run. hoisted
 // because the electron mock factory runs before module-level consts.
-const { STORE_DIR } = vi.hoisted(() => ({ STORE_DIR: '/tmp/flow_job-test-queue-clear' }))
+const { STORE_DIR } = vi.hoisted(() => ({ STORE_DIR: `/tmp/flow_job-test-queue-clear-${process.env.FLOW_JOB_TEST_RUN_ID ?? `pid${process.pid}`}` }))
 
 vi.mock('electron', () => ({
   app: {

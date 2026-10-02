@@ -39,11 +39,39 @@ function renderPanel(rows: QueueItemView[]) {
   )
 }
 
+/**
+ * The paging controls, found by their label text.
+ *
+ * `queryByRole('button', { name })` builds the entire accessibility tree and
+ * recomputes an accessible name for every element in it. On a 150-row panel
+ * that measures 99ms per call against 2ms for the query below, and these
+ * helpers sit inside a loop that runs once per page, so the role query was
+ * the dominant cost in this file -- the tests were spending 700-1200ms of a
+ * 5000ms budget walking the accessibility tree, which is what left no room
+ * for a loaded machine.
+ *
+ * The accessible name is still asserted, by role, in
+ * 'labels its paging controls for assistive tech' below. That is the one
+ * place the property actually matters and the tree is small.
+ */
+function pagingControl(label: RegExp): HTMLButtonElement | null {
+  for (const button of Array.from(document.querySelectorAll('button'))) {
+    if (label.test(button.textContent ?? '')) return button
+  }
+  return null
+}
+
+function getPagingControl(label: RegExp): HTMLButtonElement {
+  const button = pagingControl(label)
+  if (!button) throw new Error(`no paging control matching ${label} in the panel`)
+  return button
+}
+
 function pageToEnd(): void {
   // "Show N more" disappears once everything is on screen, so clicking
   // until it does is how the user pages out.
   for (let i = 0; i < 10; i++) {
-    const btn = screen.queryByRole('button', { name: /show \d+ more/i })
+    const btn = pagingControl(/show \d+ more/i)
     if (!btn) break
     fireEvent.click(btn)
   }
@@ -106,18 +134,18 @@ describe('QueuePanel window', () => {
     // 3 -> 150: the count changed, so the window is back to one page and
     // the paging control is reachable again.
     const { rerender } = renderPanel(items(3))
-    expect(screen.queryByRole('button', { name: /show \d+ more/i })).toBeNull()
+    expect(pagingControl(/show \d+ more/i)).toBeNull()
     rerender(
       <QueuePanel items={items(150)} busyId={null} onRetry={vi.fn()} onRemove={vi.fn()} />
     )
     expect(screen.getAllByTestId('queue-task')).toHaveLength(60)
-    fireEvent.click(screen.getByRole('button', { name: /show \d+ more/i }))
+    fireEvent.click(getPagingControl(/show \d+ more/i))
     expect(screen.getAllByTestId('queue-task')).toHaveLength(120)
   })
 })
 
 function clickShowFewer(): void {
-  fireEvent.click(screen.getByRole('button', { name: /show fewer/i }))
+  fireEvent.click(getPagingControl(/show fewer/i))
 }
 
 /**
@@ -147,10 +175,10 @@ describe('QueuePanel shrink control', () => {
     // no way to grow it again.
     renderPanel(items(150))
     pageToEnd()
-    expect(screen.queryByRole('button', { name: /show \d+ more/i })).toBeNull()
+    expect(pagingControl(/show \d+ more/i)).toBeNull()
 
     clickShowFewer()
-    const more = screen.getByRole('button', { name: /show \d+ more/i })
+    const more = getPagingControl(/show \d+ more/i)
     expect(more).toHaveTextContent('Show 30 more')
     fireEvent.click(more)
     expect(screen.getAllByTestId('queue-task')).toHaveLength(150)
@@ -160,7 +188,7 @@ describe('QueuePanel shrink control', () => {
     renderPanel(items(150))
     pageToEnd()
     for (let i = 0; i < 6; i++) {
-      const btn = screen.queryByRole('button', { name: /show fewer/i })
+      const btn = pagingControl(/show fewer/i)
       if (!btn) break
       fireEvent.click(btn)
     }
@@ -169,7 +197,23 @@ describe('QueuePanel shrink control', () => {
 
   it('hides the shrink control on the first page', () => {
     renderPanel(items(150))
-    expect(screen.queryByRole('button', { name: /show fewer/i })).toBeNull()
+    expect(pagingControl(/show fewer/i)).toBeNull()
+  })
+
+  it('labels its paging controls for assistive tech', () => {
+    // The rest of this file finds the paging controls by their label text
+    // rather than through the accessibility tree, because a role+name query
+    // costs 99ms per call on a 150-row panel and these tests page through
+    // one. This is where that shortcut is paid back: the controls have to be
+    // reachable by accessible name, which is the property a screen reader
+    // user depends on, not just present as text.
+    // 90 rows is the smallest queue that pages: one click reaches the end and
+    // brings the shrink control into being.
+    renderPanel(items(90))
+    expect(screen.getByRole('button', { name: 'Show 30 more' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show 30 more' }))
+    expect(screen.getByRole('button', { name: 'Show fewer' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /show \d+ more/i })).toBeNull()
   })
 
   it('renders no phantom rows when the window outruns the queue', () => {
