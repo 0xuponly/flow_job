@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // via AES-256-GCM with the DEK itself.
 vi.mock('electron', () => ({
   app: {
-    getPath: (_key: string) => '/tmp/flow_job-test',
+    getPath: (_key: string) => `/tmp/flow_job-test-${process.env.FLOW_JOB_TEST_RUN_ID ?? `pid${process.pid}`}`,
     getName: () => 'flow_job',
     getVersion: () => '0.0.0-test',
     on: () => undefined,
@@ -41,7 +41,7 @@ const baseInput: CreateJobInput = {
   description: 'JD'
 }
 
-const storeDir = '/tmp/flow_job-test'
+const storeDir = `/tmp/flow_job-test-${process.env.FLOW_JOB_TEST_RUN_ID ?? `pid${process.pid}`}`
 const storeFile = join(storeDir, 'apply-assistant-data.json')
 const keyFile = join(storeDir, 'apply-assistant-key')
 

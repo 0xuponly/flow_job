@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // suites drive the real store, so sharing database.test.ts's path would
 // have them wiping each other's data mid-run. hoisted because the
 // electron mock factory runs before module-level consts.
-const { STORE_DIR } = vi.hoisted(() => ({ STORE_DIR: '/tmp/flow_job-test-autoqueue-settings' }))
+const { STORE_DIR } = vi.hoisted(() => ({ STORE_DIR: `/tmp/flow_job-test-autoqueue-settings-${process.env.FLOW_JOB_TEST_RUN_ID ?? `pid${process.pid}`}` }))
 
 vi.mock('electron', () => ({
   app: {

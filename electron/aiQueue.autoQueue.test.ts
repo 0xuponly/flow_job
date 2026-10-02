@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // user getting work they explicitly asked for. Every "manual" case below
 // is the user pressing a button.
 
-const { STORE_DIR } = vi.hoisted(() => ({ STORE_DIR: '/tmp/flow_job-test-autoqueue' }))
+const { STORE_DIR } = vi.hoisted(() => ({ STORE_DIR: `/tmp/flow_job-test-autoqueue-${process.env.FLOW_JOB_TEST_RUN_ID ?? `pid${process.pid}`}` }))
 
 vi.mock('electron', () => ({
   app: {

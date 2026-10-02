@@ -34,6 +34,9 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./vitest.setup.ts'],
+    // Gives every run its own store directories and cleans them up after.
+    // See vitest.globalSetup.ts for why the paths cannot be fixed literals.
+    globalSetup: ['./vitest.globalSetup.ts'],
     include: ['src/**/*.{test,spec}.{ts,tsx}', 'electron/**/*.{test,spec}.{ts,tsx}'],
 
     maxWorkers: MAX_WORKERS,

@@ -207,7 +207,7 @@ describe('every enqueue() call site is classified', () => {
 // ---------------------------------------------------------------------------
 
 const { STORE_DIR, handlers } = vi.hoisted(() => ({
-  STORE_DIR: '/tmp/flow_job-test-review-callsites',
+  STORE_DIR: `/tmp/flow_job-test-review-callsites-${process.env.FLOW_JOB_TEST_RUN_ID ?? `pid${process.pid}`}`,
   handlers: new Map<string, (...args: unknown[]) => unknown>()
 }))
 

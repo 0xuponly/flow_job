@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('electron', () => ({
   app: {
-    getPath: (_key: string) => '/tmp/flow_job-test-autoenqueue',
+    getPath: (_key: string) => `/tmp/flow_job-test-autoenqueue-${process.env.FLOW_JOB_TEST_RUN_ID ?? `pid${process.pid}`}`,
     getName: () => 'flow_job',
     getVersion: () => '0.0.0-test',
     on: () => undefined,
@@ -49,7 +49,7 @@ import {
 import { maybeAutoEnqueueDocs } from './fitScorer'
 import { runDocsAutoQueueBacklog } from './docsAutoQueue'
 
-const storeDir = '/tmp/flow_job-test-autoenqueue'
+const storeDir = `/tmp/flow_job-test-autoenqueue-${process.env.FLOW_JOB_TEST_RUN_ID ?? `pid${process.pid}`}`
 const storeFiles = [
   join(storeDir, 'apply-assistant-data.json'),
   join(storeDir, 'apply-assistant-key')
