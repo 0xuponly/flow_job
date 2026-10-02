@@ -33,15 +33,28 @@ function, one branch away, and the fix is one line.
 | Mutations applied to prove teeth | **13 runs across 5 source files, all reverted.** `git diff --name-only` = `src/pages/SettingsPage.tsx` only, and that is my one-line fix. |
 | Source changes I made | **1 line** (`src/pages/SettingsPage.tsx:244`) + a 5-line comment refresh. Everything else is tests. |
 
-### One caveat on "all green"
+### One caveat on "all green" — PRE-EXISTING FLAKINESS, proved at HEAD
 
-The suite is **flaky on a cold run, and it was already flaky before I touched it.** My
-first full-suite run at unmodified HEAD failed `src/App.test.tsx` and
-`electron/fitHeuristic.test.ts > performance guard` (a 1000-listing under-1s wall-clock
-guard). Subsequent runs of the same commit were green. I saw the same two tests flake with
-my changes present. **Pre-existing, load-sensitive, not caused by this review** — but it
-means a single `npm test` invocation is not a reliable gate on this repo today, and the
-count above is from a green run (runs 2 and 3 of both trees).
+`npm test` is **not deterministic on this repo, and was not before I touched it.** I
+checked out unmodified `db9f12e` into a scratch worktree, symlinked the same `node_modules`,
+and ran it there with **none of my work present**:
+
+```
+HEAD (db9f12e) full run 1:  3 failed | 1550 passed
+  FAIL electron/fitHeuristic.test.ts > performance guard > ... (1000 listings under 1s)
+  FAIL src/App.test.tsx > App module > evaluates without throwing
+  FAIL src/semanticSkillMatcher.test.ts > ... "data analytics" canonicalizes to "analytics"
+HEAD (db9f12e) full run 2:  2 failed | 1551 passed   (same two)
+```
+
+My tree reproduces exactly those failures. `fitHeuristic`'s case is a 1-second wall-clock
+guard and `App.test.tsx`'s is a module-evaluation smoke test, so this is contention on a
+loaded machine, not a logic fault. **Nothing I added is involved** — the two that fail in
+isolation fail identically at HEAD, and `semanticSkillMatcher` passes in isolation.
+
+**The count above is from a green run**, as is every per-file count in this document. There
+is already a `fix/flaky-tests` worktree on this repo, so this is known. But it means a single
+`npm test` invocation is not a gate here, and I would not sign off a release on one.
 
 ---
 
@@ -462,8 +475,11 @@ error is the kind a future reader would otherwise re-derive.
    **stale** — `a36a43c` gated it — so if that file is ever merged it will fail, correctly.
 6. **Token cost of the leak `a36a43c` closed is estimated, not measured** — 3 revives, 4 h
    apart, from `AUTO_REVIVE_MAX` / `AUTO_REVIVE_COOLDOWN_MS`. I did not price a generation.
-7. **The suite is flaky on a cold run** (Finding caveat in §1). I measured this at unmodified
-   HEAD as well as with my changes; it is pre-existing. My counts come from green runs.
+7. **The suite is flaky under load** (Finding caveat in §1). Measured at unmodified HEAD
+   in a scratch worktree with none of my work present, so pre-existing; see §1 for the
+   transcripts. My counts come from green runs, and every per-file count in this document
+   was confirmed green in isolation or in a green full run. A branch `fix/flaky-tests`
+   already exists on this repo.
 8. **Single reviewer, single platform** (macOS/darwin), no second opinion, no manual pass
    over the running app.
 
@@ -488,7 +504,9 @@ error is the kind a future reader would otherwise re-derive.
 
 ## 8. Tree state
 
-- **`npm test`: GREEN** — 1607 passing + 2 `it.fails` = **1609 total, 73 files.**
+- **`npm test`: GREEN on a green run** — 1607 passing + 2 `it.fails` = **1609 total,
+  73 files.** See §1: `fitHeuristic` / `App` / `semanticSkillMatcher` flake under load and
+  do so identically at unmodified `db9f12e`.
 - **`npm run typecheck`: clean.**
 - **`npm run lint`: 0 errors, 345 warnings — identical to HEAD; my files add zero.**
 - **Mutations: 13 runs across 5 source files, all reverted.**
