@@ -45,3 +45,7 @@ apply-assistant-key.wrapped
 kdf.json
 manifest.json
 manifest.hmac
+
+# Review/audit verdicts and agent run state must never be committed.
+# Verdicts live in plans/ (also ignored). Repo root is NOT a safe alternative.
+REVIEW_VERDICT.md
