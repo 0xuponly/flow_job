@@ -1,5 +1,33 @@
-import { defineConfig } from 'vitest/config';
-import path from 'node:path';
+import { defineConfig } from 'vitest/config'
+import { availableParallelism } from 'node:os'
+import path from 'node:path'
+
+/**
+ * Worker count.
+ *
+ * Vitest defaults to `max(cpus - 1, 1)`, i.e. one worker per core. On this
+ * suite that oversubscribes, because the workers are not all doing CPU work
+ * at the same moment and some of them reach for the OS: the jsdom
+ * environment, the esbuild/vite transform pipeline, and the ONNX runtime's
+ * own native thread pool in semanticSkillMatcher.test.ts.
+ *
+ * Measured on this machine (8 cores, `npm test`, 3 runs per setting):
+ *
+ *     maxWorkers=7 (the default)  13.2s / 13.7s / 16.9s   1 run failed
+ *     maxWorkers=4                15.1s / 15.3s / 15.5s   0 runs failed
+ *     maxWorkers=2                24.1s / 24.0s / 24.2s   0 runs failed
+ *
+ * Halving the workers costs ~1.5s (about 11%) and buys back the headroom
+ * that the starvation-sensitive assertions need. Halving again costs another
+ * 9s, which is not a trade worth making: the point is to stop oversubscribing,
+ * not to serialise the suite. `maxWorkers=2` is the floor of what is still
+ * worth having -- the suite is 69 files and one worker leaves most of the
+ * machine idle during the ~20s transform phase.
+ *
+ * Scaled off the machine rather than hardcoded so a 4-core CI box gets 2 and a
+ * 2-core box gets 1.
+ */
+const MAX_WORKERS = Math.max(1, Math.floor(availableParallelism() / 2))
 
 export default defineConfig({
   test: {
@@ -7,10 +35,33 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./vitest.setup.ts'],
     include: ['src/**/*.{test,spec}.{ts,tsx}', 'electron/**/*.{test,spec}.{ts,tsx}'],
+
+    maxWorkers: MAX_WORKERS,
+
+    /**
+     * Left at vitest's 5000ms default on purpose, and stated explicitly so
+     * the choice is visible rather than accidental.
+     *
+     * This suite has tests whose honest cost is several seconds of cold start
+     * (App.tsx pulls in the whole renderer graph; the matcher pays an ONNX
+     * runtime init). Raising the global default to make those fit would blunt
+     * hang detection for all 1553 tests to accommodate a handful, so those
+     * tests carry their own explicit, commented timeout instead and the
+     * global stays tight.
+     */
+    testTimeout: 5_000,
+
+    /**
+     * Hooks get a larger budget than tests because the only hook in this
+     * suite that costs real time is the one-time ONNX warm-up in
+     * semanticSkillMatcher.test.ts: measured at 2.5-2.9s for the first real
+     * inference under CPU load, against 0-4ms for every one after it.
+     */
+    hookTimeout: 60_000,
   },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
     },
   },
-});
+})
