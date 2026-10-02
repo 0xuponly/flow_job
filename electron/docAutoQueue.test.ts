@@ -229,6 +229,30 @@ describe('both callers consult the shared predicate', () => {
     expect(triggerBody(src)).toMatch(/if \(jobDocWorkInFlight\(/)
   })
 
+  it('the trigger CALLS the per-unit missing/dead-row questions too, it does not merely import them', async () => {
+    // The gate and the in-flight check are only two of the four questions
+    // the two producers share. `docTypeMissing` ("is this document still
+    // missing at all") and `planDocUnit` ("is there a dead row to
+    // resurrect, and may it be") are the other two, and they are what make
+    // the trigger queue only what is missing rather than both documents.
+    // Asserted as CALLS for the same reason as above: an import line
+    // satisfies a bare `toContain`, so `toContain`-shaped checks here would
+    // still be green with the trigger gutted to `return false`.
+    const src = await readFile('electron/fitScorer.ts', 'utf8')
+    expect(triggerBody(src)).toMatch(/if \(!docTypeMissing\(docs, unit\.docType\)\) continue/)
+    expect(triggerBody(src)).toMatch(/const plan = planDocUnit\(jobId, docs, queue, now, unit\)/)
+    // ...and the sweep calls the same two, so neither producer can hold a
+    // private copy of either answer. The sweep reaches `docTypeMissing`
+    // THROUGH `planDocUnit`, which is the shared implementation's own
+    // first line — so the "queue only what is missing" rule is one
+    // implementation serving both producers, and that indirection is
+    // asserted rather than assumed.
+    const sweep = await readFile('electron/docsAutoQueue.ts', 'utf8')
+    expect(countOf(sweep, 'const plan = planDocUnit(job.id, docs, queue, now, unit)')).toBe(2)
+    const shared = await readFile('electron/docAutoQueue.ts', 'utf8')
+    expect(shared).toMatch(/if \(!docTypeMissing\(docs, unit\.docType\)\) return 'skip'/)
+  })
+
   it('the trigger does not duplicate the conditions inline', async () => {
     const src = await readFile('electron/fitScorer.ts', 'utf8')
     // No re-implementation of the threshold comparison in the caller. The

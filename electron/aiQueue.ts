@@ -1,4 +1,4 @@
-import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, clearAIQueue, getDocument, getJob, getSettings, listJobDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
+import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, clearAIQueue, getDocument, getJob, getSettings, listJobDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts, setDocumentContent, writeTailorTimingFields, recomputeJobStatusFromDocs } from './database'
 import { log } from './logger'
 import { withAiOperation } from './ai'
 import { tailorDocument, regenerateSection, verifyDocumentContent, RateLimitError } from './ai'
@@ -156,11 +156,63 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
         // inserting a new one: a new row would carry no
         // auto_regen_attempts, so the loop's budget would reset every
         // round and AUTO_REGEN_MAX could never be reached.
+        const startedAt = Date.now()
         const result = await tailorDocument({
           job_id: item.jobId,
           document_type: docType,
           document_id: item.documentId
         })
+        const ms = Date.now() - startedAt
+
+        // What `tailorJobDocsForJob` does after its own `tailorDocument`
+        // call, and what this case did not do while the fit-landing trigger
+        // was the only producer of the both-documents unit.
+        //
+        // SANITIZATION. `tailorDocument` stores the RAW provider output,
+        // because the ceilings and the rule checks can only run once the
+        // model has returned. `sanitizeDocument` is the one implementation of
+        // both, imported from the tailoring module rather than restated here,
+        // so the two lanes cannot drift. It performs no I/O; storing its
+        // output is this caller's job, and `setDocumentContent` is an UPDATE
+        // of the row `tailorDocument` already created — one generation, one
+        // row, one write, which is Finding 2's fix preserved. A `null` return
+        // means the user deleted the document in the gap and is left as-is:
+        // inserting a replacement would resurrect it behind their back.
+        const { sanitizeDocument } = await import('./tailorJobDocs')
+        const sanitized = sanitizeDocument(
+          result.content,
+          docType,
+          getJob(item.jobId)?.description ?? ''
+        )
+        setDocumentContent(result.document_id, sanitized.content)
+
+        // DOC-DERIVED STATUS. `recomputeJobStatusFromDocs` is the only thing
+        // that moves a job out of Sourced, and until now the per-unit cases
+        // never called it — so every fit-landing-triggered and
+        // sweep-triggered job was stranded in the Sourced column forever
+        // with both documents already generated. Same call, same rule, same
+        // place in the sequence as the `tailor_job_docs` case below: after
+        // the document is stored, before the queue row is retired. The rule
+        // itself is unchanged and still user-owned: documents drive
+        // sourced <-> reviewing only, and 'ready' is the user's decision.
+        recomputeJobStatusFromDocs(item.jobId)
+
+        // TIMING. `writeTailorTimingFields` is the user's only "documents
+        // built at" stamp. `ms_cv` / `ms_cl` are both written by the
+        // signature, so the unit this call did NOT just generate carries its
+        // existing measurement forward instead of having it overwritten with
+        // a fabricated 0 — otherwise the CV's timing was destroyed by the
+        // cover letter that landed a second later, which is exactly what
+        // happened when one lane measured both documents at once.
+        const job = getJob(item.jobId)
+        writeTailorTimingFields({
+          jobId: item.jobId,
+          ms_cv: docType === 'cv' ? ms : (job?.tailor_ms_cv ?? 0),
+          ms_cl: docType === 'cover_letter' ? ms : (job?.tailor_ms_cl ?? 0),
+          generatedAt: Date.now(),
+          lastError: null
+        })
+
         removeAIQueueItem(item.id)
         // P1.7 §2: chain the review, exactly as the `tailor_job_docs`
         // case does. Without this the cycle was verify -> regenerate ->
@@ -328,6 +380,34 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
       )
     } catch {
       /* logging must never break the queue */
+    }
+
+    // The per-unit generation lanes are the ones the fit-landing trigger and
+    // the document backlog sweep use, so their failures need the same
+    // user-visible surface the `tailor_job_docs` lane had. Without this the
+    // only record of a failed trigger generation was the queue row's
+    // `lastError`, which the user never sees — the job kept a null
+    // `tailor_last_error` and no "documents built at" stamp to contradict it.
+    //
+    // Guarded on the two generation types: a failing `verify` or `score_fit`
+    // is not a tailoring failure and must not overwrite `tailor_last_error`.
+    // `generatedAt: null` matches the tailor lane, which also treats a failed
+    // build as no build. The millisecond fields are carried forward for the
+    // same reason as on the success path: this attempt measured nothing that
+    // belongs in either slot.
+    try {
+      if (item.type === 'generate_cv' || item.type === 'generate_cover_letter') {
+        const job = getJob(item.jobId)
+        writeTailorTimingFields({
+          jobId: item.jobId,
+          ms_cv: job?.tailor_ms_cv ?? 0,
+          ms_cl: job?.tailor_ms_cl ?? 0,
+          generatedAt: null,
+          lastError: msg
+        })
+      }
+    } catch {
+      /* the error surface must never break the retry bookkeeping below */
     }
 
     const attempts = item.attempts + 1

@@ -10,7 +10,16 @@ vi.mock('./fitScorer', () => ({
 // priority-ordering tests can observe pick order without running the
 // real generation pipeline.
 vi.mock('./tailorJobDocs', () => ({
-  tailorJobDocsForJob: vi.fn(async () => ({ cvId: 1, clId: 2, ms_cv: 1, ms_cl: 1 }))
+  tailorJobDocsForJob: vi.fn(async () => ({ cvId: 1, clId: 2, ms_cv: 1, ms_cl: 1 })),
+  // The per-unit generation case imports this from the same module to
+  // sanitize the model output before storing it — the one implementation
+  // `tailorJobDocsForJob` also uses. It is the real function rather than a
+  // stub, because its RETURN VALUE is what the processor stores, and a
+  // stub here would make the mock the thing under test.
+  sanitizeDocument: (content: string, docType: 'cv' | 'cover_letter') => ({
+    content: `${docType}:${content}`,
+    rules: []
+  })
 }))
 // aiQueue pulls ./database for queue persistence; stub the surface the
 // processor touches so tests run without a store. P0.3-era surface
@@ -61,7 +70,16 @@ vi.mock('./database', () => ({
   // undefined, the call threw, and the review fan-out below it never
   // ran — which the then-tautological assertions happily reported as
   // "nothing to assert".
-  recomputeJobStatusFromDocs: vi.fn()
+  recomputeJobStatusFromDocs: vi.fn(),
+  // The per-unit generation case uses the other two for the same reason
+  // and with the same consequence if they are absent: it stores the
+  // SANITIZED content onto the row `tailorDocument` created, and records
+  // the tailor_* timing/error fields. Both calls sit between the
+  // tailoring call and the review chaining, so a missing mock entry threw
+  // into the catch and every assertion below the throw read as "the chain
+  // never fired".
+  setDocumentContent: vi.fn((id: number) => ({ id })),
+  writeTailorTimingFields: vi.fn()
 }))
 
 import { AUTO_REGEN_MAX, AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX } from './types'

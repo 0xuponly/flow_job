@@ -145,9 +145,9 @@ const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]
     { line: 602, manual: true, why: 'tailor:quickApply — Quick Apply' }
   ],
   'electron/aiQueue.ts': [
-    { line: 177, manual: false, why: 'processor: generation finished, chain the review' },
-    { line: 234, manual: false, why: 'processor: review failed, auto-regenerate the document' },
-    { line: 307, manual: false, why: 'processor: tailor_job_docs finished, review each new document' }
+    { line: 229, manual: false, why: 'processor: generation finished, chain the review' },
+    { line: 286, manual: false, why: 'processor: review failed, auto-regenerate the document' },
+    { line: 359, manual: false, why: 'processor: tailor_job_docs finished, review each new document' }
   ],
   'electron/fitScorer.ts': [
     { line: 136, manual: false, why: 'fit-landing trigger: a job cleared the fit threshold and is missing a document' }
@@ -583,9 +583,9 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
     // retired, so it is absent from the list and from the comment.
     const automatic = callSites().filter((c) => !c.manual)
     expect(automatic.map((c) => `${c.where}:${c.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:177',
-      'electron/aiQueue.ts:234',
-      'electron/aiQueue.ts:307',
+      'electron/aiQueue.ts:229',
+      'electron/aiQueue.ts:286',
+      'electron/aiQueue.ts:359',
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:136'
@@ -602,8 +602,8 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
       new RegExp(`There are ${WORDS[automatic.length]} automatic producers`)
     )
     // Every producer it names, including the fan-out this comment used
-    // to omit (aiQueue.ts:307 — a different producer from the
-    // generation → review chaining at :177, which fires for a directly
+    // to omit (the tailor_job_docs review fan-out — a different producer
+    // from the generation → review chaining, which fires for a directly
     // queued generate_*).
     expect(claim).toMatch(/fit-landing trigger in fitScorer/)
     expect(claim).toMatch(/generation→review\s*chaining/)

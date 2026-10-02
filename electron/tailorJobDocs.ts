@@ -35,7 +35,24 @@ function pickErrorMessage(
   return null
 }
 
-function sanitizeDocument(
+/**
+ * The ONE post-generation sanitization step: paragraph ceilings for a cover
+ * letter, `enforceAllCvCeilings` for a CV, then `runDocumentRuleChecks` over
+ * the sanitized text.
+ *
+ * It lives here because the both-documents unit was its only caller for the
+ * whole of the per-unit era, and moving the fit-landing trigger onto
+ * `generate_cv` / `generate_cover_letter` left those lanes storing the raw
+ * provider prose — unsanitized content reaching the user's Documents view.
+ * The per-unit processor cases now call THIS function, so the ceilings and
+ * the rule checks cannot be restated, and drift, in a second place.
+ *
+ * Exported for that reason only. It is deliberately NOT part of
+ * `tailorJobDocsForJob`'s contract, and it performs no I/O: storing the
+ * sanitized text onto the row the model call created is the caller's job
+ * (`setDocumentContent`).
+ */
+export function sanitizeDocument(
   content: string,
   docType: 'cv' | 'cover_letter',
   jobDescription: string
