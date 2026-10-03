@@ -1226,11 +1226,36 @@ const POSTING_MEASUREMENT_CEILING_MS = 30_000
 /**
  * Budget for scoring one 12k-word posting, as a normalised factor.
  *
- * ~34ms of CPU idle and ~46ms loaded against a reference of 26-55ms, so the
- * clean factor is 1.4-2.3 and the old 2000ms bound was 28-43x of headroom. 65
- * keeps that headroom, now measured against this machine rather than assumed.
+ * This was 65, carried over from the old 2000ms bound to keep its headroom, and
+ * it guarded nothing: measured clean factor 1.25-2.20 over 24 runs (below), so
+ * posting scoring would have had to become ~30x slower to trip it. A budget that
+ * cannot fail reads as coverage and is not.
+ *
+ * 8 is 3.6x above the worst clean factor measured here and 5.2x above the quiet
+ * one, which is more headroom than the scan guard's own ceiling keeps over its
+ * worst measured clean factor (30 against 20.19), and it is reachable: a posting
+ * scorer 3.6x slower on 12k words fails. The regression class this buys is the
+ * one the scan guard cannot see - it scores 1000 ~60-word postings, so anything
+ * superlinear in posting length barely moves it while it dominates here.
+ *
+ * What it still does not catch is stated rather than implied: a 2x slowdown on
+ * this posting passes, as it did under the old budget, and the old 2000ms bound
+ * was 28-43x of headroom against a clean cost of 1.4-2.3.
+ *
+ * Clean factor measured on this box (8-core darwin-arm64, node v26.8.1, vitest
+ * 4.1.10, this file alone), 24 runs of this test:
+ *
+ *     condition                             n   clean factor   wall clock
+ *     quiet                                  12   1.36-1.55      0.41-0.64s
+ *     24 CPU spinners (3x oversubscribed)     5   1.25-2.20      2.1s
+ *     48 CPU spinners (6x oversubscribed)     3   1.57-1.90      -
+ *     other vitest suites on the box          4   1.38-1.55      -
+ *
+ * The wall clock is dominated by the reference measured beside the posting, not
+ * by the posting: 34-80ms of CPU for the posting itself against a 27-67ms
+ * reference, three repeats.
  */
-const POSTING_INTERFERENCE_FACTOR_BUDGET = 65
+const POSTING_INTERFERENCE_FACTOR_BUDGET = 8
 
 describe('performance guard', () => {
   const filler =
