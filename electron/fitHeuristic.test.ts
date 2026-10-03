@@ -1099,6 +1099,77 @@ const SCAN_MEASUREMENT_CPU_TRIPWIRE = 150
 const SCAN_INTERFERENCE_FACTOR_BUDGET = 45
 
 /**
+ * The band the measured clean factor has to stay inside, asserted in the same
+ * test, because SCAN_INTERFERENCE_FACTOR_BUDGET is absolute and everything this
+ * guard can detect follows from the ratio it measured rather than from the
+ * budget: the slowdown that trips the guard is `45 / cleanFactor`, so a clean
+ * factor of 15.0 is exactly where a 3x regression stops being caught.
+ *
+ * Measured on an 8-core darwin-arm64 box, node v26.8.1, vitest 4.1.10, this
+ * file alone, clean code at the merged 4_500_000, 23 runs:
+ *
+ *     condition                            n   clean factor   scan CPU     wall
+ *     quiet, nothing else on the box      18   15.76-17.72    428-486     415-456
+ *     first run after a burst of runs      1   14.33          570          537
+ *     24 CPU spinners (3x oversubscribed)  5   17.54-19.60    650-732    2292-3159
+ *     48 CPU spinners (6x oversubscribed)  3   18.24-19.87    704-844    5060-5996
+ *     other vitest suites on the box       6   17.87-20.19    905-1109     913-2375
+ *
+ * 14.33-20.19 overall. The raw scan CPU moves 2.6x across that table and the
+ * normalised factor 1.41x, which is the claim the redesign rests on. Break-even
+ * for a 3x regression is 15.0 and the lowest quiet measurement is 15.76, so at
+ * the merged constant this guard catches 3x with 5% of margin over its own
+ * noise -- and nothing in the suite asserted any of it.
+ *
+ * Both reference halves are editable constants (`REFERENCE_COMPUTE_PASSES`,
+ * `REFERENCE_ALLOC_PASSES`), the budget is a third, and a Node/V8 change moves
+ * the ratio without touching the scorer, so the decay is silent by construction.
+ * Measured by walking REFERENCE_COMPUTE_PASSES with a mutation in
+ * `scoreCompatibilityStructured` -- N calls to `compatibilitySignals` per call,
+ * identical return value, pure CPU cost, measured effective multiplier 2.8-3.1x
+ * at N=3 -- and changing nothing else. Clean factor quiet, mutated factor under
+ * whatever load the box happened to have (contention compresses the ratio, so
+ * the mutated column is the pessimistic one):
+ *
+ *     REFERENCE_COMPUTE_PASSES  drift   clean    3x measures   budget alone   both bounds
+ *     4_500_000 (as merged)       --     15.97   48.5 / 52.7   FAIL           FAIL
+ *     5_000_000                  +11%    15.43   38.7-47.2     coin flip      FAIL
+ *     5_500_000                  +22%    14.83   42.6          PASS - missed  FAIL
+ *     6_000_000                  +33%    14.15   41.3          PASS - missed  FAIL
+ *     7_000_000                  +56%    13.43   37.4-38.0     PASS - missed  FAIL
+ *     8_000_000                  +78%    12.36   35.8          PASS - missed  FAIL
+ *     9_000_000                 +100%    11.44   33.6          PASS - missed  FAIL, and clean fails too
+ *     11_000_000                +144%    10.64   29.5          PASS - missed  clean fails the floor
+ *
+ * Clean code passes at every one of those settings, which is why nothing noticed.
+ * Read down the last column: with both bounds asserted, every drift measured here
+ * is red -- the budget catches 3x up to +11%, the ceiling catches it from +22% to
+ * +100% on its own (a 2.85x mutation measures 30 the moment the clean factor falls
+ * below ~10.5), and past +100% the floor fails on correct code. There is no
+ * setting measured in which the suite is green with a live 3x regression in the
+ * scorer, which is the property the guard never had.
+ *
+ * The bounds have room on both sides, and the room is deliberate. 12 is 16% below
+ * the lowest clean factor measured here and 30 is 49% above the highest. A tighter
+ * floor would catch more drift and would also fail this guard on correct code: a
+ * 14.33 was measured on clean code, the memory pressure that produced it is the
+ * mode this file's own docs describe, and an unmeasured machine -- a 2-core CI box
+ * is the config's stated target -- is exactly where a bound reverse-engineered from
+ * one box's noise bites. Never false-failing is the right way round for a guard
+ * whose documented failure mode was false failures.
+ *
+ * What the floor alone does *not* do, stated rather than hidden: it tolerates drift
+ * of up to ~90% on the compute half before complaining about clean code, and the
+ * drift that takes the guard past 3x break-even is only ~+25%. So the floor is not
+ * what catches that, and could not be -- 15.0 sits inside the measured noise band
+ * of 14.33-20.19, so any floor above it false-fails this guard on correct code. The
+ * ceiling is what closes the gap, by being a second trip point at a third of the
+ * budget rather than a bound on the clean measurement.
+ */
+const SCAN_CLEAN_FACTOR_FLOOR = 12
+const SCAN_CLEAN_FACTOR_CEILING = 30
+
+/**
  * Vitest's own timeout for the same test, which is a ceiling and nothing more.
  * Node cannot preempt a synchronous body, so vitest's timer is only evaluated
  * once the body returns: a body that busy-loops for 7094ms under a 3000ms
@@ -1370,6 +1441,30 @@ describe('performance guard', () => {
         ` over ${median(wall).toFixed(0)}ms of wall clock (${wall.map((w) => w.toFixed(0)).join(', ')}ms)` +
         ` over ${listingsScored} listings`
     ).toBeLessThan(SCAN_INTERFERENCE_FACTOR_BUDGET)
+
+    // And the ratio itself, two-sided, because the assertion above is only as
+    // good as the denominator: pass a 3x regression by editing either reference
+    // constant and the budget still says "under budget", forever, with clean code
+    // green at every step. The message states the trip point rather than the
+    // factor, because the trip point is the consequence.
+    const tripPoint = SCAN_INTERFERENCE_FACTOR_BUDGET / factor
+    const drift = ` A trip point of ${tripPoint.toFixed(2)}x means a ${tripPoint.toFixed(1)}x regression ` +
+      `${tripPoint >= 3 ? 'still fails' : 'passes'} this guard. The usual cause is a change to ` +
+      `REFERENCE_COMPUTE_PASSES (${REFERENCE_COMPUTE_PASSES}) or REFERENCE_ALLOC_PASSES (${REFERENCE_ALLOC_PASSES}); ` +
+      `clean code measured 14.33-20.19 over 23 runs from quiet to 6x oversubscribed.`
+    expect(
+      factor,
+      `1000 clean scorings used ${median(cpu).toFixed(0)}ms of CPU at the median of ${cpu.length} of ${REPEATS} repeats` +
+        ` against a reference of ${reference.toFixed(1)}ms, an interference factor of ${factor.toFixed(1)},` +
+        ` below the ${SCAN_CLEAN_FACTOR_FLOOR} this guard needs to keep detecting a 3x regression.${drift}`
+    ).toBeGreaterThan(SCAN_CLEAN_FACTOR_FLOOR)
+    expect(
+      factor,
+      `1000 clean scorings used ${median(cpu).toFixed(0)}ms of CPU at the median of ${cpu.length} of ${REPEATS} repeats` +
+        ` against a reference of ${reference.toFixed(1)}ms, an interference factor of ${factor.toFixed(1)},` +
+        ` above the ${SCAN_CLEAN_FACTOR_CEILING} this guard is calibrated for.${drift}`
+    ).toBeLessThan(SCAN_CLEAN_FACTOR_CEILING)
+
     expect(referenceAcc()).toBeGreaterThan(0)
   }, SCAN_MEASUREMENT_CEILING_MS)
 
