@@ -1016,12 +1016,27 @@ describe('determinism', () => {
  *
  * The raw CPU figure moves 2.9x across those conditions, so no fixed
  * millisecond budget can be a trip point on it. At the 1500ms of headroom
- * this branch settled on, a 3x-slowdown mutation is caught when the box is
- * quiet (3.6x trip point) and missed when it is busy (1.2x trip point), and
- * the busiest condition measured is 1226ms of *clean* scorer -- 1.2x of margin
- * on correct code, one background GC spike from failing on nothing. Dividing by
- * a reference workload fixes the first problem and creates the margin for the
- * second: the normalised figure moves 1.42x, not 2.9x.
+ * this branch settled on, a 3x-slowdown mutation *passed* when the box was
+ * quiet -- 3.6x of trip point against a 3x regression -- and *failed* when it
+ * was busy, where the same mutation measured 1723ms against the 1500ms budget.
+ * The old guard was simultaneously too loose on a quiet box and prone to false
+ * failure on a busy one, and the busiest condition measured is 1226ms of
+ * *clean* scorer -- 1.2x of margin on correct code, one background GC spike
+ * from failing on nothing. Dividing by a reference workload fixes the first
+ * problem and creates the margin for the second: the normalised figure moves
+ * 1.42x, not 2.9x.
+ *
+ * That direction is worth stating outright because the tempting next move at
+ * the next flake is to add a retry, and this file did not have one to remove.
+ * `REPEATS = 5` was five *measurements* whose minimum was taken, which is
+ * fail-closed under load rather than fail-open: taking the best sample can
+ * only understate the cost, never retry it into passing. There is no `retry`
+ * anywhere in this repo's vitest config, and a probe test added to this tree to
+ * check rather than assume recorded exactly one attempt for a failing
+ * assertion. So the old guard's flakiness was never masking; it was a budget
+ * with nowhere to sit between 411ms of clean work and 1500ms. Adding a vitest
+ * `retry` would introduce masking that has never existed here, and vitest's
+ * does genuinely retry an assertion into passing.
  *
  * It takes two halves of a reference, not one, and that is the other measured
  * result. A busy box inflates process CPU time because V8's background threads
@@ -1115,7 +1130,9 @@ const SCAN_INTERFERENCE_FACTOR_BUDGET = 45
  *     48 CPU spinners (6x oversubscribed)  3   18.24-19.87    704-844    5060-5996
  *     other vitest suites on the box       6   17.87-20.19    905-1109     913-2375
  *
- * 14.33-20.19 overall. The raw scan CPU moves 2.6x across that table and the
+ * 14.33-20.19 overall (the 16.2-23.1 in the table above is the same measurement
+ * taken in an earlier session on a box of the same shape; quiet-to-busy the two
+ * agree to within 15%). The raw scan CPU moves 2.6x across that table and the
  * normalised factor 1.41x, which is the claim the redesign rests on. Break-even
  * for a 3x regression is 15.0 and the lowest quiet measurement is 15.76, so at
  * the merged constant this guard catches 3x with 5% of margin over its own
