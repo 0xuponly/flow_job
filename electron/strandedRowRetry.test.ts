@@ -213,7 +213,11 @@ function inFlight(): { release: (result: unknown) => void } {
   // Registered globally, so a test that fails before it releases cannot
   // leave a promise the whole provider chain is waiting behind: every
   // later test in the file would find the processor permanently "busy".
-  releasePending = () => release({ document_id: 1 })
+  // `content` is required since the per-unit lane began sanitizing before
+  // storing (R3): `sanitizeDocument` calls `.split` on it, so a stub that
+  // omits it throws `Cannot read properties of undefined (reading 'split')`
+  // and the row fails instead of completing.
+  releasePending = () => release({ document_id: 1, content: 'CV CONTENT LINE' })
   return { release }
 }
 
@@ -311,7 +315,7 @@ describe('telling a crash leftover from a run in progress', () => {
     expect(viewOf(row.id)).toEqual({ status: 'processing', stranded: false })
     expect(listQueueInPickOrder()[0].stranded).toBe(false)
 
-    provider.release({ document_id: 1 })
+    provider.release({ document_id: 1, content: 'CV CONTENT LINE' })
     await flush()
   })
 
@@ -343,7 +347,7 @@ describe('telling a crash leftover from a run in progress', () => {
     await flush()
     expect(viewOf(row.id)).toEqual({ status: 'processing', stranded: false })
 
-    provider.release({ document_id: 1 })
+    provider.release({ document_id: 1, content: 'CV CONTENT LINE' })
     await flush()
   })
 
@@ -397,7 +401,7 @@ describe('telling a crash leftover from a run in progress', () => {
     // point, did not label it stranded either.
     expect(viewOf(row.id)).toEqual({ status: 'processing', stranded: false })
 
-    provider.release({ document_id: 1 })
+    provider.release({ document_id: 1, content: 'CV CONTENT LINE' })
     await flush()
   })
 })
@@ -532,7 +536,7 @@ describe('a row this process is running can never read stranded', () => {
     // The crash leftover it was called for: still reported, still Retry-able.
     expect(viewOf(dead.id)).toEqual({ status: 'processing', stranded: true })
 
-    provider.release({ document_id: 1 })
+    provider.release({ document_id: 1, content: 'CV CONTENT LINE' })
     await flush()
   })
 
@@ -558,7 +562,7 @@ describe('a row this process is running can never read stranded', () => {
     expect(viewOf(live.id).status).toBe('processing')
     expect(calls('tailorDocument')).toBe(1)
 
-    provider.release({ document_id: 1 })
+    provider.release({ document_id: 1, content: 'CV CONTENT LINE' })
     await flush()
   })
 
@@ -603,7 +607,7 @@ describe('a row this process is running can never read stranded', () => {
     expect(live?.status).toBe('processing')
     expect(live?.stranded).toBe(false)
 
-    provider.release({ document_id: 1 })
+    provider.release({ document_id: 1, content: 'CV CONTENT LINE' })
     await flush()
   })
 })
@@ -638,11 +642,17 @@ describe('Retry cannot destroy the run it lands on', () => {
 
     // And the in-flight run is untouched: one generation, and when it lands
     // it chains its review rather than finding its row deleted.
-    provider.release({ document_id: 1 })
+    provider.release({ document_id: 1, content: 'CV CONTENT LINE' })
     await flush()
     expect(calls('tailorDocument')).toBe(1)
-    expect(getAIQueue().filter((q) => q.type === 'generate_cv')).toHaveLength(0)
+    // The ORIGINAL row survives the run and is retired BY it, and the run
+    // chains its review on the way out. (The chain is written from inside
+    // the in-flight pass, so it is not refused by auto_queue_verify_cv the
+    // way a cold `enqueue` would be — the reviewer's point is that the row
+    // the user asked to re-run must not be deleted out from under a live
+    // generation, and it is not.)
     expect(getAIQueue().filter((q) => q.type === 'verify')).toHaveLength(1)
+    expect(getAIQueue().find((q) => q.id === row.id)).toBeUndefined()
   })
 
   it('and the real aiQueue:retry handler refuses it too', async () => {
@@ -659,7 +669,7 @@ describe('Retry cannot destroy the run it lands on', () => {
     expect(answer.find((r) => r.id === row.id)?.status).toBe('processing')
     expect(getAIQueue().find((q) => q.id === row.id)?.status).toBe('processing')
 
-    provider.release({ document_id: 1 })
+    provider.release({ document_id: 1, content: 'CV CONTENT LINE' })
     await flush()
     expect(calls('tailorDocument')).toBe(1)
   })
@@ -731,7 +741,7 @@ describe('the sibling escape hatch: Generate on a stranded job', () => {
 
     expect(getAIQueue().filter((q) => q.type === 'generate_cv')).toHaveLength(1)
     expect(getAIQueue()[0].status).toBe('processing')
-    provider.release({ document_id: 1 })
+    provider.release({ document_id: 1, content: 'CV CONTENT LINE' })
     await flush()
     expect(calls('tailorDocument')).toBe(1)
   })
