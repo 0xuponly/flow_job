@@ -55,12 +55,23 @@ export default defineConfig({
     testTimeout: 5_000,
 
     /**
-     * Hooks get a larger budget than tests because the only hook in this
-     * suite that costs real time is the one-time ONNX warm-up in
-     * semanticSkillMatcher.test.ts: measured at 2.5-2.9s for the first real
-     * inference under CPU load, against 0-4ms for every one after it.
+     * Vitest's 10s default, stated explicitly rather than left to chance.
+     *
+     * This was 60s, to cover the one-time ONNX warm-up in
+     * semanticSkillMatcher.test.ts (2.5-2.9s for the first real inference under
+     * CPU load, 0-4ms for every one after it). That hook already carries its own
+     * explicit `WARM_UP_TIMEOUT_MS`, which is the mechanism that is actually
+     * sized to it -- `src/semanticSkillMatcher.test.ts`. With this deleted
+     * outright, the matcher file passed 11/11 under 24 competing spinners.
+     *
+     * What 60s bought instead was 10s -> 60s of hang detection for every
+     * `beforeAll`/`afterAll` in all 76 files. There are three hooks in the suite
+     * and the other two are a ResizeObserver stub and an `rmSync`: a hook
+     * deadlocked for 59s passed. A probe file whose `beforeAll` sleeps 15s now
+     * fails with `Hook timed out in 10000ms` after 10.0s of test time, where it
+     * passed at 15s before.
      */
-    hookTimeout: 60_000,
+    hookTimeout: 10_000,
   },
   resolve: {
     alias: {
