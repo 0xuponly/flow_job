@@ -516,6 +516,20 @@ export const AUTO_REVIVE_MAX = 3
 export type QueueItemView = AIQueueItem & {
   jobTitle: string | null
   jobCompany: string | null
+  /**
+   * This row says `processing`, but no run in the current app session
+   * owns it: it was left that way by a crash and the startup reclaim
+   * deliberately did not resume it (the Auto-queue switch for its type
+   * is off). The panel offers Retry for these, because it is the user's
+   * own request and is never gated.
+   *
+   * Read-time state about the PROCESS, not the row, and never
+   * persisted — like `jobTitle` / `jobCompany` it is resolved per list
+   * from something the main process knows and the store does not. False
+   * (the field is always sent) for every other row, so the renderer can
+   * treat a missing one as false too.
+   */
+  stranded?: boolean
 }
 
 export interface AIQueueItem {
