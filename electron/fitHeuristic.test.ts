@@ -1485,11 +1485,18 @@ describe('performance guard', () => {
     expect(referenceAcc()).toBeGreaterThan(0)
   }, SCAN_MEASUREMENT_CEILING_MS)
 
-  it('gives a slowdown the same verdict idle and under load', () => {
-    // The defect this guard had: the verdict depended on the machine, so the
-    // same 3x regression passed on an idle box and failed on a busy one. These
-    // are two recorded conditions -- quietest and busiest measured with this
-    // guard, 1.31x of factor apart -- replayed at several slowdown factors.
+  it('brackets the trip point between the two recorded conditions', () => {
+    // What this pins is the *budget* against two recorded measurements, not
+    // load-independence as a live property. It is arithmetic over the quietest
+    // and busiest conditions measured with this guard, 1.31x of factor apart,
+    // replayed at several slowdown factors.
+    //
+    // The old title here was "gives a slowdown the same verdict idle and under
+    // load", which overstated it: nothing in this body measures anything, and it
+    // stayed green through a 10x-wrong CPU figure in `timed()`. The live claim
+    // is asserted by the clean-factor band in the scan test above, on a factor
+    // this run actually measured; this test only says the recorded numbers sit
+    // where the budget's comment says they sit.
     const QUIET_BOX = { scanCpu: 430, reference: 26.4 }
     const BUSY_BOX = { scanCpu: 1020, reference: 47.9 }
 
