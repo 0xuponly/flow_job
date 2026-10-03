@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 //
 // The answer is yes, and mostly WITHOUT waiting: main.ts calls
 // `enqueueDocsBacklog()` in the same `jobs:scanBoards` handler, right
-// after `scanAllBoards` resolves (electron/main.ts:331), and that sweep
+// after `scanAllBoards` resolves (electron/main.ts:391), and that sweep
 // queues `generate_cv` / `generate_cover_letter` per missing document for
 // every eligible job — the same job, in the same scan, by a function that
 // was already on main. The hourly `runDocsAutoQueueBacklog` and the
@@ -322,7 +322,7 @@ describe('a scan enqueues nothing of its own', () => {
 
 describe('the documents the scan no longer queues are queued by the sweep instead', () => {
   // The coverage claim, made executable. `enqueueDocsBacklog` is what
-  // main.ts calls in the post-scan handler (electron/main.ts:331) and
+  // main.ts calls in the post-scan handler (electron/main.ts:391) and
   // again at startup (:1232), and the hourly `runDocsAutoQueueBacklog` is
   // the third caller. So this is not "a test of another module's sweep":
   // it is the answer to what a freshly scanned job gets.
@@ -389,7 +389,7 @@ describe('which path actually catches a newly scanned job', () => {
   //      (jobSearch.ts:741-745, `fit_score_version: cv_version`).
   //   2. So `needsFitScore` (fitAutoScore.ts:69-72) returns false —
   //      `job.score !== null` — and `enqueueScoreFitBacklog()`
-  //      (fitAutoScore.ts:181, called post-scan at main.ts:327) queues NO
+  //      (fitAutoScore.ts:181, called post-scan at main.ts:387) queues NO
   //      score_fit row for it.
   //   3. The processor's `score_fit` case (aiQueue.ts:246-261) is the
   //      only production caller of `scoreOneJobInBackground`, so it never
@@ -397,7 +397,7 @@ describe('which path actually catches a newly scanned job', () => {
   //
   // What catches it instead is `enqueueDocsBacklog()` in the same
   // `jobs:scanBoards` handler, immediately after the scan resolves
-  // (main.ts:331) — not the hourly tick. Same predicate, same switches, so
+  // (main.ts:391) — not the hourly tick. Same predicate, same switches, so
   // the RULE holds; the path is a different one than assumed. The trigger
   // is reached only for a scanned job the scan admitted with NO score (the
   // heuristic-fallback branch), which is exactly what the next case drives.
@@ -417,7 +417,7 @@ describe('which path actually catches a newly scanned job', () => {
   })
 
   it('still queues it for documents, immediately, via the post-scan sweep', async () => {
-    // main.ts:331, not the hourly tick: the job is queued in the same
+    // main.ts:391, not the hourly tick: the job is queued in the same
     // scan that added it.
     writeStoreWithRetiredKeys()
     reloadStore()

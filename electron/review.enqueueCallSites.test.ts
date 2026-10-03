@@ -11,7 +11,7 @@ import { join, relative } from 'node:path'
 // aiQueue.autoQueue.test.ts calls `enqueue(item, { manual: true })` or
 // `enqueue(item)` with the flag written by the TEST, so:
 //
-//   * delete `{ manual: true }` from electron/main.ts:388 and all 24
+//   * delete `{ manual: true }` from electron/main.ts:454 and all 24
 //     shipped tests still pass, while the Verify button stops queueing
 //     with the switches off — the exact failure the feature promises
 //     cannot happen;
@@ -139,10 +139,10 @@ function callSites(): CallSite[] {
  */
 const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]> = {
   'electron/main.ts': [
-    { line: 394, manual: true, why: 'documents:verify — the Verify button' },
-    { line: 407, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
-    { line: 586, manual: true, why: 'ai:tailor — Tailor / Generate' },
-    { line: 602, manual: true, why: 'tailor:quickApply — Quick Apply' }
+    { line: 454, manual: true, why: 'documents:verify — the Verify button' },
+    { line: 467, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
+    { line: 649, manual: true, why: 'ai:tailor — Tailor / Generate' },
+    { line: 665, manual: true, why: 'tailor:quickApply — Quick Apply' }
   ],
   'electron/aiQueue.ts': [
     { line: 407, manual: false, why: 'processor: generation finished, chain the review' },
@@ -150,7 +150,7 @@ const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]
     { line: 537, manual: false, why: 'processor: tailor_job_docs finished, review each new document' }
   ],
   'electron/fitScorer.ts': [
-    { line: 136, manual: false, why: 'fit-landing trigger: a job cleared the fit threshold' }
+    { line: 136, manual: false, why: 'fit-landing trigger: a job cleared the fit threshold and is missing a document' }
   ],
   'electron/fitAutoScore.ts': [
     { line: 191, manual: false, why: 'session-start / post-scan fit-score re-seeder' }
@@ -333,13 +333,22 @@ describe('a REAL automatic caller, classified from its own source', () => {
     // electron/fitScorer.ts:107 — `maybeAutoEnqueueDocs`, reached from
     // the processor's score_fit case. Automatic: nobody asked for these
     // documents; the job simply scored well. Confirmed by driving the
-    // real function, not `enqueue` with a hand-written flag.
+    // real function, not `enqueue` with a hand-written flag. With EVERY
+    // switch off there is no unit left to queue, whatever the score.
+    //
+    // UNFILTERED on purpose. This used to read `filter(type ===
+    // 'tailor_job_docs')`, which was the right narrowing while the trigger
+    // emitted that one unit and meant "the both-documents row is refused".
+    // The trigger is per-unit now, so a narrowing filter would pass just as
+    // happily if the trigger queued a `generate_cv` with every switch off —
+    // i.e. it would no longer be testing the gate at all. "Nothing was
+    // queued" has to mean nothing, of any type.
     const jobId = addJob()
     const { updateJob } = await import('./database')
     updateJob(jobId, { score: 0.9, fit_score_version: 0 })
     updateSettings(ALL_OFF)
     expect(maybeAutoEnqueueDocs(jobId)).toBe(false)
-    expect(getAIQueue().filter((q) => q.type === 'tailor_job_docs')).toHaveLength(0)
+    expect(getAIQueue()).toHaveLength(0)
   })
 
   it('and still queues with them on, so the gate is what stopped it', async () => {
@@ -347,15 +356,47 @@ describe('a REAL automatic caller, classified from its own source', () => {
     const { updateJob } = await import('./database')
     updateJob(jobId, { score: 0.9, fit_score_version: 0 })
     expect(maybeAutoEnqueueDocs(jobId)).toBe(true)
-    // The trigger emits PER-UNIT rows since the per-unit lane landed; it
-    // no longer produces the both-documents `tailor_job_docs` unit.
-    expect(getAIQueue().filter((q) => q.jobId === jobId && q.type === 'generate_cv')).toHaveLength(1)
+    // Per missing document type, like the sweep: two single-document rows,
+    // not one both-documents row. Each unit is gated by its OWN switch, so
+    // a partial setting is a partial queue rather than none at all. The
+    // trigger emits PER-UNIT rows since the per-unit lane landed; it no
+    // longer produces the both-documents `tailor_job_docs` unit, and the
+    // third line is what keeps that from regressing.
+    const rows = getAIQueue().filter((q) => q.jobId === jobId)
+    expect(rows.map((q) => q.type).sort()).toEqual(['generate_cover_letter', 'generate_cv'])
+    expect(rows.filter((q) => q.type === 'tailor_job_docs')).toHaveLength(0)
+  })
+
+  it('queues only the enabled unit when ONE generation switch is off', async () => {
+    // The per-unit shape. `tailor_job_docs` needed both switches because
+    // it cannot honour one without doing the other, so the old trigger
+    // queued nothing at all here — an answer the sweep could not give.
+    const jobId = addJob()
+    const { updateJob } = await import('./database')
+    updateJob(jobId, { score: 0.9, fit_score_version: 0 })
+    updateSettings({ ...ALL_OFF, auto_queue_cv: true })
+    expect(maybeAutoEnqueueDocs(jobId)).toBe(true)
+    expect(getAIQueue().filter((q) => q.jobId === jobId).map((q) => q.type)).toEqual(['generate_cv'])
+  })
+
+  it('queues only the OTHER unit when the cover-letter switch is the one that is off', async () => {
+    // The mirror of the case above. Both halves, because a trigger that
+    // honoured one switch and ignored the other would pass whichever single
+    // one this file happened to pick.
+    const jobId = addJob()
+    const { updateJob } = await import('./database')
+    updateJob(jobId, { score: 0.9, fit_score_version: 0 })
+    updateSettings({ ...ALL_OFF, auto_queue_cover_letter: true })
+    expect(maybeAutoEnqueueDocs(jobId)).toBe(true)
+    expect(getAIQueue().filter((q) => q.jobId === jobId).map((q) => q.type)).toEqual([
+      'generate_cover_letter'
+    ])
   })
 })
 
 describe('a REAL manual caller, with every switch off', () => {
   it('Quick Apply still queues tailor_job_docs', async () => {
-    // electron/main.ts:593 — the Queue panel / job row's Quick Apply.
+    // electron/main.ts:661 — the Queue panel / job row's Quick Apply.
     // The one manual path that needs no AI mock, because it queues
     // unconditionally rather than as a rate-limit fallback.
     const jobId = addJob()
@@ -389,7 +430,7 @@ describe('the processor picking work up without going through enqueue()', () => 
     // finding 2.
     //
     // This is the lane `rg "enqueue\("` cannot see. `runPass`
-    // (electron/aiQueue.ts:484) revives any `failed` row that still has
+    // (electron/aiQueue.ts:794) revives any `failed` row that still has
     // revival budget, writes it back to `pending`, and hands it to
     // `processItem` — with no settings read anywhere on that path. So
     // with `auto_queue_cv` off, a generation row that failed (queued
@@ -534,16 +575,21 @@ describe('the retired Scan tab auto-tailor', () => {
     updateJob(jobId, { score: 0.9, fit_score_version: 0 })
     updateSettings({ ...ALL_OFF, auto_tailor_on_scan: true } as never)
     // The retired key is on, the job is well past auto_doc_min_fit, and
-    // the both-documents row is refused anyway.
+    // nothing is queued at all. Unfiltered for the same reason as the case
+    // above: the trigger is per-unit now, so a `tailor_job_docs` filter
+    // would stop being able to see a leak.
     expect(maybeAutoEnqueueDocs(jobId)).toBe(false)
-    expect(getAIQueue().filter((q) => q.type === 'tailor_job_docs')).toHaveLength(0)
-    // And with the generation switches on, the only thing that queues it
-    // is the fit-landing trigger — which reads no retired key.
+    expect(getAIQueue()).toHaveLength(0)
+    // And with the generation switches on, the only thing that queues this
+    // job's documents is the fit-landing trigger — which reads no retired
+    // key. It queues the two single-document units (see above).
     updateSettings({ auto_queue_cv: true, auto_queue_cover_letter: true })
     expect(maybeAutoEnqueueDocs(jobId)).toBe(true)
-    // The trigger emits PER-UNIT rows since the per-unit lane landed; it
-    // no longer produces the both-documents `tailor_job_docs` unit.
-    expect(getAIQueue().filter((q) => q.jobId === jobId && q.type === 'generate_cv')).toHaveLength(1)
+    expect(
+      getAIQueue()
+        .filter((q) => q.type === 'generate_cv' || q.type === 'generate_cover_letter')
+        .map((q) => q.jobId)
+    ).toEqual([jobId, jobId])
   })
 })
 
@@ -584,9 +630,12 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
       new RegExp(`There are ${WORDS[automatic.length]} automatic producers`)
     )
     // Every producer it names, including the fan-out this comment used
-    // to omit (aiQueue.ts:307 — a different producer from the
-    // generation → review chaining at :177, which fires for a directly
-    // queued generate_*).
+    // to omit (aiQueue.ts:537 — a different producer from the
+    // generation → review chaining at :407, which fires for a directly
+    // queued generate_*). Both line numbers are the INVENTORY's, and the
+    // two assertions above are what makes saying so here honest: a stale
+    // number in this comment would be the same rot the case exists to
+    // catch, one file over.
     expect(claim).toMatch(/fit-landing trigger in fitScorer/)
     expect(claim).toMatch(/generation→review\s*chaining/)
     expect(claim).toMatch(/review→regenerate loop/)

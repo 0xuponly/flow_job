@@ -13,6 +13,7 @@ import {
   wrapDekWithPassphrase
 } from './backupCrypto'
 import { tailorDocument, generateFollowUpMessage, regenerateSection, verifyDocumentContent, scoreJobFit, extractJobKeywordsV3, RateLimitError, resetModelHealthByIds, withAiOperation } from './ai'
+import { sanitizeDocument } from './tailorJobDocs'
 import { scoreOneJobInBackground } from './fitScorer'
 import { countPdfPages } from '../src/cvOnePage'
 import { buildPdfHtml } from './pdfTemplate'
@@ -138,6 +139,7 @@ import type {
   ScanResult,
   Settings,
   TailorRequest,
+  TailorResult,
   VerificationResult
 } from './types'
 
@@ -198,6 +200,64 @@ function createWindow(): void {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+}
+
+/**
+ * One tailoring call, and the SANITIZED text stored and returned.
+ *
+ * The `ai:tailor` handler's whole body, lifted out so the handler can stay
+ * what it has always been: "try the model now, fall back to the queue when
+ * the provider is throttling".
+ *
+ * WHY THE SANITIZING HAPPENS HERE. `tailorDocument` has to store the raw
+ * provider output, because the ceilings and the rule checks can only run
+ * once the model has returned — so sanitizing is the CALLER's job, and there
+ * are exactly three callers. Two of them discharge it (the per-unit
+ * `generate_cv` / `generate_cover_letter` case in aiQueue.ts, and
+ * `tailorJobDocsForJob`); this one did not, for as long as ai.ts's comment
+ * said the enforcement "runs downstream". It does not: this is a synchronous
+ * handler that returns a document, not a queue item a processor then
+ * sanitizes. So a user who clicked Tailor / Generate — and the renderer's
+ * own five-attempt regeneration loop, which calls the same channel — got
+ * unsanitized model prose in the same `documents` table the other two lanes
+ * protect. That is R3, on the other lane.
+ *
+ * `sanitizeDocument` is imported, not restated, so all three store paths
+ * share ONE implementation and cannot drift.
+ *
+ * Deliberately placed AFTER `withAiOperation`, so the sanitizing and the
+ * store write happen with the AI slot released: neither is a model call, and
+ * holding a slot across a full-store encrypt-and-rename would serialise the
+ * queue behind it.
+ *
+ * `setDocumentContent` is an UPDATE of the row `tailorDocument` already
+ * created — one generation, one row, one create plus this write, exactly the
+ * shape both queue lanes use. Not `writeDocuments`, which was deleted for
+ * inserting a second row per document.
+ *
+ * A `null` return means the user deleted the document in the gap and is left
+ * as-is: inserting a replacement would resurrect it behind their back. The
+ * returned id is then the one that was asked for, which is what
+ * `tailorDocument` does in the same situation, so the renderer's
+ * regeneration loop is never handed an id it did not have.
+ *
+ * The SANITIZED text is what goes back to the renderer, not the raw bytes:
+ * `handleTailor` stores the returned `document_id` on the job's application
+ * and `regenerateDocument` feeds `result.content` back in as `prevContent`
+ * for the next of its five rounds, so returning the raw text would mean the
+ * next iteration is built on prose this call just culled.
+ */
+async function tailorAndSanitize(request: TailorRequest): Promise<TailorResult> {
+  const result = await withAiOperation(() => tailorDocument(request))
+  const docType: 'cv' | 'cover_letter' =
+    request.document_type === 'cv' ? 'cv' : 'cover_letter'
+  const sanitized = sanitizeDocument(
+    result.content,
+    docType,
+    db.getJob(request.job_id)?.description ?? ''
+  )
+  const stored = db.setDocumentContent(result.document_id, sanitized.content)
+  return { content: sanitized.content, document_id: stored?.id ?? result.document_id }
 }
 
 function registerIpc(): void {
@@ -577,12 +637,15 @@ function registerIpc(): void {
 
   ipcMain.handle('ai:tailor', async (_e, request: TailorRequest) => {
     try {
-      return await withAiOperation(() => tailorDocument(request))
+      // Sanitizes before storing and before answering — see
+      // `tailorAndSanitize` above, which is why that is a separate function
+      // rather than three lines inline here.
+      return await tailorAndSanitize(request)
     } catch (err) {
       if (err instanceof RateLimitError) {
         // `manual`: the user asked for this document, so a generation
-        // item that is already queued for it is revived and promoted to
-        // the top of its tier instead of being duplicated.
+        // item that is already queued for it is revived and promoted to the
+        // top of its tier instead of being duplicated.
         enqueue({ type: request.document_type === 'cv' ? 'generate_cv' : 'generate_cover_letter', jobId: request.job_id }, { manual: true })
         return { queued: true }
       }

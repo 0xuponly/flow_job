@@ -1123,9 +1123,27 @@ ${request.document_type === 'cover_letter' ? 'Write a tailored cover letter.' : 
   // models that emit reasoning-channel / planning-meta text instead of
   // a real CV / cover letter. See looksLikeHarvardCv above for the
   // signature coverage; CVs have TAB-aligned structural markers that
-  // cover letters do not, so we use the dedicated validator for CVs
-  // and skip validation for cover letters (the existing paragraph-cap
-  // enforcement in sanitizeDocument still runs downstream).
+  // cover letters do not, so we use the dedicated validator for CVs and
+  // skip validation for cover letters (the paragraph-cap enforcement in
+  // sanitizeDocument covers those).
+  //
+  // WHAT THIS FUNCTION DOES NOT DO, and what every caller therefore owes
+  // it: it STORES the raw provider output, because the ceilings and the
+  // rule checks can only run once the model has returned. "Downstream"
+  // used to read as if that were automatic. It is not — it is a duty, and
+  // there are exactly three callers:
+  //
+  //   aiQueue.ts            the per-unit generate_cv / generate_cover_letter
+  //                         case  -> sanitizes, stores via setDocumentContent
+  //   tailorJobDocs.ts      tailorJobDocsForJob (both documents at once)
+  //                         -> sanitizes, stores via setDocumentContent
+  //   main.ts               the `ai:tailor` handler, i.e. the Tailor /
+  //                         Generate button -> sanitizes, stores via
+  //                         setDocumentContent
+  //
+  // All three call the ONE `sanitizeDocument` (electron/tailorJobDocs.ts),
+  // and a fourth store path must not be added without it. The `ai:tailor`
+  // handler did not, for as long as this comment implied it did.
   const validator = request.document_type === 'cv' ? looksLikeHarvardCv : undefined
   try {
     const result = await callAI(systemPrompt, userPrompt, 0.7, DEFAULT_CALL_TIMEOUT_MS, undefined, validator)
