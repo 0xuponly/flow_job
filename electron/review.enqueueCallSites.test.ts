@@ -139,10 +139,10 @@ function callSites(): CallSite[] {
  */
 const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]> = {
   'electron/main.ts': [
-    { line: 454, manual: true, why: 'documents:verify — the Verify button' },
-    { line: 467, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
-    { line: 649, manual: true, why: 'ai:tailor — Tailor / Generate' },
-    { line: 665, manual: true, why: 'tailor:quickApply — Quick Apply' }
+    { line: 467, manual: true, why: 'documents:verify — the Verify button' },
+    { line: 480, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
+    { line: 662, manual: true, why: 'ai:tailor — Tailor / Generate' },
+    { line: 678, manual: true, why: 'tailor:quickApply — Quick Apply' }
   ],
   'electron/aiQueue.ts': [
     { line: 407, manual: false, why: 'processor: generation finished, chain the review' },

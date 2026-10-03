@@ -29,6 +29,36 @@ type NotifyInput = string | {
 let nextId = 0
 let listeners: ((toast: Toast) => void)[] = []
 
+/**
+ * When each message was last raised, so an identical one can be refused
+ * while the copy before it is still on screen.
+ *
+ * This is the app's single toast funnel — every emitter in the renderer
+ * goes through `notify` — which makes it the one place where "the same
+ * fact has already been said" can be enforced. It has to be here rather
+ * than at each call site, because the repeat is not always a call site
+ * repeating itself: one click on Generate runs the generation AND then
+ * re-runs JobDetail's document sweep, which walks every unreviewed
+ * document and reports the same failure once per document, on mount,
+ * on every sidebar refresh and (under StrictMode, which is how
+ * `npm run dev` runs) twice per mount. Ten identical toasts were one
+ * failure, said ten times, and no single call site could see that.
+ *
+ * The window is the TTL of the toast the message last raised, so the
+ * rule is exactly "do not stack the same sentence on top of itself":
+ * a repeat inside the previous toast's lifetime is dropped, and a
+ * repeat after it has gone through is allowed again — a fresh failure
+ * after the user has watched the first one expire is new information,
+ * not a duplicate.
+ *
+ * Keyed on the message text alone. A same-text toast of a different
+ * type is treated as the same fact, which is right for every caller
+ * here: the messages are full sentences built with the outcome in them
+ * (`Generation failed: …`, `Content review failed: …`), so two
+ * different outcomes do not collide.
+ */
+const lastRaisedAt = new Map<string, number>()
+
 export function notify(input: NotifyInput, type: Toast['type'] = 'info', ttl?: number, onClick?: () => void): void {
   // String form: pass through with positional args.
   // Object form: build a full toast with optional action.
@@ -50,6 +80,15 @@ export function notify(input: NotifyInput, type: Toast['type'] = 'info', ttl?: n
     }
     if (input.action) toast.action = input.action
   }
+
+  // With nothing mounted there is no toast to be a duplicate of, and
+  // recording it would suppress the next one once a host does mount.
+  if (listeners.length === 0) return
+
+  const lastAt = lastRaisedAt.get(toast.message)
+  if (lastAt !== undefined && Date.now() - lastAt < toast.ttl) return
+  lastRaisedAt.set(toast.message, Date.now())
+
   for (const l of listeners) l(toast)
 }
 
@@ -64,6 +103,11 @@ export default function Notifications() {
     listeners.push(listener)
     return () => {
       listeners = listeners.filter((l) => l !== listener)
+      // Nothing is on screen once the last host unmounts, so nothing is
+      // left for `notify`'s duplicate check to be right about. Clearing
+      // here (rather than expiring entries on a timer) also keeps the
+      // bookkeeping from outliving the component that gave it meaning.
+      if (listeners.length === 0) lastRaisedAt.clear()
     }
   }, [])
 

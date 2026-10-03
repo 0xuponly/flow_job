@@ -111,8 +111,21 @@ process.on('unhandledRejection', (reason) => {
 process.on('uncaughtException', (err) => {
   log.crash.error(`uncaughtException: ${err.stack || `${err.name}: ${err.message}`}`)
   const message = `Internal error: ${err.message}`
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send('main:errorToast', message)
+  // One window, not all of them. Broadcasting made a single crash cost
+  // the user one toast per open window, so an error they caused in the
+  // quick-add mini-window also lit up the main window they were not
+  // even looking at. The focused window is the one whose user can act on
+  // it; with nothing focused (the app is in the background) the first
+  // still-alive window is the closest thing to "whoever is watching".
+  //
+  // `webContents` is checked as well as the window: a window can outlive
+  // its renderer (a crashed tab, a window mid-teardown), and `send` on a
+  // destroyed WebContents throws — from inside the handler for uncaught
+  // exceptions, which loses the remaining windows' toasts and replaces
+  // one reported crash with a second, confusing one.
+  const target = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+  if (target && !target.isDestroyed() && !target.webContents.isDestroyed()) {
+    target.webContents.send('main:errorToast', message)
   }
 })
 

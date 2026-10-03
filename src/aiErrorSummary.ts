@@ -39,10 +39,19 @@ function classifyLine(line: string): ErrorBucket | null {
 }
 
 function summarizeAiErrors(raw: string): string | null {
-  const lines = raw.split('\n')
   const entries: ErrorBucket[] = []
-  for (const line of lines) {
-    const bucket = classifyLine(line)
+  // `ai.ts` joins its per-model reasons two different ways, and the
+  // rotation's size is exactly what the user was counting on screen:
+  //
+  //   newline-joined on the rate-limited branch (ai.ts:725)
+  //   ' | '-joined on the all-failed branch    (ai.ts:739)
+  //
+  // Split on both. Counting per LINE made the ' | ' branch summarise to
+  // "1 errors: 1 other" no matter how large the pool was, because the
+  // whole rotation is one physical line there — a summary that hides the
+  // scale of the failure is worse than no summary.
+  for (const segment of raw.split(/\n|\s\|\s/)) {
+    const bucket = classifyLine(segment)
     if (bucket !== null) entries.push(bucket)
   }
   if (entries.length === 0) return null
@@ -69,6 +78,23 @@ export function toastErrorSummary(raw: string): string {
   const ai = summarizeAiErrors(raw)
   if (ai !== null) return ai
   // Fallback: not a recognisable multi-model AI error dump — return the
-  // first line with any trailing colon stripped, ending in a period.
-  return raw.split('\n')[0].replace(/:+\s*$/, '') + '.'
+  // first line with any trailing colon stripped, ending in a period. The
+  // period is only added when there isn't one already: "No enabled AI
+  // models configured." must not come out as "configured..".
+  const first = raw.split('\n')[0].replace(/:+\s*$/, '')
+  return /[.!?]$/.test(first) ? first : `${first}.`
+}
+
+/**
+ * The message of a caught value, for feeding to `toastErrorSummary`.
+ *
+ * Every caller on the AI paths used to open-code
+ * `err instanceof Error ? err.message : 'Unknown error'` inline, which
+ * made it easy to forget the summary step: the message is only useful
+ * summarised when it came from `tryModels`, and whether it did is not
+ * knowable at the call site. Pairing the two here is what keeps the
+ * per-model dump out of the toast at every AI call site.
+ */
+export function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : 'Unknown error'
 }

@@ -3,6 +3,7 @@ import { api } from '../api'
 import type { Document } from '../types'
 import { STATUS_LABELS } from '../types'
 import { notify } from '../components/Notifications'
+import { toastErrorSummary, errorText } from '../aiErrorSummary'
 
 const SECTION_HEADERS = new Set([
   'professional summary', 'summary', 'profile',
@@ -89,7 +90,7 @@ export default function DocumentsPage() {
       setEditContent(updatedContent)
       setSelected({ ...selected, content: updatedContent })
     } catch (err) {
-      notify(`Section regeneration failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+      notify(`Section regeneration failed: ${toastErrorSummary(errorText(err))}`, 'error')
     } finally {
       setRegeneratingSection(null)
     }
