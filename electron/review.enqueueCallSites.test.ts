@@ -11,7 +11,7 @@ import { join, relative } from 'node:path'
 // aiQueue.autoQueue.test.ts calls `enqueue(item, { manual: true })` or
 // `enqueue(item)` with the flag written by the TEST, so:
 //
-//   * delete `{ manual: true }` from electron/main.ts:388 and all 24
+//   * delete `{ manual: true }` from electron/main.ts:407 and all 24
 //     shipped tests still pass, while the Verify button stops queueing
 //     with the switches off — the exact failure the feature promises
 //     cannot happen;
@@ -139,10 +139,10 @@ function callSites(): CallSite[] {
  */
 const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]> = {
   'electron/main.ts': [
-    { line: 394, manual: true, why: 'documents:verify — the Verify button' },
-    { line: 407, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
-    { line: 586, manual: true, why: 'ai:tailor — Tailor / Generate' },
-    { line: 602, manual: true, why: 'tailor:quickApply — Quick Apply' }
+    { line: 407, manual: true, why: 'documents:verify — the Verify button' },
+    { line: 420, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
+    { line: 599, manual: true, why: 'ai:tailor — Tailor / Generate' },
+    { line: 615, manual: true, why: 'tailor:quickApply — Quick Apply' }
   ],
   'electron/aiQueue.ts': [
     { line: 177, manual: false, why: 'processor: generation finished, chain the review' },
@@ -353,7 +353,7 @@ describe('a REAL automatic caller, classified from its own source', () => {
 
 describe('a REAL manual caller, with every switch off', () => {
   it('Quick Apply still queues tailor_job_docs', async () => {
-    // electron/main.ts:593 — the Queue panel / job row's Quick Apply.
+    // electron/main.ts:615 — the Queue panel / job row's Quick Apply.
     // The one manual path that needs no AI mock, because it queues
     // unconditionally rather than as a rate-limit fallback.
     const jobId = addJob()

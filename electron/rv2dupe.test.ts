@@ -1130,10 +1130,10 @@ describe('5. the five previously-fixed defects are still fixed', () => {
     // Four manual sites, all in main.ts, all inside an IPC handler whose
     // channel is a user action; seven automatic sites, none of them.
     expect(rows.filter((r) => r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
-      'electron/main.ts:394',
       'electron/main.ts:407',
-      'electron/main.ts:586',
-      'electron/main.ts:602'
+      'electron/main.ts:420',
+      'electron/main.ts:599',
+      'electron/main.ts:615'
     ])
     expect(rows.filter((r) => !r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
       'electron/aiQueue.ts:177',

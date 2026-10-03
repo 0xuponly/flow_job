@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { FollowUp } from '../types'
 import { notify } from '../components/Notifications'
+import { toastErrorSummary, errorText } from '../aiErrorSummary'
 
 export default function FollowUpsPage() {
   const [followUps, setFollowUps] = useState<(FollowUp & { job_title: string; company: string })[]>([])
@@ -38,7 +39,7 @@ export default function FollowUpsPage() {
       navigator.clipboard.writeText(message)
       alert('Follow-up message copied to clipboard!')
     } catch (err) {
-      notify(`Generation failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+      notify(`Generation failed: ${toastErrorSummary(errorText(err))}`, 'error')
     } finally {
       setGenerating(null)
     }

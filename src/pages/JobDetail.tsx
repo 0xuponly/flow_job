@@ -11,7 +11,7 @@ import type { Application, Document, Job, JobStatus, KeywordCategory, KeywordRes
 import { STATUS_COLORS, STATUS_LABELS } from '../types'
 import { EMPLOYMENT_TYPES, EMPLOYMENT_TYPE_LABELS, WORK_MODES, formatEmploymentType } from '../employmentType'
 import { enqueueFitRecompute, isJobInFitQueue } from '../fitQueue'
-import { toastErrorSummary } from '../aiErrorSummary'
+import { toastErrorSummary, errorText } from '../aiErrorSummary'
 import { formatJobDate } from '../utils'
 
 interface Props {
@@ -277,7 +277,7 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
             setDocuments(docs)
           }
         } catch (err) {
-          notify(`Content review failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+          notify(`Content review failed: ${toastErrorSummary(errorText(err))}`, 'error')
         }
       }
     }
@@ -369,7 +369,7 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
       onUpdate(updated)
       await load()
     } catch (err) {
-      notify(`Generation failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+      notify(`Generation failed: ${toastErrorSummary(errorText(err))}`, 'error')
     } finally {
       setTailoring(null)
     }
@@ -457,7 +457,7 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
         result.passed ? 'success' : 'info'
       )
     } catch (err) {
-      notify(`Content review failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+      notify(`Content review failed: ${toastErrorSummary(errorText(err))}`, 'error')
     } finally {
       setReviewing(null)
     }
@@ -510,7 +510,7 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
       setDocContent(updatedContent)
       setViewDoc({ ...viewDoc, content: updatedContent })
     } catch (err) {
-      notify(`Section regeneration failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+      notify(`Section regeneration failed: ${toastErrorSummary(errorText(err))}`, 'error')
     } finally {
       setRegeneratingSection(null)
     }
