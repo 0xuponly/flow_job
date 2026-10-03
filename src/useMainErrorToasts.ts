@@ -25,6 +25,17 @@ const lastCrashToastAt = new Map<string, number>()
  * Surfaces main-process crash notifications (uncaughtException) as
  * toasts. The main process emits these on 'main:errorToast' for errors
  * the user should know about that originate outside any IPC call.
+ *
+ * TOAST ONLY, and deliberately so: `electron/main.ts` writes the crash to
+ * the notification store itself, before it picks a window to send the
+ * toast to. Recording here instead would double every crash, and — worse —
+ * it would only record it when a window that runs this hook was the one
+ * chosen. The whole reason main writes it is that the window it picks may
+ * not be able to show a toast at all (quickadd.tsx mounts neither the
+ * toast host nor this hook), so the routing below can drop the toast
+ * without the record being lost. The center reads one shared store, so the
+ * crash is in the main window's notification center next time it is
+ * opened, whichever window happened to be focused.
  */
 export function useMainErrorToasts(): void {
   useEffect(() => {

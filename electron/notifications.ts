@@ -1,4 +1,10 @@
-import type { NotificationRow, NotificationType, NotificationSource } from './types'
+import type {
+  NotificationRow,
+  NotificationType,
+  NotificationSource,
+  NotificationJobContext
+} from './types'
+import { notificationGroupKey } from './notificationGroup'
 import { loadStore, saveStore } from './database'
 
 const MAX_FIELD_BYTES = 4096
@@ -23,23 +29,58 @@ function coerceType(t: string): NotificationType {
   return (VALID_TYPES as readonly string[]).includes(t) ? (t as NotificationType) : 'info'
 }
 
+// A job field the caller could not source stays null and is rendered as
+// nothing at all. This is the one place that decides it, so a caller
+// cannot smuggle a placeholder past it by sending the string 'Unknown' or
+// '' — an empty or whitespace-only value is not a value.
+function cleanJobField(v: string | null | undefined): string | null {
+  if (typeof v !== 'string') return null
+  const trimmed = v.trim()
+  return trimmed === '' ? null : clampBytes(trimmed)
+}
+
+function cleanJobContext(job: NotificationJobContext | undefined): NotificationJobContext | undefined {
+  if (!job) return undefined
+  const jobId = Number.isFinite(job.job_id) ? job.job_id : null
+  const title = cleanJobField(job.job_title)
+  const company = cleanJobField(job.job_company)
+  const location = cleanJobField(job.job_location)
+  // A context with nothing in it is not context. Dropping it here rather
+  // than storing four nulls means "we knew nothing" and "we knew the job
+  // but it has no location" stay distinguishable in the row.
+  if (jobId === null && title === null && company === null && location === null) return undefined
+  return { job_id: jobId, job_title: title, job_company: company, job_location: location }
+}
+
 export function addNotification(input: {
   type: string
   source?: NotificationSource
   message: string
   full_message: string
+  /** Overrides the derived key. Only for a caller that genuinely knows
+   *  that two differently-worded notifications are one thing. Empty is
+   *  treated as absent, which is what the store migration's backfill
+   *  guard also assumes — the two must agree or a row would be written
+   *  with a blank key and then silently rewritten on the next load. */
+  group_key?: string
+  job?: NotificationJobContext
 }): { id: number } {
   const store = loadStore()
   const id = store.nextId++
+  const type = coerceType(input.type)
+  const source = input.source ?? 'app'
   const row: NotificationRow = {
     id,
-    type: coerceType(input.type),
-    source: input.source ?? 'app',
+    type,
+    source,
     message: clampBytes(input.message),
     full_message: clampBytes(input.full_message),
     created_at: Date.now(),
     dismissed_at: null,
+    group_key: clampBytes(input.group_key || notificationGroupKey(type, source, input.message)),
   }
+  const job = cleanJobContext(input.job)
+  if (job) row.job = job
   store.notifications.push(row)
   saveStore(store)
   return { id }
@@ -55,13 +96,39 @@ export function listActiveNotifications(): { rows: NotificationRow[] } {
 }
 
 export function dismissNotification(id: number): { ok: true } {
-  const store = loadStore()
-  const row = store.notifications.find((r) => r.id === id)
-  if (row && row.dismissed_at === null) {
-    row.dismissed_at = Date.now()
-    saveStore(store)
-  }
+  dismissNotifications([id])
   return { ok: true }
+}
+
+/**
+ * Dismiss a set of rows in one store write.
+ *
+ * This exists because the notification center now collapses rows into
+ * groups, and "dismiss this group" is the action a group row's × performs.
+ * Looping `dismissNotification` would mean one IPC round-trip and one
+ * whole-store serialize per occurrence — twelve for a group of twelve,
+ * and each write re-encrypts the entire store.
+ *
+ * Unknown and already-dismissed ids are ignored rather than an error: the
+ * renderer's list can be a tick stale, and a dismissal that reports back
+ * "no such row" for something the user just clicked would be a lie about
+ * something that in fact worked.
+ */
+export function dismissNotifications(ids: number[]): { updated: number } {
+  if (ids.length === 0) return { updated: 0 }
+  const store = loadStore()
+  const wanted = new Set(ids.filter((id) => Number.isFinite(id)))
+  if (wanted.size === 0) return { updated: 0 }
+  const now = Date.now()
+  let updated = 0
+  for (const r of store.notifications) {
+    if (r.dismissed_at === null && wanted.has(r.id)) {
+      r.dismissed_at = now
+      updated++
+    }
+  }
+  if (updated > 0) saveStore(store)
+  return { updated }
 }
 
 export function dismissAllNotifications(): { updated: number } {

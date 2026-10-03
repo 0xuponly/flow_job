@@ -485,6 +485,21 @@ export interface TailorResult {
 export type NotificationType = 'info' | 'success' | 'error' | 'warning'
 export type NotificationSource = 'app' | 'ai' | 'scanner' | 'tailor' | 'scraper'
 
+// Which job an occurrence happened on, snapshotted when it was recorded.
+// The fields are nullable because the data is genuinely missing sometimes;
+// null means "we did not have this" and never "we guessed". See the same
+// interface in electron/types.ts for why this is a snapshot and not a
+// foreign key.
+export interface NotificationJobContext {
+  // Nullable on purpose: see the same field in electron/types.ts. The
+  // drawer renders whichever of title/company/location are present and
+  // nothing for the rest.
+  job_id: number | null
+  job_title: string | null
+  job_company: string | null
+  job_location: string | null
+}
+
 export interface NotificationRow {
   id: number
   type: NotificationType
@@ -493,4 +508,6 @@ export interface NotificationRow {
   full_message: string
   created_at: number
   dismissed_at: number | null
+  group_key: string
+  job?: NotificationJobContext
 }

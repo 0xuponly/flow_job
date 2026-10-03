@@ -7,6 +7,7 @@ import { formatLocation, canonicalizeCountry, countryNameFromCode, decodeEntitie
 import { normalizeEmploymentType, normalizeWorkMode } from './employmentType'
 import { matchGradeFor } from './matchGrade'
 import { nextStatusFromDocs } from './docStatus'
+import { notificationGroupKey } from './notificationGroup'
 import { DEFAULT_DISABLED_BOARDS, DEFAULT_DISABLED_BOARDS_V1, DEFAULT_DISABLED_BOARDS_V2_ADDITIONS, unionDisabledBoards } from './boards'
 import type {
   ApiModelConfig,
@@ -339,8 +340,42 @@ export function loadStore(): Store {
     if (!store.blacklisted_companies) {
       store.blacklisted_companies = []
     }
-    if (!store.notifications) {
+    if (!Array.isArray(store.notifications)) {
+      // `Array.isArray`, not the truthiness check the guarded defaults
+      // above use: these fields are arrays in practice, but this one
+      // arrives from a file a user's build wrote, and `for..of` over a
+      // non-array below would throw out of `loadStore` — which is the
+      // accessor for the WHOLE store, so the damage would be every job,
+      // document and setting rather than the notification list.
       store.notifications = []
+    }
+    // Rows written before the notification center learned to group. They
+    // carry no `group_key`, and `group_key` is required on NotificationRow
+    // (see electron/types.ts), so without this a pre-existing store would
+    // hand the drawer rows it cannot collapse and every old notification
+    // would read as its own group of one. Backfilled here rather than
+    // defaulted at render time for the reason the field is required: the
+    // derivation must exist in exactly one place, and the renderer groups
+    // on the stored key verbatim.
+    //
+    // The per-row guard rather than a wholesale reset is the same shape as
+    // the guarded defaults above it: an upgrade adds the missing field and
+    // leaves every other field on the row exactly as the user left it.
+    //
+    // The element guard is load-bearing for the same reason the array
+    // guard is. This is the only place in the store that reads a stored
+    // row's SHAPE rather than sanitising it on the way in, and it runs
+    // inside `loadStore` — the accessor for the whole Store. A `null` or a
+    // number in that array would throw here and take jobs, documents and
+    // settings down with it, for a notification list the user may not even
+    // have opened.
+    store.notifications = store.notifications.filter(
+      (row): row is NotificationRow => !!row && typeof row === 'object'
+    )
+    for (const row of store.notifications) {
+      if (typeof row.group_key !== 'string' || row.group_key === '') {
+        row.group_key = notificationGroupKey(row.type, row.source, row.message)
+      }
     }
     if (typeof store.settings.auto_scan_enabled !== 'boolean') {
       store.settings.auto_scan_enabled = true

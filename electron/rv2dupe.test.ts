@@ -1213,10 +1213,10 @@ describe('5. the five previously-fixed defects are still fixed', () => {
     // channel is a user action; six automatic sites, none of them — the
     // scan-time auto-tailor that was the seventh is retired.
     expect(rows.filter((r) => r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
-      'electron/main.ts:495',
-      'electron/main.ts:509',
-      'electron/main.ts:693',
-      'electron/main.ts:709'
+      'electron/main.ts:529',
+      'electron/main.ts:543',
+      'electron/main.ts:727',
+      'electron/main.ts:743'
     ])
     expect(rows.filter((r) => !r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
       'electron/aiQueue.ts:418',

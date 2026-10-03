@@ -4,12 +4,13 @@ import { NotificationsProvider, useNotifications } from './NotificationsProvider
 import Notifications from '../components/Notifications'
 import NotificationDrawer from './NotificationDrawer'
 import { queueItemLabel, queueItemStatusText } from '../fitQueue'
-import type { AIQueueItem } from '../types'
+import type { AIQueueItem, NotificationRow } from '../types'
 
 const mockApi = {
   notificationsList: vi.fn(),
   notificationsAdd: vi.fn(),
   notificationsDismiss: vi.fn(),
+  notificationsDismissMany: vi.fn(),
   notificationsDismissAll: vi.fn(),
   notificationsPurgeOldDismissed: vi.fn(),
   listAIQueue: vi.fn(),
@@ -22,10 +23,32 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockApi.notificationsList.mockResolvedValue({ rows: [] })
   mockApi.notificationsPurgeOldDismissed.mockResolvedValue({ deleted: 0 })
+  mockApi.notificationsDismissMany.mockResolvedValue({ updated: 0 })
   mockApi.listAIQueue.mockResolvedValue([])
   // @ts-expect-error - test mock
   globalThis.window.api = mockApi
 })
+
+/**
+ * A stored notification row.
+ *
+ * `group_key` is written by the main process at insert time
+ * (electron/notificationGroup.ts) and the drawer only ever reads it, so
+ * these fixtures carry an opaque string rather than re-deriving one — the
+ * grouping itself is covered in grouping.test.ts and, on the write side,
+ * in electron/notifications.test.ts.
+ */
+function row(over: Partial<NotificationRow> & { id: number; message: string }): NotificationRow {
+  return {
+    type: 'info',
+    source: 'app',
+    full_message: over.message,
+    created_at: 1,
+    dismissed_at: null,
+    group_key: `info|app|${over.message}`,
+    ...over,
+  }
+}
 
 function item(overrides: Partial<AIQueueItem> = {}): AIQueueItem {
   return {
@@ -63,8 +86,8 @@ describe('NotificationDrawer', () => {
 
   it('renders one row per item in the list', async () => {
     mockApi.notificationsList.mockResolvedValue({ rows: [
-      { id: 1, type: 'info', source: 'app', message: 'alpha', full_message: 'alpha long', created_at: 1, dismissed_at: null },
-      { id: 2, type: 'error', source: 'ai', message: 'beta', full_message: 'beta long', created_at: 2, dismissed_at: null },
+      row({ id: 1, message: 'alpha', full_message: 'alpha long', created_at: 2 }),
+      row({ id: 2, message: 'beta', full_message: 'beta long', type: 'error', source: 'ai', created_at: 1 }),
     ]})
     await openDrawer()
     expect(await screen.findByText('alpha')).toBeInTheDocument()
@@ -73,7 +96,7 @@ describe('NotificationDrawer', () => {
 
   it('clicking the body toggles expanded and shows the full message', async () => {
     mockApi.notificationsList.mockResolvedValue({ rows: [
-      { id: 1, type: 'info', source: 'app', message: 'short', full_message: 'this is the long version', created_at: 1, dismissed_at: null },
+      row({ id: 1, message: 'short', full_message: 'this is the long version' }),
     ]})
     await openDrawer()
     const body = await screen.findByText('short')
@@ -83,13 +106,11 @@ describe('NotificationDrawer', () => {
   })
 
   it('clicking X calls dismiss', async () => {
-    mockApi.notificationsList.mockResolvedValue({ rows: [
-      { id: 42, type: 'info', source: 'app', message: 'a', full_message: 'a', created_at: 1, dismissed_at: null },
-    ]})
+    mockApi.notificationsList.mockResolvedValue({ rows: [row({ id: 42, message: 'a' })] })
     mockApi.notificationsDismiss.mockResolvedValue({ ok: true })
     await openDrawer()
-    fireEvent.click(await screen.findByRole('button', { name: /dismiss/i }))
-    expect(mockApi.notificationsDismiss).toHaveBeenCalledWith({ id: 42 })
+    fireEvent.click(await screen.findByLabelText('Dismiss group'))
+    expect(mockApi.notificationsDismissMany).toHaveBeenCalledWith({ ids: [42] })
   })
 
   it('clicking the backdrop calls close', async () => {
@@ -126,7 +147,7 @@ describe('NotificationDrawer panel tabs', () => {
 
   it('switches back to the notifications panel', async () => {
     mockApi.notificationsList.mockResolvedValue({ rows: [
-      { id: 1, type: 'info', source: 'app', message: 'a notification', full_message: 'a notification', created_at: 1, dismissed_at: null },
+      row({ id: 1, message: 'a notification' }),
     ]})
     await openDrawer()
     await showQueueTab()

@@ -23,6 +23,11 @@ import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
  *   - The one amplifier on this side was the broadcast: one exception
  *     used to cost one toast per open window. It now costs one toast, in
  *     the window that can act on it.
+ *   - That window can still be one that CANNOT act on it: quick-add mounts
+ *     neither the toast host nor `useMainErrorToasts`, and it is focused
+ *     by design. So the crash is written to the notification store from the
+ *     main process, where no window routing applies, and the last block
+ *     below pins that.
  */
 
 const { STORE_DIR, handlers, windows } = vi.hoisted(() => ({
@@ -121,6 +126,7 @@ vi.mock('./ai', async (importOriginal) => {
 import { existsSync, mkdirSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { createJob, getAIQueue, reloadStore, updateAIQueueItem } from './database'
+import { listActiveNotifications } from './notifications'
 import { RateLimitError } from './ai'
 import type { CreateJobInput } from './types'
 
@@ -303,5 +309,56 @@ describe('the crash toast reaches one window, not all of them', () => {
     windows.push(mkWindow('crashed-renderer', { focused: true, webContentsDestroyed: true }))
     expect(() => raise(new Error('boom'))).not.toThrow()
     expect(totalToasts()).toBe(0)
+  })
+})
+
+/**
+ * A crash is the one notification that must not depend on the window
+ * routing above, because the routing has a hole: with quick-add in front
+ * — its normal state while the user is doing the thing that crashed — the
+ * toast goes to a renderer that mounts neither the toast host nor
+ * `useMainErrorToasts`, and drops it. So `main.ts` writes the crash to the
+ * store itself, which is shared by every window, and the drawer re-reads it
+ * when it is next opened.
+ */
+describe('the crash is recorded in the store, whichever window it went to', () => {
+  it('a crash routed to a window that cannot render a toast is still recorded', () => {
+    windows[0].focused = false
+    windows[1].focused = true
+
+    raise(new TypeError('better-sqlite3 has no exported member'))
+
+    expect(toastsFor('main')).toEqual([])
+    const rows = listActiveNotifications().rows
+    expect(rows).toHaveLength(1)
+    expect(rows[0].message).toBe('Internal error: better-sqlite3 has no exported member')
+    expect(rows[0].type).toBe('error')
+  })
+
+  it('the record carries the stack, which the toast could never hold', () => {
+    raise(new TypeError('cannot read properties of null'))
+    const [row] = listActiveNotifications().rows
+    expect(row.full_message).toContain('TypeError: cannot read properties of null')
+    expect(row.full_message.length).toBeGreaterThan(row.message.length)
+  })
+
+  it('recurring crashes of one kind group into a single row rather than many', () => {
+    // An exception thrown from a timer recurs for as long as the condition
+    // holds; the key is per error TYPE, so the recurring case is one row.
+    raise(new TypeError('a'))
+    raise(new TypeError('b'))
+    raise(new RangeError('c'))
+
+    const rows = listActiveNotifications().rows
+    expect(rows).toHaveLength(3)
+    expect(new Set(rows.map((r) => r.group_key)).size).toBe(2)
+  })
+
+  it('a crash is recorded once, not once per window', () => {
+    windows.length = 0
+    windows.push(mkWindow('main', { focused: true }), mkWindow('quickadd'), mkWindow('pdf'))
+    raise(new Error('boom'))
+    expect(totalToasts()).toBe(1)
+    expect(listActiveNotifications().rows).toHaveLength(1)
   })
 })

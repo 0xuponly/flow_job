@@ -61,6 +61,7 @@ import {
   addNotification,
   listActiveNotifications,
   dismissNotification,
+  dismissNotifications,
   dismissAllNotifications,
   purgeOldDismissedNotifications,
   startNotificationsPurgeInterval
@@ -111,6 +112,38 @@ process.on('unhandledRejection', (reason) => {
 process.on('uncaughtException', (err) => {
   log.crash.error(`uncaughtException: ${err.stack || `${err.name}: ${err.message}`}`)
   const message = `Internal error: ${err.message}`
+
+  // A crash is a fact, so it goes in the notification center as a record
+  // FIRST, here in the main process rather than in the renderer — and that
+  // placement is the fix for the hole the routing below still has.
+  //
+  // The toast below goes to the focused window. A focused window cannot
+  // render a toast: quickadd.tsx mounts neither the toast host nor the
+  // main-error hook, and it is `alwaysOnTop` and explicitly focused, so
+  // while it is open a real crash is delivered to a renderer that drops it
+  // and the main window, which can show it, is never asked. Writing to the
+  // store instead sidesteps window routing entirely: the center is read
+  // out of the one shared store, so the crash is in the main window's
+  // notification center by the next time the user opens it, whether or not
+  // a toast ever appeared.
+  //
+  // `full_message` is the stack, not the sentence: a crash is the one
+  // notification where the detail is the whole value and the toast could
+  // never carry it.
+  try {
+    addNotification({
+      type: 'error',
+      source: 'app',
+      message,
+      full_message: err.stack || `${err.name}: ${err.message}`,
+      group_key: `error|app|internal error: ${err.name}`,
+    })
+  } catch (notifyErr) {
+    // A store that cannot be written must not mask the crash that is
+    // already logged above. crash.log still has it either way.
+    log.crash.error(`could not record the crash as a notification: ${String(notifyErr)}`)
+  }
+
   // One window, not all of them. Broadcasting made a single crash cost
   // the user one toast per open window, so an error they caused in the
   // quick-add mini-window also lit up the main window they were not
@@ -147,6 +180,7 @@ import type {
   Job,
   JobStatus,
   NotificationSource,
+  NotificationJobContext,
   QueueItemView,
   ScanFilters,
   ScanResult,
@@ -1233,6 +1267,8 @@ function registerIpc(): void {
     source?: NotificationSource
     message: string
     full_message: string
+    group_key?: string
+    job?: NotificationJobContext
   }) => {
     try {
       return addNotification(params)
@@ -1256,6 +1292,15 @@ function registerIpc(): void {
       return dismissNotification(params.id)
     } catch (err) {
       logToNotifications(`dismissNotification failed: ${(err as Error).message}`)
+      return { error: 'INTERNAL' as const }
+    }
+  })
+
+  ipcMain.handle('notifications:notificationsDismissMany', async (_e, params: { ids: number[] }) => {
+    try {
+      return dismissNotifications(Array.isArray(params.ids) ? params.ids : [])
+    } catch (err) {
+      logToNotifications(`dismissNotifications failed: ${(err as Error).message}`)
       return { error: 'INTERNAL' as const }
     }
   })

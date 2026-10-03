@@ -2,12 +2,15 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, within, fireEvent } from '@testing-library/react'
 import { ThemeProvider } from '../theme/ThemeProvider'
 import { NotificationsProvider } from '../notifications/NotificationsProvider'
+import { OPEN_NOTIFICATION_CENTER_EVENT } from '../notifications/record'
+import NotificationDrawer from '../notifications/NotificationDrawer'
 import Sidebar from './Sidebar'
 
 const mockApi = {
   notificationsList: vi.fn(),
   notificationsAdd: vi.fn(),
   notificationsDismiss: vi.fn(),
+  notificationsDismissMany: vi.fn(),
   notificationsDismissAll: vi.fn(),
   notificationsPurgeOldDismissed: vi.fn(),
   getScanStatus: vi.fn(),
@@ -32,6 +35,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockApi.notificationsList.mockResolvedValue({ rows: [] })
   mockApi.notificationsPurgeOldDismissed.mockResolvedValue({ deleted: 0 })
+  mockApi.notificationsDismissMany.mockResolvedValue({ updated: 0 })
   mockApi.getScanStatus.mockResolvedValue({ scanning: false })
   // @ts-expect-error - test mock
   globalThis.window.api = mockApi
@@ -90,7 +94,10 @@ describe('Sidebar bottom-actions order', () => {
   it('bell shows the red-dot badge when hasUnread is true', async () => {
     mockApi.notificationsList.mockResolvedValue({
       rows: [
-        { id: 1, type: 'info', source: 'app', message: 'm', full_message: 'm', created_at: 1, dismissed_at: null },
+        {
+          id: 1, type: 'info', source: 'app', message: 'm', full_message: 'm',
+          created_at: 1, dismissed_at: null, group_key: 'info|app|m',
+        },
       ],
     })
     renderSidebar()
@@ -100,5 +107,65 @@ describe('Sidebar bottom-actions order', () => {
     const bellBtn = await screen.findByRole('button', { name: /notification center/i })
     const dot = bellBtn.querySelector('span > span[aria-hidden="true"]')
     expect(dot).toBeTruthy()
+  })
+})
+
+/**
+ * The drawer opens from a toast's "View" button, and the toast is raised
+ * deep inside a page with no route to `open()` — so Sidebar, which owns
+ * the only `open` in the tree, listens for a request on the window. This
+ * is the other half of that path; the half that raises the toast is
+ * src/toastFlood.test.tsx.
+ */
+describe('the sidebar honours a request to open the notification center', () => {
+  it('opens the drawer when a toast asks it to', async () => {
+    mockApi.notificationsList.mockResolvedValue({
+      rows: [{
+        id: 1, type: 'error', source: 'ai',
+        message: 'Content review failed on 3 of 3 documents.',
+        full_message: 'raw', created_at: 1, dismissed_at: null,
+        group_key: 'error|ai|content review failed on # of # documents.',
+      }],
+    })
+    const { unmount } = render(
+      <ThemeProvider>
+        <NotificationsProvider>
+          <Sidebar current="dashboard" onNavigate={() => {}} />
+          <NotificationDrawer />
+        </NotificationsProvider>
+      </ThemeProvider>
+    )
+
+    // Not open yet: nothing has asked.
+    expect(screen.queryByTestId('notif-backdrop')).not.toBeInTheDocument()
+
+    window.dispatchEvent(new CustomEvent(OPEN_NOTIFICATION_CENTER_EVENT))
+
+    expect(await screen.findByTestId('notif-backdrop')).toBeInTheDocument()
+    unmount()
+  })
+
+  it('stops listening when the sidebar unmounts', async () => {
+    const handlers = new Set<EventListenerOrEventListenerObject>()
+    const realAdd = window.addEventListener.bind(window)
+    const realRemove = window.removeEventListener.bind(window)
+    vi.spyOn(window, 'addEventListener').mockImplementation((type, handler, opts) => {
+      if (type === OPEN_NOTIFICATION_CENTER_EVENT) handlers.add(handler)
+      return realAdd(type, handler, opts)
+    })
+    vi.spyOn(window, 'removeEventListener').mockImplementation((type, handler, opts) => {
+      if (type === OPEN_NOTIFICATION_CENTER_EVENT) handlers.delete(handler)
+      return realRemove(type, handler, opts)
+    })
+    try {
+      const { unmount } = renderSidebar()
+      await screen.findByRole('button', { name: /notification center/i })
+      expect(handlers.size).toBe(1)
+
+      unmount()
+      expect(handlers.size).toBe(0)
+    } finally {
+      vi.restoreAllMocks()
+    }
   })
 })

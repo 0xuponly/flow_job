@@ -6,6 +6,7 @@ import RefreshIcon from './RefreshIcon'
 import ThemeToggle from '../theme/ThemeToggle'
 import Tooltip from './Tooltip'
 import { useNotifications } from '../notifications/NotificationsProvider'
+import { OPEN_NOTIFICATION_CENTER_EVENT } from '../notifications/record'
 import BellIcon from '../notifications/BellIcon'
 
 interface Props {
@@ -49,6 +50,16 @@ export default function Sidebar({ current, onNavigate }: Props) {
       clearInterval(interval)
     }
   }, [])
+
+  // The drawer opens from a toast's "View" button, and the toast is raised
+  // deep inside a page that has no route to `open()`. Sidebar owns the only
+  // `open` in the tree, so it is the one listening for the request. Same
+  // arrangement as `app:navigate` in App.tsx.
+  useEffect(() => {
+    const onOpenCenter = () => open()
+    window.addEventListener(OPEN_NOTIFICATION_CENTER_EVENT, onOpenCenter)
+    return () => window.removeEventListener(OPEN_NOTIFICATION_CENTER_EVENT, onOpenCenter)
+  }, [open])
 
   useEffect(() => {
     const onFitProgress = (e: Event) => {

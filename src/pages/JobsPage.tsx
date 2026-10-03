@@ -8,6 +8,8 @@ import { COUNTRY_TO_CURRENCY, LONG_NAME_TO_COUNTRY } from '../currency'
 import { condenseLocation, REMOTE_TOKEN_RE } from '../locations'
 import type { CreateJobInput, Job } from '../types'
 import { formatJobDate, decodeEntities } from '../utils'
+import { errorText } from '../aiErrorSummary'
+import { jobContext, reportFailure } from '../notifications/record'
 
 // Lives at module scope so a single ResizeObserver can measure the
 // sticky wrapper height across the page's lifetime without re-binding.
@@ -935,17 +937,21 @@ export default function JobsPage() {
     // user can spot the partial-deletion case immediately rather than
     // wondering why some selected jobs are still in the table.
     if (result.stillPresentAfterFilter.length > 0) {
-      notify(
-        `Bug: ${result.stillPresentAfterFilter.length} IDs (${result.stillPresentAfterFilter.join(', ')}) survived the filter — these jobs were not removed from the store.`,
-        'error',
-        15000
-      )
+      reportFailure({
+        source: 'app',
+        message: `Bug: ${result.stillPresentAfterFilter.length} IDs (${result.stillPresentAfterFilter.join(', ')}) survived the filter — these jobs were not removed from the store.`,
+        ttl: 15000,
+      })
     } else if (result.missingFromStore.length > 0) {
-      notify(
-        `Deleted ${result.deleted} of ${result.requested} jobs. ${result.missingFromStore.length} IDs were not in the database (likely stale selection from a previous session).`,
-        'warning',
-        12000
-      )
+      // A partial delete: the user asked for N rows to go and some of them
+      // did not, and the table reloads immediately afterwards so the toast
+      // is the only place that ever said so.
+      reportFailure({
+        source: 'app',
+        message: `Deleted ${result.deleted} of ${result.requested} jobs. ${result.missingFromStore.length} IDs were not in the database (likely stale selection from a previous session).`,
+        type: 'warning',
+        ttl: 12000,
+      })
     } else if (result.deleted < result.requested) {
       notify(`Deleted ${result.deleted} of ${result.requested} jobs.`, 'info', 8000)
     }
@@ -1100,11 +1106,12 @@ export default function JobsPage() {
           )
           await loadJobs()
         } catch (err) {
-          notify(
-            `Auto-dedup failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
-            'error',
-            12000
-          )
+          reportFailure({
+            source: 'app',
+            message: `Auto-dedup failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+            fullMessage: errorText(err),
+            ttl: 12000,
+          })
         }
       }
     }
@@ -1182,6 +1189,21 @@ export default function JobsPage() {
           }
         }
         notify(message, 'error', 12000)
+        // One toast for the aggregate, one record per job underneath it.
+        // The toast says "3 jobs" and names the common reason; only the
+        // records can say WHICH three and what each one actually
+        // returned, and the group collapses them back to the one line the
+        // toast already gave. Gated by exactly the checks above, so a
+        // failure already reported this session is not recorded twice.
+        for (const j of newlyFailing) {
+          reportFailure({
+            source: 'ai',
+            message,
+            fullMessage: j.fit_last_error ?? message,
+            job: jobContext(j),
+            ttl: 12000,
+          })
+        }
       }, wait)
     } else {
       // No new failures this load — clear the debounce so the next time
@@ -1400,11 +1422,12 @@ export default function JobsPage() {
         next.delete(jobId)
         return next
       })
-      notify(
-        `Quick Apply failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
-        'error',
-        8000
-      )
+      reportFailure({
+        source: 'ai',
+        message: `Quick Apply failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        fullMessage: errorText(err),
+        job: jobContext(jobs.find((j) => j.id === jobId)),
+      })
     }
   }
 

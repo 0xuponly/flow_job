@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNotifications } from './NotificationsProvider'
+import { groupCountLabel, groupNotifications, type NotificationGroup } from './grouping'
 import QueuePanel from './QueuePanel'
 import { notify } from '../components/Notifications'
 import { api } from '../api'
@@ -11,16 +12,111 @@ function formatTime(ts: number): string {
   return d.toLocaleString()
 }
 
-interface RowProps {
-  row: NotificationRow
-  onDismiss: (id: number) => void
+/**
+ * How many occurrences an expanded group renders before it asks.
+ *
+ * Grouping is what keeps the *collapsed* list to one line per kind of
+ * thing; without a ceiling on the expanded list, expanding a group of 500
+ * rebuilds the very flood the grouping just prevented, which is a worse
+ * surprise because the user opened it deliberately. Same shape as the
+ * queue panel's window (`QueuePanel.tsx`), same reason.
+ */
+const OCCURRENCE_PAGE = 25
+
+/**
+ * Counts both things, because they answer different questions and the
+ * user needs both: how many distinct things went wrong, and how many
+ * times. A center reading "1 notification" when twelve documents failed
+ * would be technically true and practically a lie.
+ */
+function notificationsFooter(rowCount: number, groupCount: number): string {
+  if (rowCount === 0) return '0 notifications'
+  const total = `${rowCount} notification${rowCount === 1 ? '' : 's'}`
+  if (groupCount === rowCount) return total
+  return `${total} in ${groupCount} group${groupCount === 1 ? '' : 's'}`
 }
 
-function Row({ row, onDismiss }: RowProps) {
-  const [expanded, setExpanded] = useState(false)
+// The one control both the group header and each expanded entry render.
+const dismissButtonStyle: React.CSSProperties = {
+  background: 'transparent',
+  border: 'none',
+  color: 'var(--text-muted)',
+  cursor: 'pointer',
+  fontSize: 16,
+  lineHeight: 1,
+}
+
+/**
+ * One occurrence, expanded: everything the collapsed row dropped.
+ *
+ * Every field here is conditional on being present. `job_title`,
+ * `job_company` and `job_location` are null when the app could not source
+ * them at record time, and a missing field is rendered as nothing — not
+ * as `'—'`, not as `'Unknown'`. See `jobContext` in record.ts.
+ */
+function Occurrence({ row, onDismiss }: { row: NotificationRow; onDismiss: (id: number) => void }) {
+  const job = row.job
   return (
     <li
-      className="notif-row"
+      className="notif-occurrence"
+      style={{ borderTop: '1px solid var(--border)', paddingTop: 8, marginTop: 8 }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          <time dateTime={new Date(row.created_at).toISOString()}>{formatTime(row.created_at)}</time>
+          {job?.job_title ? <span> · {job.job_title}</span> : null}
+          {job?.job_company ? <span> · {job.job_company}</span> : null}
+          {job?.job_location ? <span> · {job.job_location}</span> : null}
+          {/* The bare id, but only when there is nothing else to say. An
+              id IS sourced data, so showing it invents nothing; a
+              timestamp alone would leave the user unable to tell which
+              job failed, which is the whole point of the citation. This is
+              the same fallback the queue panel uses (QueuePanel.tsx). */}
+          {job?.job_id != null && !job.job_title && !job.job_company
+            ? <span> · Job {job.job_id}</span>
+            : null}
+        </div>
+        <button
+          type="button"
+          aria-label="Dismiss notification"
+          onClick={() => onDismiss(row.id)}
+          style={dismissButtonStyle}
+        >
+          ×
+        </button>
+      </div>
+      <div
+        style={{
+          marginTop: 6,
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          color: 'var(--text)',
+          fontSize: 13,
+        }}
+      >
+        {row.full_message}
+      </div>
+    </li>
+  )
+}
+
+interface GroupProps {
+  group: NotificationGroup
+  onDismiss: (id: number) => void
+  onDismissGroup: (ids: number[]) => void
+}
+
+function GroupRow({ group, onDismiss, onDismissGroup }: GroupProps) {
+  const [expanded, setExpanded] = useState(false)
+  const [shown, setShown] = useState(OCCURRENCE_PAGE)
+  const count = group.occurrences.length
+  const countLabel = groupCountLabel(count)
+  const visible = expanded ? group.occurrences.slice(0, shown) : []
+
+  return (
+    <li
+      className="notif-group"
+      data-testid="notif-group"
       style={{
         border: '1px solid var(--border)',
         borderRadius: 6,
@@ -34,23 +130,60 @@ function Row({ row, onDismiss }: RowProps) {
         style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', gap: 8 }}
       >
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 14, color: 'var(--text)' }}>{row.message}</div>
+          <div style={{ fontSize: 14, color: 'var(--text)' }}>{group.message}</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-            {row.type} · {row.source} · {formatTime(row.created_at)}
+            {group.type} · {group.source} · {formatTime(group.latestAt)}
           </div>
         </div>
+        {countLabel && (
+          <span
+            data-testid="notif-group-count"
+            aria-label={`${count} occurrences`}
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: 'var(--text-muted)',
+              alignSelf: 'flex-start',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {countLabel}
+          </span>
+        )}
         <button
           type="button"
-          aria-label="Dismiss notification"
-          onClick={(e) => { e.stopPropagation(); onDismiss(row.id) }}
-          style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}
+          aria-label="Dismiss group"
+          onClick={(e) => { e.stopPropagation(); onDismissGroup(group.occurrences.map((r) => r.id)) }}
+          style={dismissButtonStyle}
         >
           ×
         </button>
       </div>
       {expanded && (
-        <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)', whiteSpace: 'pre-wrap', color: 'var(--text)', fontSize: 13 }}>
-          {row.full_message}
+        <div data-testid="notif-group-occurrences">
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+            {visible.map((row) => (
+              <Occurrence key={row.id} row={row} onDismiss={onDismiss} />
+            ))}
+          </ul>
+          {count > shown && (
+            <button
+              type="button"
+              onClick={() => setShown((n) => n + OCCURRENCE_PAGE)}
+              style={{
+                marginTop: 8,
+                background: 'transparent',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                color: 'var(--text-muted)',
+                padding: '4px 10px',
+                cursor: 'pointer',
+                fontSize: 12,
+              }}
+            >
+              {`Show ${Math.min(OCCURRENCE_PAGE, count - shown)} more`}
+            </button>
+          )}
         </div>
       )}
     </li>
@@ -62,7 +195,7 @@ type Panel = 'notifications' | 'queue'
 const QUEUE_POLL_MS = 10000
 
 export default function NotificationDrawer() {
-  const { list, isOpen, close, dismiss, dismissAll } = useNotifications()
+  const { list, isOpen, close, dismiss, dismissGroup, dismissAll, refresh } = useNotifications()
   const [mounted, setMounted] = useState(false)
   const [panel, setPanel] = useState<Panel>('notifications')
   const [queue, setQueue] = useState<QueueItemView[]>([])
@@ -70,6 +203,19 @@ export default function NotificationDrawer() {
   const [clearing, setClearing] = useState(false)
 
   useEffect(() => { setMounted(true) }, [])
+
+  // Re-read on every open. The provider's list is a cache, and not every
+  // record in the store is announced to it: `electron/main.ts` writes an
+  // `uncaughtException` into the store from the main process, where there
+  // is no renderer to fire a window event. Without this the crash would be
+  // durably recorded and unreachable — present in the file, absent from
+  // the drawer, which is the same as not recorded from the user's side.
+  // Opening the center is the one moment the user has said they want to
+  // see everything that is in it.
+  useEffect(() => {
+    if (!isOpen) return
+    void refresh()
+  }, [isOpen, refresh])
 
   useEffect(() => {
     if (!isOpen) return
@@ -152,6 +298,8 @@ export default function NotificationDrawer() {
   }, [queue.length])
 
   if (!mounted || !isOpen) return null
+
+  const groups = groupNotifications(list)
 
   return createPortal(
     <>
@@ -258,8 +406,13 @@ export default function NotificationDrawer() {
               </div>
             ) : (
               <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-                {list.map((row) => (
-                  <Row key={row.id} row={row} onDismiss={dismiss} />
+                {groups.map((group) => (
+                  <GroupRow
+                    key={group.key}
+                    group={group}
+                    onDismiss={dismiss}
+                    onDismissGroup={dismissGroup}
+                  />
                 ))}
               </ul>
             )
@@ -274,7 +427,7 @@ export default function NotificationDrawer() {
         </div>
         <footer style={{ padding: 12, borderTop: '1px solid var(--border)', color: 'var(--text-muted)', fontSize: 12, textAlign: 'center' }}>
           {panel === 'notifications'
-            ? (list.length === 0 ? '0 notifications' : `${list.length} notification${list.length === 1 ? '' : 's'}`)
+            ? notificationsFooter(list.length, groups.length)
             : (queue.length === 0 ? '0 queued tasks' : `${queue.length} queued task${queue.length === 1 ? '' : 's'}`)}
         </footer>
       </aside>

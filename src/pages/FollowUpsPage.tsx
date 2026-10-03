@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { FollowUp } from '../types'
-import { notify } from '../components/Notifications'
 import { toastErrorSummary, errorText } from '../aiErrorSummary'
+import { jobContext, reportFailure } from '../notifications/record'
 
 export default function FollowUpsPage() {
   const [followUps, setFollowUps] = useState<(FollowUp & { job_title: string; company: string })[]>([])
@@ -39,7 +39,17 @@ export default function FollowUpsPage() {
       navigator.clipboard.writeText(message)
       alert('Follow-up message copied to clipboard!')
     } catch (err) {
-      notify(`Generation failed: ${toastErrorSummary(errorText(err))}`, 'error')
+      // The follow-up row carries an application id, never a job id, so
+      // `jobContext` gets no id — it records the company and the role the
+      // row does carry and leaves the id null. It does not go looking for
+      // a job to attach, because the nearest match by name is a guess and
+      // this app does not put guesses in front of the user.
+      reportFailure({
+        source: 'ai',
+        message: `Generation failed: ${toastErrorSummary(errorText(err))}`,
+        fullMessage: `${fu.job_title} — ${fu.company}\n${errorText(err)}`,
+        job: jobContext({ title: fu.job_title, company: fu.company }),
+      })
     } finally {
       setGenerating(null)
     }
