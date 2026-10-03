@@ -1419,6 +1419,14 @@ describe('performance guard', () => {
     computeReferenceWork()
     allocReferenceWork()
     let referenceSoFar = Math.sqrt(timed(computeReferenceWork).cpu * timed(allocReferenceWork).cpu)
+
+    // If either half ever measures 0 then every factor below is Infinity and this
+    // guard fails on clean code with "a factor of Infinity" -- a correct message
+    // about an impossible measurement. Whether a 22-31ms busy loop can report 0ms
+    // of CPU is not established either way; this is here so that if it ever does,
+    // the failure says which number was zero instead of what it divided into.
+    expect(referenceSoFar, `the reference workload measured ${referenceSoFar.toFixed(2)}ms of CPU`).toBeGreaterThan(0)
+
     for (let i = 0; i < LISTINGS; i++) {
       scoreCompatibility('Financial Analyst, Reporting', `${posting} warmup ${i}`, CV_FINANCE)
     }
