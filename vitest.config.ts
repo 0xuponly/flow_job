@@ -65,11 +65,23 @@ export default defineConfig({
      * outright, the matcher file passed 11/11 under 24 competing spinners.
      *
      * What 60s bought instead was 10s -> 60s of hang detection for every
-     * `beforeAll`/`afterAll` in all 76 files. There are three hooks in the suite
-     * and the other two are a ResizeObserver stub and an `rmSync`: a hook
-     * deadlocked for 59s passed. A probe file whose `beforeAll` sleeps 15s now
-     * fails with `Hook timed out in 10000ms` after 10.0s of test time, where it
-     * passed at 15s before.
+     * `beforeAll`/`afterAll` in all 76 files. There are five such hooks - four are
+     * stubs or cleanup, and the fifth does real work:
+     *
+     *   - src/semanticSkillMatcher.test.ts:130 -- the ONNX warm-up, covered above
+     *   - src/toastFlood.test.tsx:130         -- a ResizeObserver stub
+     *   - src/pages/JobsPage.sticky.test.tsx:7 -- a ResizeObserver stub
+     *   - electron/stderrFilter.test.ts:16    -- an `rmSync`
+     *   - electron/toastFlood.main.test.ts:175 -- `await import('./main')`, to
+     *     reach the `registerIpc()` that runs off `app.whenReady()` at import time
+     *
+     * The last one is the only candidate the 60s could plausibly have been
+     * covering, and it does not need it: a module load is not a model download,
+     * and the whole file is 9 tests in 0.10-0.11s of test time here (measured,
+     * twice). The other four are stubs and an `rmSync`, so a hook deadlocked for
+     * 59s passed. A probe file whose `beforeAll` sleeps 15s now fails with
+     * `Hook timed out in 10000ms` after 10.0s of test time, where it passed at
+     * 15s before.
      */
     hookTimeout: 10_000,
   },
