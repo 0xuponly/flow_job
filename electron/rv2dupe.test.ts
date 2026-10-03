@@ -204,10 +204,15 @@ function provider(opts: { kill?: readonly (keyof Counters)[]; reviewScore?: numb
  */
 async function pump(maxSteps = 400, maxSimDays = 60): Promise<void> {
   const { processQueue } = await import('./aiQueue')
-  const { resetModelHealth } = await import('./ai')
+  const { resetModelHealth, resetProviderSpend } = await import('./ai')
   const t0 = Date.now()
   for (let i = 0; i < maxSteps; i++) {
+    // Both, for the reason `resetModelHealth` is here: the per-provider
+    // spend cap (ai.ts) would otherwise start refusing calls part-way
+    // through a 30-day simulation and silently change every count below.
+    // This file measures the queue's revival budget, not the cap.
     resetModelHealth()
+    resetProviderSpend()
     const runnable = getAIQueue().filter(
       (q) =>
         q.status === 'pending' ||
@@ -1208,15 +1213,15 @@ describe('5. the five previously-fixed defects are still fixed', () => {
     // channel is a user action; six automatic sites, none of them — the
     // scan-time auto-tailor that was the seventh is retired.
     expect(rows.filter((r) => r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
-      'electron/main.ts:467',
-      'electron/main.ts:480',
-      'electron/main.ts:662',
-      'electron/main.ts:678'
+      'electron/main.ts:495',
+      'electron/main.ts:509',
+      'electron/main.ts:693',
+      'electron/main.ts:709'
     ])
     expect(rows.filter((r) => !r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:407',
-      'electron/aiQueue.ts:464',
-      'electron/aiQueue.ts:537',
+      'electron/aiQueue.ts:418',
+      'electron/aiQueue.ts:475',
+      'electron/aiQueue.ts:549',
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:136'
@@ -1227,7 +1232,10 @@ describe('5. the five previously-fixed defects are still fixed', () => {
     // user action, and each automatic site is not.
     const main = code(readFileSync('electron/main.ts', 'utf8')).split('\n')
     for (const r of rows.filter((x) => x.manual)) {
-      const window = main.slice(Math.max(0, r.line - 12), r.line).join('\n')
+      // Wide enough to reach the enclosing `ipcMain.handle` even when the
+      // handler carries a long explanatory comment above the work. The
+      // intent is "reachable from a user action", not "is 12 lines away".
+      const window = main.slice(Math.max(0, r.line - 30), r.line).join('\n')
       const channel = [...window.matchAll(/ipcMain\.handle\('([^']+)'/g)].pop()?.[1]
       expect(channel, `main.ts:${r.line}`).toBeTruthy()
       expect(channel, `main.ts:${r.line}`).not.toMatch(/^(jobs|scan|queue:list)/)
@@ -1306,6 +1314,15 @@ interface DayCounters {
  *     more, never less, so `attempts` is the upper bound and `cv + cl` is
  *     what this particular configuration costs.
  */
+/**
+ * These two drive 720 simulated hours through the REAL processor and the
+ * REAL store, so their honest cost is measured in seconds rather than
+ * milliseconds and every step is a full-store encrypt plus an atomic write.
+ * They carry their own budget for the reason vitest.config.ts states: the
+ * global 5s is a hang detector and raising it for everyone would blunt it.
+ */
+const SIMULATION_TIMEOUT = 30_000
+
 async function thirtyDays(withTrigger: boolean): Promise<DayCounters> {
   vi.useRealTimers()
   const calls = provider({ kill: ['cv', 'cl'] })
@@ -1334,8 +1351,9 @@ async function thirtyDays(withTrigger: boolean): Promise<DayCounters> {
     // moment the tenth attempt parks the row on the revive cooldown.
     for (let step = 0; step < 200; step++) {
       const { processQueue } = await import('./aiQueue')
-      const { resetModelHealth } = await import('./ai')
+      const { resetModelHealth, resetProviderSpend } = await import('./ai')
       resetModelHealth()
+      resetProviderSpend()
       const runnable = getAIQueue().filter(
         (q) => q.status === 'pending' || (q.status === 'failed' && (q.autoRevives ?? 0) < AUTO_REVIVE_MAX)
       )
@@ -1364,7 +1382,7 @@ async function thirtyDays(withTrigger: boolean): Promise<DayCounters> {
 }
 
 describe('the revival-rate bound: the SWEEP lane, 30 simulated days', () => {
-  it('is 80 attempts for the whole 30 days, every one of them inside day one', async () => {
+  it('is 80 attempts for the whole 30 days, every one of them inside day one', SIMULATION_TIMEOUT, async () => {
     // The number the prior review published and the one the brief asked me
     // to re-measure: the sweep's two document units, each living 4 cycles
     // (1 initial + AUTO_REVIVE_MAX) of 10 rate-limited attempts, for the

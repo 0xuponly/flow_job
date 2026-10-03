@@ -64,7 +64,19 @@ vi.mock('./database', () => ({
   listJobDocuments: () => [],
   getDocumentAutoRegenAttempts: () => 0,
   bumpDocumentAutoRegenAttempts: () => 1,
-  recomputeJobStatusFromDocs: () => undefined
+  recomputeJobStatusFromDocs: () => undefined,
+  // Per-provider spend ledger + the cap constants that ai.ts imports at
+  // module scope. A partial ./database mock that omits them makes the
+  // import fail outright, which surfaces as every assertion in the file
+  // failing for a reason that has nothing to do with this file.
+  DEFAULT_PROVIDER_CALL_CAP: 50,
+  MIN_PROVIDER_CALL_CAP: 1,
+  MAX_PROVIDER_CALL_CAP: 100000,
+  PROVIDER_SPEND_WINDOW_MS: 86400000,
+  recordProviderCall: vi.fn(),
+  getProviderSpend: vi.fn(() => ({})),
+  clearProviderSpend: vi.fn(),
+
 }))
 
 // The AI layer is stubbed rather than the real one: these tests are

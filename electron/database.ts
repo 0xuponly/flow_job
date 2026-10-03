@@ -21,10 +21,52 @@ import type {
   Job,
   JobStatus,
   NotificationRow,
+  ProviderCall,
   Settings
 } from './types'
 
 const ENCRYPTED_PREFIX = '$enc$'
+
+// -------------------------------------------------------------------------
+// The per-provider spend cap.
+//
+// The number lives here, next to the store field and the normaliser that
+// enforces it, so the default, the floor and the ceiling cannot drift apart.
+//
+// 50 IS the documented free-tier allowance, which is the whole argument.
+// OpenRouter's limits page states that a `:free` model request is limited to
+// 20/minute and 50/day while fewer than 10 credits have ever been purchased
+// on the account (1000/day at 10+), and — the part that decides the design
+// here — that those limits "apply to your OpenRouter account as a whole ...
+// they are not per model, and pinning a specific `:free` model does not
+// raise them".
+//
+// So the provider's own counter is per account and per calendar day, and this
+// cap is per account too (see `providerKey` in ai.ts: endpoint + credential,
+// never the model name). Same unit, so the app stops ITSELF at the wall the
+// provider would otherwise enforce with a 429 — and a 429 on a shared
+// free-tier key is how the pool dies for every model on it at once, which is
+// the failure this whole thing is for. It is set at the allowance rather
+// than under it so a normal day's work is not silently truncated, and it is a
+// setting because the number above the free tier is the user's own call:
+// buy 10 credits and raise it to 1000.
+//
+// https://openrouter.ai/docs/api_reference/limits
+// -------------------------------------------------------------------------
+export const DEFAULT_PROVIDER_CALL_CAP = 50
+export const MIN_PROVIDER_CALL_CAP = 1
+export const MAX_PROVIDER_CALL_CAP = 5000
+
+/**
+ * The rolling window the cap is measured over.
+ *
+ * Deliberately NOT a calendar day: a calendar boundary is something to wait
+ * for, so it can be gamed by idling until midnight and it does not match
+ * how free-tier quotas actually reset. A sliding window cannot be gamed
+ * that way and needs no "which day is it" special case — the cap is simply
+ * "calls in the last 24 hours".
+ */
+export const PROVIDER_SPEND_WINDOW_MS = 24 * 60 * 60 * 1000
 
 export function isEncryptionAvailable(): boolean {
   return safeStorage.isEncryptionAvailable()
@@ -47,6 +89,15 @@ interface Store {
   ai_queue: AIQueueItem[]
   board_health: Record<string, number[]>
   board_scan_times: Record<string, number[]>
+  /**
+   * Real outbound requests per provider key, as a rolling window of
+   * timestamps. Keyed by `providerKey()` (ai.ts) — one credential, not one
+   * model — because the thing that costs money and gets cut off is the
+   * credential, and twenty models share one free-tier key. Pruned to the
+   * window on every write, so it cannot grow without bound. See
+   * `recordProviderCall` below.
+   */
+  provider_spend: Record<string, ProviderCall[]>
   deleted_jobs: DeletedJobRecord[]
   blacklisted_companies?: string[]
   notifications: NotificationRow[]
@@ -135,7 +186,11 @@ function defaultStore(): Store {
       auto_queue_cover_letter: true,
       auto_queue_verify_cv: true,
       auto_queue_verify_cover_letter: true,
-      quick_apply_shortcut: null
+      quick_apply_shortcut: null,
+      // Automated provider calls per credential per rolling 24h. Manual
+      // actions bypass it (and still count) — see the setting's doc comment
+      // in types.ts and `recordProviderCall` below.
+      provider_call_cap: DEFAULT_PROVIDER_CALL_CAP
     },
     api_models: [],
     nextId: 1,
@@ -143,6 +198,7 @@ function defaultStore(): Store {
     ai_queue: [],
     board_health: {},
     board_scan_times: {},
+    provider_spend: {},
     deleted_jobs: [],
     blacklisted_companies: [],
     notifications: []
@@ -274,6 +330,9 @@ export function loadStore(): Store {
     if (!store.board_scan_times) {
       store.board_scan_times = {}
     }
+    if (!store.provider_spend) {
+      store.provider_spend = {}
+    }
     if (!store.deleted_jobs) {
       store.deleted_jobs = []
     }
@@ -331,6 +390,21 @@ export function loadStore(): Store {
     }
     if (typeof store.settings.quick_apply_shortcut !== 'string' && store.settings.quick_apply_shortcut !== null) {
       store.settings.quick_apply_shortcut = null
+    }
+    // The per-provider automated-call cap. A store written before the key
+    // existed — or one hand-edited to something unusable — resolves to the
+    // documented free-tier allowance rather than to "no cap", because
+    // "unreadable" must never mean "unbounded" for the one setting whose
+    // whole job is to bound spend. Finite values are clamped rather than
+    // discarded: 0 or a negative number would silence every automated
+    // request forever, and a huge one is the user's own choice to make.
+    if (typeof store.settings.provider_call_cap !== 'number' || !Number.isFinite(store.settings.provider_call_cap)) {
+      store.settings.provider_call_cap = DEFAULT_PROVIDER_CALL_CAP
+    } else {
+      store.settings.provider_call_cap = Math.min(
+        MAX_PROVIDER_CALL_CAP,
+        Math.max(MIN_PROVIDER_CALL_CAP, Math.round(store.settings.provider_call_cap))
+      )
     }
     // `auto_tailor_on_scan` and `auto_tailor_min_fit` are RETIRED (the Scan
     // tab's "Auto-Queue" section and its scan-time producer are gone) and
@@ -2374,6 +2448,67 @@ export function recordBoardScanTime(name: string, durationMs: number): void {
   // Keep only the last 20 scan times
   if (history.length > 20) history.splice(0, history.length - 20)
   s.board_scan_times[name] = history
+  persistStore()
+}
+
+// Provider spend tracking
+//
+// The same shape as board health above — a keyed list of timestamps, pruned
+// on write — because it is the same problem (a rolling record that must not
+// grow forever) and it belongs in the same store, so a restart cannot reset
+// it. Unlike a board's scan history this one is load-bearing: it is the
+// input to the cap in ai.ts, and a reset of it would be a hole in the very
+// bound it exists to hold.
+
+export function getProviderSpend(): Record<string, ProviderCall[]> {
+  return loadStore().provider_spend
+}
+
+/**
+ * Record ONE real outbound request against a provider key.
+ *
+ * Called from the single point in ai.ts where the request is issued, so the
+ * count is a property of the wire rather than of the queue's own bookkeeping
+ * — a request that is made and then fails (429, timeout, HTTP 200 carrying
+ * a billing notice) is spend and is counted, and nothing is counted for a
+ * request that was never issued.
+ *
+ * `at` is a parameter so a caller can state the instant it was counted at
+ * when that is not quite `Date.now()`; it defaults to now.
+ *
+ * Pruning is to the rolling window, which is what keeps the record bounded:
+ * a timestamp that has aged out of the 24h window can no longer count
+ * against the cap, so keeping it would only grow the store.
+ */
+export function recordProviderCall(key: string, manual: boolean, at?: number): void {
+  const s = loadStore()
+  if (!s.provider_spend) s.provider_spend = {}
+  const now = at ?? Date.now()
+  const history = s.provider_spend[key] || []
+  history.push({ at: now, manual })
+  const cutoff = now - PROVIDER_SPEND_WINDOW_MS
+  // In-window calls only. Oldest first, so this is a prefix drop.
+  let firstLive = 0
+  while (firstLive < history.length && history[firstLive].at <= cutoff) firstLive++
+  if (firstLive > 0) history.splice(0, firstLive)
+  s.provider_spend[key] = history
+  persistStore()
+}
+
+/**
+ * Forget every provider's record. Tests only — the same contract as
+ * `resetModelHealth()` in ai.ts, and deliberately NOT reachable from the UI:
+ * a button that clears the budget would make the cap a suggestion. A real
+ * app restart does NOT call this, which is the whole point — the budget has
+ * to outlive the process.
+ *
+ * No write when there is nothing to clear, so a test that resets before every
+ * step does not pay a full-store encrypt per step for a no-op.
+ */
+export function clearProviderSpend(): void {
+  const s = loadStore()
+  if (Object.keys(s.provider_spend ?? {}).length === 0) return
+  s.provider_spend = {}
   persistStore()
 }
 

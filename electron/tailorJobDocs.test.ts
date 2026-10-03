@@ -22,6 +22,18 @@ vi.mock('./database', () => ({
   setDocumentContent: vi.fn((id: number) => ({ id })),
   writeTailorTimingFields: vi.fn(async () => { /* no-op mock */ }),
   setJobStatus: vi.fn(async () => { /* no-op mock */ }),
+  // Per-provider spend ledger + the cap constants that ai.ts imports at
+  // module scope. A partial ./database mock that omits them makes the
+  // import fail outright, which surfaces as every assertion in the file
+  // failing for a reason that has nothing to do with this file.
+  DEFAULT_PROVIDER_CALL_CAP: 50,
+  MIN_PROVIDER_CALL_CAP: 1,
+  MAX_PROVIDER_CALL_CAP: 100000,
+  PROVIDER_SPEND_WINDOW_MS: 86400000,
+  recordProviderCall: vi.fn(),
+  getProviderSpend: vi.fn(() => ({})),
+  clearProviderSpend: vi.fn(),
+
 }))
 vi.mock('./logger', () => ({
   log: { tailor: { error: vi.fn(), warn: vi.fn(), info: vi.fn() } },
@@ -169,11 +181,16 @@ describe('tailorJobDocsForJob', () => {
     await tailorJobDocsForJob(1)
     expect(calls).toHaveLength(2)
     // Both calls must have happened: at least one for cv, one for cl.
+    // The trailing `opts` is the call's origin (manual vs automated), which
+    // is what the per-provider spend cap in ai.ts reads. Absent here because
+    // tailorJobDocsForJob was called without one.
     expect(mockedTailorDocument).toHaveBeenCalledWith(
-      expect.objectContaining({ document_type: 'cv' })
+      expect.objectContaining({ document_type: 'cv' }),
+      undefined
     )
     expect(mockedTailorDocument).toHaveBeenCalledWith(
-      expect.objectContaining({ document_type: 'cover_letter' })
+      expect.objectContaining({ document_type: 'cover_letter' }),
+      undefined
     )
   })
 

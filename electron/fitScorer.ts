@@ -17,7 +17,7 @@
 import { BrowserWindow } from 'electron'
 import { log } from './logger'
 import * as db from './database'
-import { scoreJobFit } from './ai'
+import { scoreJobFit, type AiCallOptions } from './ai'
 import { enqueue } from './aiQueue'
 import {
   autoDocQueueEligible,
@@ -180,7 +180,8 @@ export function emitJobScoreUpdatedModule(jobId: number): void {
  */
 export async function scoreOneJobInBackground(
   jobId: number,
-  isStale?: () => boolean
+  isStale?: () => boolean,
+  opts?: AiCallOptions
 ): Promise<Job | null> {
   const job = db.getJob(jobId)
   if (!job) return null
@@ -216,7 +217,7 @@ export async function scoreOneJobInBackground(
       requirements: job.requirements,
       location: job.location,
       baseCv
-    })
+    }, undefined, opts)
     if (fit.source === 'heuristic') {
       // Don't pretend a heuristic fallback is a real fit score.
       try {

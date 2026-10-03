@@ -79,7 +79,19 @@ vi.mock('./database', () => ({
   // into the catch and every assertion below the throw read as "the chain
   // never fired".
   setDocumentContent: vi.fn((id: number) => ({ id })),
-  writeTailorTimingFields: vi.fn()
+  writeTailorTimingFields: vi.fn(),
+  // Per-provider spend ledger + the cap constants that ai.ts imports at
+  // module scope. A partial ./database mock that omits them makes the
+  // import fail outright, which surfaces as every assertion in the file
+  // failing for a reason that has nothing to do with this file.
+  DEFAULT_PROVIDER_CALL_CAP: 50,
+  MIN_PROVIDER_CALL_CAP: 1,
+  MAX_PROVIDER_CALL_CAP: 100000,
+  PROVIDER_SPEND_WINDOW_MS: 86400000,
+  recordProviderCall: vi.fn(),
+  getProviderSpend: vi.fn(() => ({})),
+  clearProviderSpend: vi.fn(),
+
 }))
 
 import { AUTO_REGEN_MAX, AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX } from './types'
@@ -156,7 +168,7 @@ describe('score_fit queue processing', () => {
     mockedGetQueue.mockReturnValue([queueItem({})])
     mockedScore.mockResolvedValue(scoredJob({ score: 0.82, fit_score_version: 3 }))
     await processQueue()
-    expect(mockedScore).toHaveBeenCalledWith(42, expect.any(Function))
+    expect(mockedScore).toHaveBeenCalledWith(42, expect.any(Function), { manual: false })
     expect(mockedRemove).toHaveBeenCalledWith('q1')
   })
 
@@ -619,7 +631,8 @@ describe('P1.7 regeneration rebuilds the failed document and re-queues its revie
     await processQueue()
 
     expect(mockedTailorDoc).toHaveBeenCalledWith(
-      expect.objectContaining({ job_id: 7, document_type: 'cv', document_id: 11 })
+      expect.objectContaining({ job_id: 7, document_type: 'cv', document_id: 11 }),
+      { manual: false }
     )
   })
 
@@ -631,7 +644,8 @@ describe('P1.7 regeneration rebuilds the failed document and re-queues its revie
     await processQueue()
 
     expect(mockedTailorDoc).toHaveBeenCalledWith(
-      expect.objectContaining({ document_type: 'cover_letter', document_id: 12 })
+      expect.objectContaining({ document_type: 'cover_letter', document_id: 12 }),
+      { manual: false }
     )
   })
 
@@ -879,7 +893,7 @@ describe('automatic revival of capped items', () => {
 
     await processQueue()
 
-    expect(mockedScore).toHaveBeenCalledWith(42, expect.any(Function))
+    expect(mockedScore).toHaveBeenCalledWith(42, expect.any(Function), { manual: false })
   })
 
   it('treats a legacy failed row with no revive bookkeeping as revivable', async () => {
@@ -891,7 +905,7 @@ describe('automatic revival of capped items', () => {
 
     await processQueue()
 
-    expect(mockedScore).toHaveBeenCalledWith(42, expect.any(Function))
+    expect(mockedScore).toHaveBeenCalledWith(42, expect.any(Function), { manual: false })
   })
 })
 
@@ -964,7 +978,7 @@ describe('reclaiming interrupted items', () => {
     vi.mocked(updateAIQueueItem).mockClear()
     mockedGetQueue.mockReturnValue([queueItem({ id: 7, type: 'score_fit', jobId: 42, status: 'pending' })])
     await processQueue()
-    expect(mockedScore).toHaveBeenCalledWith(42, expect.any(Function))
+    expect(mockedScore).toHaveBeenCalledWith(42, expect.any(Function), { manual: false })
     expect(mockedRemove).toHaveBeenCalledWith(7)
   })
 
@@ -1594,7 +1608,7 @@ describe('queue items hold the AI operation slot', () => {
     ] as never)
     mockedScore.mockResolvedValue({ score: 0.9 } as never)
     await processQueue()
-    expect(mockedScore).toHaveBeenCalledWith(42, expect.any(Function))
+    expect(mockedScore).toHaveBeenCalledWith(42, expect.any(Function), { manual: false })
     // id: 1 in the fixture above, so the row removed is 1.
     expect(mockedRemove).toHaveBeenCalledWith(1)
   })

@@ -1,4 +1,4 @@
-import { tailorDocument } from './ai'
+import { tailorDocument, type AiCallOptions } from './ai'
 import {
   enforceAllCvCeilings,
   enforceParagraphCeilings,
@@ -76,7 +76,7 @@ export function sanitizeDocument(
   return { content: sanitized, rules }
 }
 
-export async function tailorJobDocsForJob(jobId: number): Promise<TailorJobDocsResult> {
+export async function tailorJobDocsForJob(jobId: number, opts?: AiCallOptions): Promise<TailorJobDocsResult> {
   const job = getJob(jobId)
   if (!job) {
     log.tailor.warn('dropped_missing_job', { jobId })
@@ -84,8 +84,8 @@ export async function tailorJobDocsForJob(jobId: number): Promise<TailorJobDocsR
   }
 
   const [cv, cl] = await Promise.all([
-    timed(() => tailorDocument({ job_id: jobId, document_type: 'cv' }), 'cv', jobId),
-    timed(() => tailorDocument({ job_id: jobId, document_type: 'cover_letter' }), 'cl', jobId)
+    timed(() => tailorDocument({ job_id: jobId, document_type: 'cv' }, opts), 'cv', jobId),
+    timed(() => tailorDocument({ job_id: jobId, document_type: 'cover_letter' }, opts), 'cl', jobId)
   ])
 
   const cvFailed = cv.result == null

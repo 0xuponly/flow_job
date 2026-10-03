@@ -1,4 +1,19 @@
-import { getSettings, listApiModels, getDocument, updateDocument, updateDocumentVerification, listApplications, updateApplication } from './database'
+import {
+  clearProviderSpend,
+  getProviderSpend,
+  getSettings,
+  listApiModels,
+  recordProviderCall,
+  getDocument,
+  updateDocument,
+  updateDocumentVerification,
+  listApplications,
+  updateApplication,
+  DEFAULT_PROVIDER_CALL_CAP,
+  MAX_PROVIDER_CALL_CAP,
+  MIN_PROVIDER_CALL_CAP,
+  PROVIDER_SPEND_WINDOW_MS
+} from './database'
 import type { ApiModelConfig, FitBreakdown, Job, KeywordCategory, KeywordEntry, KeywordResult, KeywordSource, RuleCheck, TailorRequest, TailorResult, VerificationResult } from './types'
 import { createDocument, getJob, replaceDocumentContent } from './database'
 import { readFileSync } from 'fs'
@@ -26,6 +41,41 @@ export class RateLimitError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'RateLimitError'
+  }
+}
+
+/**
+ * Who asked for this call.
+ *
+ * The spend cap is enforced on AUTOMATED work only, and this flag is the
+ * only thing that tells the two apart — the same division the queue already
+ * draws with `manualQueued` on a row and `opts.manual` on `enqueue`, and
+ * for the same reason: the app stopping work it started on its own is a
+ * budget; the app refusing something a person pressed is a dead end.
+ *
+ * Absent means AUTOMATED, deliberately. Every call site that forgets to pass
+ * it gets the capped, conservative behaviour rather than an unbounded one,
+ * and that is the direction this failure has to fail in.
+ */
+export interface AiCallOptions {
+  manual?: boolean
+}
+
+/**
+ * A provider is out of its rolling-24h call budget.
+ *
+ * A `RateLimitError` subclass because that is exactly what it is, from every
+ * caller's point of view: this provider will not answer us for an hour or
+ * more, so the queue should park the work and try again rather than burn its
+ * retry budget marking it failed. What it adds is a message that says WHICH
+ * provider, how much of its budget is gone, and when it frees up — the
+ * difference between a user who can wait and a user who can go add another
+ * key.
+ */
+export class ProviderCapError extends RateLimitError {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ProviderCapError'
   }
 }
 
@@ -422,6 +472,266 @@ function modelKey(model: ApiModelConfig): string {
   return model.id || `${model.base_url}::${model.model}`
 }
 
+// -------------------------------------------------------------------------
+// THE PROVIDER KEY
+//
+// `modelKey()` above answers "which configured model is this?", which is the
+// wrong unit for money. Twenty free OpenRouter models on one key are twenty
+// health entries with twenty independent cooldowns, so the provider can be
+// called twenty times the moment those lapse — and what gets cut off when a
+// free tier runs dry is the KEY, not the model.
+//
+// So the bucket is derived the same way `modelKey` derives its key — from
+// the base URL / the credential, never from the model name — as
+// `normalised endpoint + credential fingerprint`:
+//
+//   * the endpoint, so a model on a different base URL is its own provider
+//     (opencode Zen and OpenRouter never share a budget), compared
+//     case-insensitively and without a trailing slash, so
+//     `https://openrouter.ai/api/v1` and `https://openrouter.ai/api/v1/`
+//     are one provider rather than two;
+//   * the credential, so two keys against the same host are two budgets —
+//     each key has its own allowance, and the thing being protected is the
+//     key.
+//
+// The credential is stored as a one-way hash, never as the key and never as
+// a fragment of it, so the persisted ledger can match two models that share a
+// credential without the store holding one.
+// -------------------------------------------------------------------------
+
+/** Host + normalised path of a base URL, or null if it cannot be classified. */
+function providerEndpoint(baseUrl: string | undefined): { key: string; label: string } | null {
+  const raw = (baseUrl ?? '').trim()
+  if (raw.length === 0) return null
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    return null
+  }
+  const protocol = url.protocol.toLowerCase()
+  // http is legitimate and expected: local models (Ollama, LM Studio) are
+  // served over plain http on localhost. Anything else is not an endpoint we
+  // know how to spend against.
+  if (protocol !== 'http:' && protocol !== 'https:') return null
+  const host = url.host.toLowerCase()
+  const path = url.pathname.replace(/\/+$/, '')
+  // Query and hash are dropped: an API version or a trailing slash is not a
+  // different provider, and `?api-key=` style query credentials would put a
+  // secret in a persisted key for no benefit.
+  return { key: `${protocol}//${host}${path}`, label: host }
+}
+
+function credentialFingerprint(apiKey: string | undefined): string {
+  const raw = (apiKey ?? '').trim()
+  if (raw.length === 0) return 'anonymous'
+  // One-way and stable. Not a security boundary and not claimed to be — the
+  // ledger lives inside the encrypted store — but it is enough that the same
+  // credential always lands in the same bucket and nothing readable is
+  // written down.
+  return hashString(raw)
+}
+
+/**
+ * The canonical provider bucket for a model.
+ *
+ * UNCLASSIFIABLE BASE URL — the one case that has no honest single answer.
+ * If the base URL is not a parseable http(s) URL there is no way to tell
+ * whether two such models share a credential, and both available answers are
+ * wrong in a way the user pays for:
+ *
+ *   * bucket them all together, and one typo'd or exotic endpoint silently
+ *     spends the whole budget of twenty unrelated models — the rotation goes
+ *     dark with no cause on the provider that is working fine;
+ *   * treat them as uncapable, and the cap is not a cap.
+ *
+ * So each unclassifiable model gets a bucket of its own, keyed by its own
+ * model key: still capped (the bound holds for every model), never silently
+ * merged (nothing else is affected), and logged once per model, because a
+ * base URL the app cannot parse is a configuration error the user should
+ * hear about rather than a condition to work around quietly.
+ */
+// One warning per unclassifiable model per process, not one per rotation.
+const unclassifiedProvidersLogged = new Set<string>()
+
+export function providerKey(model: ApiModelConfig): string {
+  const endpoint = providerEndpoint(model.base_url)
+  if (!endpoint) {
+    const key = `unclassified:${credentialFingerprint(model.api_key)}:${modelKey(model)}`
+    if (!unclassifiedProvidersLogged.has(key)) {
+      unclassifiedProvidersLogged.add(key)
+      log.ai.warn(
+        `[ai] model "${model.name}" has a base URL this app cannot classify; ` +
+        'it gets its own provider budget rather than sharing one'
+      )
+    }
+    return key
+  }
+  return `${endpoint.key}#${credentialFingerprint(model.api_key)}`
+}
+
+/**
+ * A provider's spend in the current rolling window.
+ *
+ * Derived from the persisted ledger rather than from a separate counter,
+ * deliberately: two counters is two truths, and a bound that can disagree
+ * with the record it is bounding is the `spendBound.test.ts` problem all
+ * over again.
+ */
+export interface ProviderBudget {
+  key: string
+  /** Host, for logs and the cap message. Never a path, a key or an id. */
+  label: string
+  /** Total real calls inside the window, automated and manual. */
+  used: number
+  automated: number
+  manual: number
+  cap: number
+  /** When the oldest in-window call ages out — null while under the cap. */
+  freeAt: number | null
+}
+
+function providerLabel(key: string): string {
+  if (key.startsWith('unclassified:')) return '<unclassifiable base URL>'
+  const hashAt = key.indexOf('#')
+  if (hashAt === -1) return key
+  const endpoint = key.slice(0, hashAt)
+  const slash = endpoint.indexOf('//')
+  return slash === -1 ? endpoint : endpoint.slice(slash + 2)
+}
+
+function providerCalls(key: string, now: number): { at: number; manual: boolean }[] {
+  const history = getProviderSpend()[key]
+  if (!Array.isArray(history)) return []
+  const cutoff = now - PROVIDER_SPEND_WINDOW_MS
+  // Filtered rather than sliced: a store written by an older build, or a
+  // clock that moved backwards, must not make the count wrong in the
+  // direction that spends money. Over-counting is recoverable; under-counting
+  // is the hole this whole thing exists to close.
+  return history.filter(
+    (c): c is { at: number; manual: boolean } =>
+      !!c && typeof c.at === 'number' && Number.isFinite(c.at) && c.at > cutoff
+  )
+}
+
+export function providerBudget(key: string, now = Date.now()): ProviderBudget {
+  const calls = providerCalls(key, now)
+  let automated = 0
+  let manual = 0
+  for (const c of calls) {
+    if (c.manual) manual++
+    else automated++
+  }
+  return {
+    key,
+    label: providerLabel(key),
+    used: calls.length,
+    automated,
+    manual,
+    cap: resolveProviderCap(),
+    // The oldest call in the window is the one that frees first: the budget
+    // is available again one full window after it was spent.
+    freeAt: calls.length === 0 ? null : Math.min(...calls.map((c) => c.at)) + PROVIDER_SPEND_WINDOW_MS
+  }
+}
+
+function resolveProviderCap(): number {
+  const raw = getSettings().provider_call_cap
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return DEFAULT_PROVIDER_CALL_CAP
+  return Math.min(MAX_PROVIDER_CALL_CAP, Math.max(MIN_PROVIDER_CALL_CAP, Math.round(raw)))
+}
+
+/**
+ * This provider's budget for automated work, or null while there is room.
+ *
+ * The comparison counts BOTH kinds of call, which is the whole point of
+ * recording manual ones separately rather than exempting them: a manual
+ * request is a request the credential paid for, so it has to occupy budget,
+ * and a user who clicks Generate fifty times must not walk straight past a
+ * cap that exists to protect the key they are clicking with. What manual
+ * buys is not extra room — it is that the request is not REFUSED.
+ */
+function providerOverCap(key: string, now = Date.now()): ProviderBudget | null {
+  const budget = providerBudget(key, now)
+  return budget.used >= budget.cap ? budget : null
+}
+
+function clockTime(at: number): string {
+  return new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+/**
+ * The user-facing sentence for a capped provider.
+ *
+ * Says which provider, what the spend was (split, so the two kinds stay
+ * legible rather than blending into one number), and WHEN it frees up — and
+ * that the user's own actions are untouched, because the alternative
+ * reading of this message is "the app is broken".
+ */
+function describeProviderCap(budget: ProviderBudget): string {
+  const spend = budget.manual > 0
+    ? `${budget.automated} automated, ${budget.manual} manual`
+    : `${budget.automated} automated`
+  const frees = budget.freeAt === null ? 'shortly' : clockTime(budget.freeAt)
+  return (
+    `${budget.label} is at its call cap — ${spend} of ${budget.cap} in the last 24h. ` +
+    `Budget frees at ${frees}. Automated work is paused; Generate, Regenerate, Verify and ` +
+    `Tailor still run.`
+  )
+}
+
+// Providers whose exhaustion has already been written to the log for this
+// process, so a rotation that walks past twenty models on one capped
+// provider says it once rather than twenty times.
+const capAnnounced = new Set<string>()
+
+function noteProviderCap(budget: ProviderBudget): void {
+  if (capAnnounced.has(budget.key)) return
+  capAnnounced.add(budget.key)
+  log.ai.warn(
+    `[ai] provider call cap reached provider=${budget.label} used=${budget.used} cap=${budget.cap} ` +
+    `automated=${budget.automated} manual=${budget.manual} frees_at=${budget.freeAt ?? 'unknown'} ` +
+    '— automated work paused, manual actions still run'
+  )
+}
+
+/**
+ * Count one real outbound request, and log it.
+ *
+ * Called from exactly one place: immediately before the request is issued.
+ * That is what makes the ledger a fact about the wire rather than about the
+ * app's own bookkeeping — a 429, a timeout and an HTTP 200 carrying a
+ * billing notice are all requests that were made, so all three land here,
+ * and nothing lands here for a request the cap refused.
+ */
+function countProviderCall(key: string, manual: boolean): void {
+  recordProviderCall(key, manual)
+  if (manual) {
+    // Manual calls are the ones the brief calls out for legibility, and they
+    // are rare enough (one per thing a person asked for) to be worth a line
+    // each without becoming noise.
+    const budget = providerBudget(key)
+    log.ai.info(
+      `[ai] provider call origin=manual provider=${budget.label} ` +
+      `used=${budget.used}/${budget.cap} (${budget.manual} manual, ${budget.automated} automated)`
+    )
+  }
+}
+
+/**
+ * Forget the persisted provider ledger. Tests only, and SEPARATE from
+ * `resetModelHealth()` on purpose: model health is in-process state that a
+ * restart is entitled to lose, while the ledger is the budget itself, and a
+ * test that wants a clean rotation needs both cleared. Nothing in production
+ * calls this, and that separation is what guarantees a relaunch cannot hand
+ * the app a fresh allowance.
+ */
+export function resetProviderSpend(): void {
+  clearProviderSpend()
+  capAnnounced.clear()
+  unclassifiedProvidersLogged.clear()
+}
+
 function getHealth(model: ApiModelConfig): ModelHealth {
   return modelHealth.get(modelKey(model)) ?? {
     nextAvailableAt: 0,
@@ -552,7 +862,8 @@ async function tryModels(
   timeoutMs: number,
   externalSignal?: AbortSignal,
   validateResponse?: (content: string) => boolean,
-  excludeModelIds?: ReadonlySet<string>
+  excludeModelIds?: ReadonlySet<string>,
+  manual = false
 ): Promise<CallAIResult> {
   let content: string | null = null
   let modelUsed: string | null = null
@@ -560,6 +871,14 @@ async function tryModels(
   const errors: string[] = []
   let validationFailures = 0
   const attempted: string[] = []
+  // Cap refusals are counted separately from ordinary failures so that "every
+  // model in the rotation was refused because the provider is out of budget"
+  // can be reported as THAT, with the provider's numbers, rather than as
+  // "all N models failed".
+  const capRefusals: ProviderBudget[] = []
+  // Where in `errors` the cap lines landed, so the summary below can show
+  // what else was tried without repeating them.
+  const capErrorIndexes = new Set<number>()
 
   for (const model of models) {
     // P1.5: skip models the caller asked to exclude (bounded retry on
@@ -581,10 +900,56 @@ async function tryModels(
     // launching the app to enable; the cost when disabled is one string
     // compare per request.
     if (process.env.FLOW_JOB_DEBUG_AI === '1') {
+      // The running spend rides along on this existing line rather than
+      // getting one of its own: a synchronous log write per automated
+      // request is not free (measured: it dominated the cost of the
+      // store-heavy queue simulations), and a trace that already fires once
+      // per request is the right place for "and this is what it has cost".
+      const spent = providerBudget(providerKey(model))
       log.ai.info(
-        `[ai] req name="${model.name}" host=${hostOf(model.base_url)} key=${fingerprintKey(model.api_key)} modelId=${model.model} max_tokens=${getMaxTokens(model)} timeout_ms=${attemptTimeoutMs} body=${redactBody('')}`
+        `[ai] req name="${model.name}" host=${hostOf(model.base_url)} key=${fingerprintKey(model.api_key)} modelId=${model.model} max_tokens=${getMaxTokens(model)} timeout_ms=${attemptTimeoutMs} spend=${spent.used}/${spent.cap} body=${redactBody('')}`
       )
     }
+    // -----------------------------------------------------------------
+    // THE SPEND GATE.
+    //
+    // Placed here, immediately before the request is issued and nowhere
+    // else, because this is the only point at which "we are about to spend"
+    // is a fact rather than an intention. Above it a model can be chosen,
+    // skipped, excluded or failed over without costing anything; below it
+    // the request has been made and whatever comes back is what it cost.
+    //
+    // So: an automated call whose provider has no budget left is refused
+    // here and never reaches `fetch`, and a call that IS issued is counted
+    // here — once, before the response is known, so a 429, a timeout and an
+    // HTTP 200 carrying a billing notice all count alike, because they all
+    // cost the same. A manual call skips the refusal but not the count.
+    //
+    // Refusing per model is what makes the rotation walk PAST a spent
+    // provider: the loop continues to the next model, so a pool that mixes a
+    // capped provider with a funded one keeps working on the funded one.
+    // -----------------------------------------------------------------
+    const provider = providerKey(model)
+    if (!manual) {
+      const over = providerOverCap(provider)
+      if (over) {
+        noteProviderCap(over)
+        capRefusals.push(over)
+        capErrorIndexes.add(errors.length)
+        errors.push(`${model.name}: ${describeProviderCap(over)}`)
+        // No cooldown is written to modelHealth here on purpose. That map is
+        // shared with manual work — it is what `availableModels()` filters
+        // on — so cooling a model down for a reason that applies only to
+        // AUTOMATED spend would make the user's own Generate quietly defer
+        // to a queue row instead of running. The budget is its own cooldown:
+        // it is checked here and again at the top of callAI, and it survives
+        // a restart because it is the persisted ledger rather than anything
+        // held in memory.
+        continue
+      }
+    }
+    countProviderCall(provider, manual)
+
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (model.api_key) headers['Authorization'] = `Bearer ${model.api_key}`
@@ -721,6 +1086,36 @@ async function tryModels(
     }
   }
 
+  if (!content && capRefusals.length > 0) {
+    // Some model in the rotation was refused by the budget. That is a real
+    // part of why this call produced nothing, and it is the part the user
+    // can act on, so it leads the message rather than being buried in the
+    // error list.
+    //
+    // Checked BEFORE the 429 report below, deliberately. A capped provider
+    // produces 429s too — indeed a spent budget is usually a throttled one —
+    // so "every model is rate limited, try again in a minute" is true and
+    // useless: the budget frees in a day, not a minute, and the rotation
+    // would keep re-walking into the cap for the whole hour it waited. And
+    // as a RateLimitError (which this is) the queue parks the row until the
+    // window slides instead of burning its retry budget on a limit that
+    // resets on its own. Deduped per provider: twenty models on one capped
+    // key is one sentence, not twenty.
+    const seen = new Set<string>()
+    const lines: string[] = []
+    for (const budget of capRefusals) {
+      if (seen.has(budget.key)) continue
+      seen.add(budget.key)
+      lines.push(describeProviderCap(budget))
+    }
+    const rest = errors.filter((_, i) => !capErrorIndexes.has(i)).join(' | ')
+    // "ran out mid-rotation", not "no provider has budget": the rotation may
+    // also have tried a provider that failed for an ordinary reason, and
+    // those are reported alongside rather than folded in.
+    throw new ProviderCapError(
+      `AI provider budget exhausted during this call — ${lines.join(' ')}${rest ? ` (other attempts: ${rest})` : ''}`
+    )
+  }
   if (!content && rateLimited && validationFailures === 0) {
     throw new RateLimitError(`All ${models.length} configured AI models are rate limited — try again in a minute:\n${errors.join('\n')}`)
   }
@@ -834,18 +1229,56 @@ export async function callAI(
   timeoutMs = DEFAULT_CALL_TIMEOUT_MS,
   externalSignal?: AbortSignal,
   validateResponse?: (content: string) => boolean,
-  excludeModelIds?: ReadonlySet<string>
+  excludeModelIds?: ReadonlySet<string>,
+  opts?: AiCallOptions
 ): Promise<CallAIResult> {
-  const models = availableModels()
+  // Absent means AUTOMATED — see `AiCallOptions`. Read once here and passed
+  // down, so the rotation and the request cannot disagree about who asked.
+  const manual = opts?.manual === true
+
+  const available = availableModels()
   const allEligible = eligibleModels()
 
   if (allEligible.length === 0) {
     throw new Error('No enabled AI models configured. Add one in Settings.')
   }
 
-  if (models.length === 0) {
+  if (available.length === 0) {
     // Every eligible model is on cooldown or circuit-broken.
     throw new RateLimitError('All configured AI models are cooling down after rate limits or persistent errors — try again shortly.')
+  }
+
+  // The spend cap, as a pre-filter. This is the "cooldown" a capped provider
+  // is put into: the rotation walks past it here rather than walking INTO it
+  // and discovering it one refused request at a time, so a pool that mixes a
+  // spent provider with a funded one keeps answering from the funded one.
+  //
+  // It is a filter and not a block precisely because it is not applied to
+  // manual work — the user's own Generate, Regenerate, Verify and Tailor
+  // find their models here exactly as they always did.
+  const capped: ProviderBudget[] = []
+  const models = manual
+    ? available
+    : available.filter((m) => {
+        const over = providerOverCap(providerKey(m))
+        if (!over) return true
+        noteProviderCap(over)
+        capped.push(over)
+        return false
+      })
+
+  if (models.length === 0) {
+    // Everything that is not cooling down is out of budget. Say so with the
+    // provider's own numbers rather than letting the rotation fail on the
+    // generic path, which would report this as N broken models.
+    const seen = new Set<string>()
+    const lines: string[] = []
+    for (const budget of capped) {
+      if (seen.has(budget.key)) continue
+      seen.add(budget.key)
+      lines.push(describeProviderCap(budget))
+    }
+    throw new ProviderCapError(`No AI provider has budget left — ${lines.join(' ')}`)
   }
 
   const maxTokens = getMaxTokens()
@@ -878,7 +1311,7 @@ export async function callAI(
   // call for the rest of the session. Coalescing is unaffected — that
   // returns the already-in-flight promise above and never enters here.
   const promise = serializeRequest(() =>
-    tryModels(models, systemPrompt, userPrompt, temperature, timeoutMs, externalSignal, validateResponse, excludeModelIds)
+    tryModels(models, systemPrompt, userPrompt, temperature, timeoutMs, externalSignal, validateResponse, excludeModelIds, manual)
   )
   inFlightRequests.set(key, promise)
   promise.then(
@@ -952,13 +1385,14 @@ Output JSON only.`
  */
 export async function extractJobKeywordsLLM(
   description: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  opts?: AiCallOptions
 ): Promise<KeywordEntry[]> {
   const userPrompt = `JD:\n${description}`
 
   let result: Awaited<ReturnType<typeof callAI>>
   try {
-    result = await callAI(EXTRACTION_SYSTEM_PROMPT, userPrompt, 0.3, DEFAULT_CALL_TIMEOUT_MS, signal)
+    result = await callAI(EXTRACTION_SYSTEM_PROMPT, userPrompt, 0.3, DEFAULT_CALL_TIMEOUT_MS, signal, undefined, undefined, opts)
   } catch (err) {
     throw new KeywordExtractionError(
       `callAI failed: ${err instanceof Error ? err.message : String(err)}`
@@ -1026,14 +1460,15 @@ export async function extractJobKeywordsLLM(
  */
 export async function extractJobKeywordsV3(
   description: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  opts?: AiCallOptions
 ): Promise<KeywordResult> {
   const ruleResult = extractJobKeywordsStructured(description)
   const ruleCandidates = ruleResult.keywords
 
   let llmCandidates: KeywordEntry[] = []
   try {
-    llmCandidates = await extractJobKeywordsLLM(description, signal)
+    llmCandidates = await extractJobKeywordsLLM(description, signal, opts)
   } catch (err) {
     log.ai.warn(
       '[ai] v3 LLM extraction failed, falling back to rule-only:',
@@ -1053,7 +1488,7 @@ export async function extractJobKeywordsV3(
   return merged
 }
 
-export async function tailorDocument(request: TailorRequest): Promise<TailorResult> {
+export async function tailorDocument(request: TailorRequest, opts?: AiCallOptions): Promise<TailorResult> {
   const settings = getSettings()
   const job = getJob(request.job_id)
   if (!job) throw new Error('Job not found')
@@ -1073,7 +1508,7 @@ export async function tailorDocument(request: TailorRequest): Promise<TailorResu
   if (!refinedTopKeywords || refinedTopKeywords.length === 0) {
     if (job.description) {
       try {
-        const result = await extractJobKeywordsV3(job.description, undefined)
+        const result = await extractJobKeywordsV3(job.description, undefined, opts)
         refinedTopKeywords = result.keywords.map((k) => k.phrase)
         keywordRefinedByLlm = result.refinedByLlm
       } catch (err) {
@@ -1146,7 +1581,7 @@ ${request.document_type === 'cover_letter' ? 'Write a tailored cover letter.' : 
   // handler did not, for as long as this comment implied it did.
   const validator = request.document_type === 'cv' ? looksLikeHarvardCv : undefined
   try {
-    const result = await callAI(systemPrompt, userPrompt, 0.7, DEFAULT_CALL_TIMEOUT_MS, undefined, validator)
+    const result = await callAI(systemPrompt, userPrompt, 0.7, DEFAULT_CALL_TIMEOUT_MS, undefined, validator, undefined, opts)
     content = result.content!
     modelUsed = result.modelUsed
   } catch (err) {
@@ -1235,7 +1670,8 @@ ${settings.user_email || ''}`
 export async function generateFollowUpMessage(
   company: string,
   jobTitle: string,
-  daysSinceApplied: number
+  daysSinceApplied: number,
+  opts?: AiCallOptions
 ): Promise<string> {
   const settings = getSettings()
 
@@ -1245,7 +1681,7 @@ export async function generateFollowUpMessage(
 
   let content: string | null = null
   try {
-    const result = await callAI(systemPrompt, userPrompt, 0.7)
+    const result = await callAI(systemPrompt, userPrompt, 0.7, DEFAULT_CALL_TIMEOUT_MS, undefined, undefined, undefined, opts)
     content = result.content
   } catch {
     // No enabled models, or all failed — fall through to the plain-text fallback.
@@ -1338,7 +1774,8 @@ function parseSections(content: string): Section[] {
 export async function verifyDocumentContent(
   jobId: number,
   documentId: number,
-  docType: 'cv' | 'cover_letter'
+  docType: 'cv' | 'cover_letter',
+  opts?: AiCallOptions
 ): Promise<VerificationResult> {
   const job = getJob(jobId)
   if (!job) throw new Error('Job not found')
@@ -1399,7 +1836,7 @@ Evaluate how well this document is tailored for this specific job.`
     try {
       aiResult = await callAI(
         systemPrompt, userPrompt, 0.3, DEFAULT_CALL_TIMEOUT_MS, undefined,
-        undefined, exclude
+        undefined, exclude, opts
       )
     } catch (err) {
       // Rate-limit / no-config / network: surface as skip immediately.
@@ -1495,7 +1932,8 @@ export async function regenerateSection(
   sectionName: string,
   jobId: number,
   extraContext?: string,
-  topKeywords?: string[]
+  topKeywords?: string[],
+  opts?: AiCallOptions
 ): Promise<string> {
   const job = getJob(jobId)
   if (!job) throw new Error('Job not found')
@@ -1576,7 +2014,7 @@ ${sectionContent}
 ${extraContext && extraContext.trim() ? `\nAdditional context from the user (follow these instructions when rewriting):\n${extraContext.trim()}\n` : ''}
 Rewrite only this section's body.`
 
-  const result = await callAI(systemPrompt, userPrompt, 0.7)
+  const result = await callAI(systemPrompt, userPrompt, 0.7, DEFAULT_CALL_TIMEOUT_MS, undefined, undefined, undefined, opts)
   const newBody = result.content!
 
   const resultLines = [...doc.content.split('\n')]
@@ -1643,7 +2081,7 @@ export async function scoreJobFit(input: {
   requirements: string | null
   location?: string | null
   baseCv: string
-}, signal?: AbortSignal): Promise<JobFitResult> {
+}, signal?: AbortSignal, opts?: AiCallOptions): Promise<JobFitResult> {
   const cvEduLevel = extractEducationLevel(input.baseCv)
   const cvYears = extractYearsExperience(input.baseCv)
 
@@ -1719,7 +2157,7 @@ Return the JSON object now.`
     try {
       result = await callAI(
         systemPrompt, userPrompt, 0.2, DEFAULT_CALL_TIMEOUT_MS, signal,
-        undefined, exclude
+        undefined, exclude, opts
       )
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error'

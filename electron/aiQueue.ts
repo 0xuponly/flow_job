@@ -1,7 +1,7 @@
 import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, clearAIQueue, getDocument, getJob, getSettings, listJobDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts, setDocumentContent, writeTailorTimingFields, recomputeJobStatusFromDocs } from './database'
 import { log } from './logger'
 import { withAiOperation } from './ai'
-import { tailorDocument, regenerateSection, verifyDocumentContent, RateLimitError } from './ai'
+import { tailorDocument, regenerateSection, verifyDocumentContent, RateLimitError, type AiCallOptions } from './ai'
 import type { AIQueueItem, Job, QueueItemView } from './types'
 import { AUTO_REGEN_MAX, AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX, PASSING_REVIEW_SCORE } from './types'
 
@@ -276,6 +276,18 @@ function pickOrder(items: AIQueueItem[]): AIQueueItem[] {
 }
 
 async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
+  // Who asked for this item. The row already records it (`manualQueued`,
+  // written by `enqueue({ manual: true })` from the five user entry points
+  // in main.ts), and it is the SAME division the auto-queue switches draw:
+  // the app may stop spending on its own, and never stops the user.
+  //
+  // Read once, here, and handed to every AI call this item makes, because
+  // the spend cap (ai.ts) is enforced on automated work only — a cap that
+  // also refused the user's own Regenerate would be the dead end the whole
+  // manual/automated split exists to avoid. Absent means automated, which is
+  // the safe direction: an item from before the field existed is treated as
+  // the app's own work and therefore capped.
+  const opts: AiCallOptions = { manual: item.manualQueued === true }
   try {
     // Inside the try: if this write throws there is nothing useful to
     // record for the item, and letting it escape would abort the whole
@@ -339,7 +351,7 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
           job_id: item.jobId,
           document_type: docType,
           document_id: item.documentId
-        })
+        }, opts)
         const ms = Date.now() - startedAt
 
         // What `tailorJobDocsForJob` does after its own `tailorDocument`
@@ -390,7 +402,6 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
           generatedAt: Date.now(),
           lastError: null
         })
-
         removeAIQueueItem(item.id)
         // P1.7 §2: chain the review, exactly as the `tailor_job_docs`
         // case does. Without this the cycle was verify -> regenerate ->
@@ -412,7 +423,7 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
           removeAIQueueItem(item.id)
           return
         }
-        await regenerateSection(item.documentId, item.sectionName, item.jobId, item.extraContext)
+        await regenerateSection(item.documentId, item.sectionName, item.jobId, item.extraContext, undefined, opts)
         removeAIQueueItem(item.id)
         break
       }
@@ -426,7 +437,7 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
           removeAIQueueItem(item.id)
           return
         }
-        const result = await verifyDocumentContent(item.jobId, item.documentId, doc.type)
+        const result = await verifyDocumentContent(item.jobId, item.documentId, doc.type, opts)
         removeAIQueueItem(item.id)
         // P1.7 §2: review < PASSING_REVIEW_SCORE triggers one
         // auto-regeneration of the SAME doc type, bounded by
@@ -490,7 +501,8 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
         // document generation into a queue the user just cleared.
         const updated = await scoreOneJobInBackground(
           item.jobId,
-          () => epoch !== clearEpoch
+          () => epoch !== clearEpoch,
+          opts
         )
         if (!updated) {
           removeAIQueueItem(item.id)
@@ -510,7 +522,7 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
         // call path) until the case actually fires. Mirrors the
         // lazy-load pattern other optional call sites already use.
         const { tailorJobDocsForJob } = await import('./tailorJobDocs')
-        await tailorJobDocsForJob(item.jobId)
+        await tailorJobDocsForJob(item.jobId, opts)
         // Generation no longer sets status itself; refresh the
         // doc-derived status (sourced <-> reviewing) after both docs land.
         const { recomputeJobStatusFromDocs } = await import('./database')

@@ -708,7 +708,11 @@ describe('F2: exactly one sanitization per generation, on every lane', () => {
         .split('\n')
         .filter(Boolean)
         .filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*'))
-        .filter((l) => !l.startsWith('electron/ai.ts:1056'))
+        // `electron/ai.ts` is now also a MATCH: `tailorDocument` moved down that
+    // file and its own declaration line sits inside the grepped range. It is
+    // the declaration, not a fourth store path — the storage it does is
+    // `createDocument` at ai.ts:1633, already covered by the assertion below.
+    .filter((l) => !l.startsWith('electron/ai.ts:1491'))
 
     // The processor's per-unit case, both of `tailorJobDocsForJob`'s, and
     // the handler. Nothing else. Sorted because `rg` walks the tree.
@@ -718,6 +722,9 @@ describe('F2: exactly one sanitization per generation, on every lane', () => {
       'electron/tailorJobDocs.ts',
       'electron/tailorJobDocs.ts'
     ])
+    // ...and that declaration is not a store path: `ai.ts` stores only via
+    // `createDocument`, which the caller's `setDocumentContent` then
+    // sanitizes over. If a raw store ever reappears here this fails.
     // And the renderer's two calls go through the `ai:tailor` channel, so
     // they are covered by the handler rather than being a fourth store path.
     expect(grep('api\\.tailorDocument\\(', 'src').map((l) => l.split(':').slice(0, 2).join(':'))).toEqual([

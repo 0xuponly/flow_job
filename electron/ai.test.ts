@@ -1,11 +1,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-// Stub the ./database module to avoid pulling in the real database
-// (which transitively imports electron/logger and requires a live
-// Electron `app` runtime). Only `listApiModels` is exercised by
-// extractJobKeywordsV3; the other exports are unused.
+// The provider spend ledger, in memory. It normally lives in the encrypted
+// store, which this file deliberately does not load (see below), so the
+// three ledger functions and the three cap constants are stubbed here with
+// the same semantics: a rolling window of per-call timestamps, and a cap
+// read from the (mocked) settings.
+//
+// It is a REAL ledger rather than a no-op for one reason: these ~100 cases
+// all spend against two providers, and the cap has to keep counting across
+// them for the file to be testing anything. `resetProviderSpend()` in the
+// top-level `beforeEach` is what keeps one case's spend out of the next.
+const { spendLedger } = vi.hoisted(() => ({
+  spendLedger: {} as Record<string, { at: number; manual: boolean }[]>
+}))
+
 vi.mock('./database', () => ({
-  getSettings: vi.fn(),
+  // Not `vi.fn()` with no return: ai.ts reads `provider_call_cap` off this
+  // on every rotation, and a bare mock hands it `undefined`.
+  getSettings: vi.fn(() => ({ provider_call_cap: 50 })),
   listApiModels: vi.fn(() => []),
   getDocument: vi.fn(),
   updateDocument: vi.fn(),
@@ -14,7 +26,22 @@ vi.mock('./database', () => ({
   updateApplication: vi.fn(),
   createDocument: vi.fn(),
   replaceDocumentContent: vi.fn(),
-  getJob: vi.fn()
+  getJob: vi.fn(),
+  getProviderSpend: () => spendLedger,
+  recordProviderCall: (key: string, manual: boolean, at?: number) => {
+    const now = at ?? Date.now()
+    const history = spendLedger[key] ?? (spendLedger[key] = [])
+    history.push({ at: now, manual })
+    const cutoff = now - 24 * 60 * 60 * 1000
+    while (history.length > 0 && history[0].at <= cutoff) history.shift()
+  },
+  clearProviderSpend: () => {
+    for (const k of Object.keys(spendLedger)) delete spendLedger[k]
+  },
+  DEFAULT_PROVIDER_CALL_CAP: 50,
+  MIN_PROVIDER_CALL_CAP: 1,
+  MAX_PROVIDER_CALL_CAP: 5000,
+  PROVIDER_SPEND_WINDOW_MS: 24 * 60 * 60 * 1000
 }))
 
 // Self-mock of ./ai is intentionally NOT used here. Vitest's module
@@ -28,10 +55,15 @@ vi.mock('./database', () => ({
 
 import * as database from './database'
 import type { ApiModelConfig } from './types'
-import { callAI, withAiOperation, EXTRACTION_SYSTEM_PROMPT, extractJobKeywordsV3, KeywordExtractionError, RateLimitError, resetModelHealth, resetModelHealthByIds, scoreJobFit } from './ai'
+import { callAI, withAiOperation, EXTRACTION_SYSTEM_PROMPT, extractJobKeywordsV3, KeywordExtractionError, RateLimitError, resetModelHealth, resetModelHealthByIds, resetProviderSpend, scoreJobFit } from './ai'
 
 beforeEach(() => {
   resetModelHealth()
+  // The ledger is persisted state and a restart must not clear it, so it has
+  // its own test-only reset. Without it the ~100 cases below would share one
+  // provider budget and the later ones would be refused at the cap — which is
+  // the cap working, not a regression.
+  resetProviderSpend()
 })
 
 describe('extractJobKeywordsV3 (orchestrator)', () => {
@@ -2074,9 +2106,12 @@ describe('no bare numeric timeout literal at any callAI call site', () => {
     // second copy of the number in the signature is the rot this guards.
     expect(src).toMatch(/const DEFAULT_CALL_TIMEOUT_MS = 45_000/)
     expect(src).toMatch(/timeoutMs = DEFAULT_CALL_TIMEOUT_MS/)
-    // The four call sites that used to carry a literal now name it.
+    // The four call sites that used to carry a literal now name it, and the
+    // two that pass the trailing `opts` (manual/automated origin) have to
+    // reach past the timeout argument to get there, so they name it too.
+    // Still zero bare numbers — that is the property above.
     const named = src.match(/callAI\([^)]*DEFAULT_CALL_TIMEOUT_MS[^)]*\)/g) ?? []
-    expect(named.length).toBe(5) // 4 call sites + callAI's own signature
+    expect(named.length).toBe(7) // 6 call sites + callAI's own signature
   })
 })
 

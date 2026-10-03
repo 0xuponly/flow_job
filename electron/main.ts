@@ -12,7 +12,7 @@ import {
   verifyManifest,
   wrapDekWithPassphrase
 } from './backupCrypto'
-import { tailorDocument, generateFollowUpMessage, regenerateSection, verifyDocumentContent, scoreJobFit, extractJobKeywordsV3, RateLimitError, resetModelHealthByIds, withAiOperation } from './ai'
+import { tailorDocument, generateFollowUpMessage, regenerateSection, verifyDocumentContent, scoreJobFit, extractJobKeywordsV3, RateLimitError, resetModelHealthByIds, withAiOperation, type AiCallOptions } from './ai'
 import { sanitizeDocument } from './tailorJobDocs'
 import { scoreOneJobInBackground } from './fitScorer'
 import { countPdfPages } from '../src/cvOnePage'
@@ -260,8 +260,11 @@ function createWindow(): void {
  * for the next of its five rounds, so returning the raw text would mean the
  * next iteration is built on prose this call just culled.
  */
-async function tailorAndSanitize(request: TailorRequest): Promise<TailorResult> {
-  const result = await withAiOperation(() => tailorDocument(request))
+async function tailorAndSanitize(
+  request: TailorRequest,
+  opts: AiCallOptions
+): Promise<TailorResult> {
+  const result = await withAiOperation(() => tailorDocument(request, opts))
   const docType: 'cv' | 'cover_letter' =
     request.document_type === 'cv' ? 'cv' : 'cover_letter'
   const sanitized = sanitizeDocument(
@@ -274,6 +277,26 @@ async function tailorAndSanitize(request: TailorRequest): Promise<TailorResult> 
 }
 
 function registerIpc(): void {
+  /**
+   * The one flag that says "a person asked for this".
+   *
+   * The same division the queue draws with `manualQueued` on a row, applied
+   * at the request itself: the per-provider spend cap in ai.ts stops the app
+   * spending on its OWN work — the queue, the backlog sweeps, the fit
+   * re-seeder, background document generation — and never stops a user
+   * pressing a button. Every handler below that a person triggers passes
+   * this, so the inventory of "what is never capped" is this list plus the
+   * `manualQueued` rows the queue processor already honours.
+   *
+   * Automatic producers deliberately do NOT pass it, including the ones
+   * that hang off a user gesture: adding a job by hand (jobs:create,
+   * jobs:importFromUrl) fires a background fit score the user never asked
+   * for, so it is the app's spend and is capped like any other. Nothing is
+   * lost by that — the hourly fit re-seeder picks the job up once there is
+   * budget again.
+   */
+  const MANUAL: AiCallOptions = { manual: true }
+
   ipcMain.handle('dashboard:stats', () => db.getDashboardStats())
 
   // Quick-add mini-window: opened from the sidebar so it survives a
@@ -361,7 +384,11 @@ function registerIpc(): void {
     // heuristic-fallback (don't overwrite), the error path, and emits
     // job:scoreUpdated. The handler returns the post-update row so
     // the renderer doesn't have to re-read the store.
-    const updated = await withAiOperation(() => scoreOneJobInBackground(id))
+    // `manual`: the user pressed Recompute Fit. This is one of the five
+    // entry points that the per-provider spend cap (ai.ts) does NOT stop —
+    // the cap exists to bound what the app spends on its own, and a person
+    // asking for one score is not the app spending on its own.
+    const updated = await withAiOperation(() => scoreOneJobInBackground(id, undefined, MANUAL))
     if (!updated) {
       throw new Error(`Job ${id} not found`)
     }
@@ -456,7 +483,8 @@ function registerIpc(): void {
   })
   ipcMain.handle('documents:verify', async (_e, jobId: number, documentId: number, docType: 'cv' | 'cover_letter'): Promise<VerificationResult | { queued: true }> => {
     try {
-      const result = await withAiOperation(() => verifyDocumentContent(jobId, documentId, docType))
+      // `manual`: the user pressed Verify — see `MANUAL` above.
+      const result = await withAiOperation(() => verifyDocumentContent(jobId, documentId, docType, MANUAL))
       db.recomputeJobStatusFromDocs(jobId)
       return result
     } catch (err) {
@@ -472,7 +500,8 @@ function registerIpc(): void {
   })
   ipcMain.handle('documents:regenerateSection', async (_e, documentId: number, sectionName: string, jobId: number, extraContext?: string) => {
     try {
-      return await withAiOperation(() => regenerateSection(documentId, sectionName, jobId, extraContext))
+      // `manual`: the user pressed Regenerate — see `MANUAL` above.
+      return await withAiOperation(() => regenerateSection(documentId, sectionName, jobId, extraContext, undefined, MANUAL))
     } catch (err) {
       if (err instanceof RateLimitError) {
         // `manual`: same rule — an already-queued regeneration for this
@@ -576,7 +605,8 @@ function registerIpc(): void {
   })
   ipcMain.handle('followUps:complete', (_e, id: number) => db.completeFollowUp(id))
   ipcMain.handle('followUps:generateMessage', async (_e, company: string, title: string, days: number) =>
-    generateFollowUpMessage(company, title, days)
+    // `manual`: the user pressed Generate on the follow-up row — see `MANUAL`.
+    generateFollowUpMessage(company, title, days, MANUAL)
   )
 
   ipcMain.handle('interviews:list', (_e, upcomingOnly?: boolean) => db.listInterviews(upcomingOnly))
@@ -652,8 +682,9 @@ function registerIpc(): void {
     try {
       // Sanitizes before storing and before answering — see
       // `tailorAndSanitize` above, which is why that is a separate function
-      // rather than three lines inline here.
-      return await tailorAndSanitize(request)
+      // rather than three lines inline here. `MANUAL` marks this as the
+      // user's own request, which the spend cap never refuses.
+      return await tailorAndSanitize(request, MANUAL)
     } catch (err) {
       if (err instanceof RateLimitError) {
         // `manual`: the user asked for this document, so a generation

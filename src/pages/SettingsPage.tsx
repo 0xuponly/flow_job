@@ -129,6 +129,11 @@ export default function SettingsPage() {
   // take effect. `autoQueueSaving` dims the switches while a write is in
   // flight so a double-click cannot race two writes of different keys.
   const [autoQueueSaving, setAutoQueueSaving] = useState(false)
+  // The provider call cap, held separately from `settings` so a half-typed
+  // value ("1" on the way to "150") does not get written on every keystroke.
+  // Falls back to the documented default when a store predates the key, which
+  // is the same value the main process normalises it to.
+  const [providerCallCap, setProviderCallCap] = useState(50)
 
   // Lazy-load the boards list the first time the user opens the
   // Boards tab. Cheaper than loading on every Settings mount, and
@@ -219,30 +224,44 @@ export default function SettingsPage() {
   // and echoing that back means the switch shows what is actually
   // persisted rather than what was asked for.
   async function toggleAutoQueue(key: AutoQueueKey, on: boolean) {
+    await saveAutoQueueValue(key, on, `Failed to save auto-queue switch: `)
+  }
+
+  /**
+   * The one write path for the Auto-queue tab's rows.
+   *
+   * Shared by the five switches and the call cap because the failure mode
+   * this shape exists to prevent applies to all of them: taking the whole
+   * response would replace this shared state object with the STORE's copy
+   * and silently discard every unsaved batch edit the user has made on
+   * another tab. So the response is merged for the ONE key that was written,
+   * and a failure rolls back that key alone.
+   */
+  async function saveAutoQueueValue<K extends keyof Settings>(key: K, value: Settings[K], errorPrefix: string) {
     setAutoQueueSaving(true)
     const previous = settings
-    setSettings((prev) => (prev ? { ...prev, [key]: on } : prev))
+    setSettings((prev) => (prev ? { ...prev, [key]: value } : prev))
     try {
-      const updated = await api.updateSettings({ [key]: on })
-      // Merge ONLY the key that was tapped, and roll back only that key
-      // on failure below — one rule, both directions. Taking the whole
-      // response would replace this shared state object with the STORE's
-      // copy and silently discard every unsaved batch edit the user has
-      // made on another tab (a raised scan_min_match, a typed profile
-      // name) — while that tab's dirty flag stays set, so pressing Save
-      // persists the old value and looks like it worked. The response
-      // stays authoritative for the one key it just wrote.
+      const updated = await api.updateSettings({ [key]: value })
+      // Merge ONLY the key that was written, and roll back only that key on
+      // failure below — one rule, both directions. Taking the whole response
+      // would replace this shared state object with the STORE's copy and
+      // silently discard every unsaved batch edit the user has made on another
+      // tab (a raised scan_min_match, a typed profile name) — while that tab's
+      // dirty flag stays set, so pressing Save persists the old value and looks
+      // like it worked. The response stays authoritative for the one key it
+      // just wrote.
       setSettings((prev) => (prev ? { ...prev, [key]: updated[key] } : updated))
     } catch (err) {
-      notify(`Failed to save auto-queue switch: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
-      // Roll back ONLY the key this function wrote, for the same reason
-      // the success path merges only that key: restoring the whole
-      // snapshot captured above would discard every unsaved batch edit the
-      // user has made on another tab, and would also revert anything they
-      // typed while this write was in flight — only the five switches are
-      // disabled during it, every other tab's inputs stay live.
-      // `previous?.[key]` is read inside the updater rather than outside
-      // it, so the value cannot come from a stale closure.
+      notify(`${errorPrefix}${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+      // Roll back ONLY the key this function wrote, for the same reason the
+      // success path merges only that key: restoring the whole snapshot
+      // captured above would discard every unsaved batch edit the user has
+      // made on another tab, and would also revert anything they typed while
+      // this write was in flight — only these switches are disabled during it,
+      // every other tab's inputs stay live. `previous?.[key]` is read inside
+      // the updater rather than outside it, so it cannot come from a stale
+      // closure.
       setSettings((prev) => (prev ? { ...prev, [key]: previous?.[key] } : previous))
     } finally {
       setAutoQueueSaving(false)
@@ -283,6 +302,14 @@ export default function SettingsPage() {
       for (const key of AUTO_QUEUE_KEYS) {
         if (typeof s[key] !== 'boolean') s[key] = true
       }
+      // Same reason for the provider call cap: a store written before it
+      // existed must not render as 0 requests a day, which is both wrong and
+      // the one value that could read as "off". The default is the provider's
+      // own documented free allowance.
+      if (typeof s.provider_call_cap !== 'number' || !Number.isFinite(s.provider_call_cap)) {
+        s.provider_call_cap = 50
+      }
+      setProviderCallCap(s.provider_call_cap)
       // Free public job APIs default to enabled for first-time users.
       // Existing users with `false` (explicitly disabled) keep their choice.
       if (typeof s.aggregator_remotive_enabled !== 'boolean') s.aggregator_remotive_enabled = true
@@ -827,6 +854,43 @@ export default function SettingsPage() {
           <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
             Switches save as soon as you change them. Work already in the queue keeps running — clearing it is a separate action in the Queue panel.
           </p>
+
+          <div className="section-title">AI provider budget</div>
+          <div className="card">
+            <div className="form-group">
+              <label htmlFor="provider-call-cap" style={{ display: 'block', marginBottom: 4 }}>
+                Let each AI provider answer this many requests a day
+              </label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  id="provider-call-cap"
+                  type="number"
+                  min={1}
+                  max={5000}
+                  step={10}
+                  style={{ width: 90 }}
+                  disabled={autoQueueSaving}
+                  value={providerCallCap}
+                  onChange={(e) => {
+                    const n = parseInt(e.target.value, 10)
+                    if (!Number.isNaN(n) && n >= 1 && n <= 5000) {
+                      setProviderCallCap(n)
+                      void saveAutoQueueValue('provider_call_cap', n, 'Failed to save the AI provider budget: ')
+                    }
+                  }}
+                />
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>requests per 24 hours</span>
+              </div>
+              <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                A provider's budget covers every model sharing one account with it, not each model
+                separately — which is why a pool of free models on one key runs out sooner than the
+                model count suggests. Once a provider reaches its budget the app stops calling it on
+                its own and picks up the work later, on a rolling 24-hour count. Anything you ask for
+                directly — Generate, Regenerate, Verify, Tailor, Quick Apply — always runs; it just
+                counts against the same budget.
+              </p>
+            </div>
+          </div>
         </>
       )}
 

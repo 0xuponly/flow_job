@@ -30,7 +30,21 @@ vi.mock('./database', () => ({
   updateApplication: vi.fn(),
   createDocument: vi.fn(),
   replaceDocumentContent: vi.fn(),
-  getJob: vi.fn()
+  getJob: vi.fn(),
+  // The per-provider spend ledger that ai.ts consults before every call.
+  // Without these three the module fails to load and every assertion in
+  // this file fails on the import, which reads like a product regression
+  // and is not one.
+  // Real shape: a map from provider key to the call timestamps in the
+  // rolling window. Returning anything else makes ai.ts read `history.length`
+  // off undefined and the rotation never reaches a single request.
+  DEFAULT_PROVIDER_CALL_CAP: 50,
+  MIN_PROVIDER_CALL_CAP: 1,
+  MAX_PROVIDER_CALL_CAP: 100000,
+  PROVIDER_SPEND_WINDOW_MS: 86400000,
+  recordProviderCall: vi.fn(),
+  getProviderSpend: vi.fn(() => ({})),
+  clearProviderSpend: vi.fn()
 }))
 
 import * as database from './database'

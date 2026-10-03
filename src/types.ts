@@ -173,6 +173,17 @@ export interface Settings {
   auto_queue_verify_cv: boolean
   auto_queue_verify_cover_letter: boolean
   quick_apply_shortcut: string | null
+  /**
+   * How many real requests ONE AI provider (one account / credential, not
+   * one model) may be asked for in a rolling 24 hours by AUTOMATED work.
+   * At the cap the app stops calling that provider on its own and picks the
+   * work up when the window slides; anything the user asks for directly
+   * still runs and still counts.
+   *
+   * The renderer copy of the main-process contract — see the main-process
+   * `Settings` type for why the number is 50.
+   */
+  provider_call_cap: number
   // Optional proxy URL for the browser scraper. Format: "http://user:pass@host:port"
   // or "socks5://host:port". When empty, no proxy is used.
   scraper_proxy: string

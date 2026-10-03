@@ -342,6 +342,42 @@ export interface Settings {
    * clock and no timestamp parsing to compare against.
    */
   queue_cleared_max_job_id: number
+  /**
+   * How many real outbound requests ONE provider (one credential, see
+   * `providerKey()` in ai.ts) may be asked for in a rolling 24 hours by
+   * AUTOMATED work — the queue, the backlog sweeps, the fit re-seeder, doc
+   * generation. Manual actions (Generate / Regenerate / Verify / Tailor /
+   * Quick Apply) are not capped by it, so the user is never left at a dead
+   * end, but they DO count, so repeated clicking cannot spend without bound.
+   *
+   * Per provider, not per model, because the failure this bounds is a
+   * credential being cut off: twenty free models sharing one OpenRouter key
+   * each have their own cooldown, so a per-model limit still lets the
+   * provider be called twenty times the moment those cooldowns lapse.
+   * OpenRouter's own free-model allowance is likewise counted per account
+   * and explicitly not per model, so this is deliberately the same unit.
+   *
+   * 50 is the documented free-tier daily allowance for an account that has
+   * bought no credits (1000/day once it has bought 10) — the point at which
+   * a shared key starts answering 429. The rolling window (not a calendar
+   * day) is deliberate on two counts: midnight cannot be used to reset it,
+   * and free-tier quotas do not all reset on a boundary. Clamped to
+   * [1, 5000] on load; anything unreadable normalises back to 50.
+   */
+  provider_call_cap: number
+}
+
+/**
+ * One REAL outbound provider request, as persisted in `provider_spend`.
+ *
+ * `at` is epoch ms of the moment the request was issued (not of its
+ * outcome — a 429, a timeout and a billing notice all cost the same and
+ * all count). `manual` records whether a person asked for it, so the two
+ * kinds stay legible in the number rather than blending into one total.
+ */
+export interface ProviderCall {
+  at: number
+  manual: boolean
 }
 
 export type MatchGrade = 'S' | 'A' | 'B' | 'C' | 'D' | 'F' | null

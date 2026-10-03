@@ -17,7 +17,19 @@ vi.mock('./database', () => ({
   recordBoardResults: vi.fn(),
   recordBoardScanTime: vi.fn(),
   JobBlacklistedError: class extends Error {},
-  JobDuplicateError: class extends Error {}
+  JobDuplicateError: class extends Error {},
+  // Per-provider spend ledger + the cap constants that ai.ts imports at
+  // module scope. A partial ./database mock that omits them makes the
+  // import fail outright, which surfaces as every assertion in the file
+  // failing for a reason that has nothing to do with this file.
+  DEFAULT_PROVIDER_CALL_CAP: 50,
+  MIN_PROVIDER_CALL_CAP: 1,
+  MAX_PROVIDER_CALL_CAP: 100000,
+  PROVIDER_SPEND_WINDOW_MS: 86400000,
+  recordProviderCall: vi.fn(),
+  getProviderSpend: vi.fn(() => ({})),
+  clearProviderSpend: vi.fn(),
+
 }))
 
 vi.mock('./netUtils', async (importOriginal) => {
