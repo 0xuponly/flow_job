@@ -236,7 +236,14 @@ export default function SettingsPage() {
       setSettings((prev) => (prev ? { ...prev, [key]: updated[key] } : updated))
     } catch (err) {
       notify(`Failed to save auto-queue switch: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
-      if (previous) setSettings(previous)
+      // Roll back ONLY the key this function wrote, for the same reason
+      // the success path merges only that key: restoring the whole
+      // captured object would discard every unsaved batch edit the user
+      // has made on another tab.
+      if (previous) {
+        const priorValue = previous[key]
+        setSettings((prev) => (prev ? { ...prev, [key]: priorValue } : previous))
+      }
     } finally {
       setAutoQueueSaving(false)
     }
