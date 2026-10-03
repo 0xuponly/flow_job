@@ -46,6 +46,7 @@ kdf.json
 manifest.json
 manifest.hmac
 
-# Review/audit verdicts and agent run state must never be committed.
-# Verdicts live in plans/ (also ignored). Repo root is NOT a safe alternative.
+# Review/audit verdicts and agent run state live in plans/ and must never be
+# committed. Verdicts live in plans/ (also ignored); the repo root is NOT a
+# safe alternative.
 REVIEW_VERDICT.md

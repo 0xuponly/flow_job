@@ -1,4 +1,4 @@
-import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, clearAIQueue, getDocument, getJob, getSettings, listJobDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts } from './database'
+import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, clearAIQueue, getDocument, getJob, getSettings, listJobDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts, setDocumentContent, writeTailorTimingFields, recomputeJobStatusFromDocs } from './database'
 import { log } from './logger'
 import { withAiOperation } from './ai'
 import { tailorDocument, regenerateSection, verifyDocumentContent, RateLimitError } from './ai'
@@ -61,6 +61,13 @@ function priorityTier(type: AIQueueItem['type']): number {
  * Unlike `processQueue` this does not mutate any item's status: it is
  * a read-only view for display. Ordering re-reads `job.score` on each
  * call, so a fit that lands between polls is reflected on the next one.
+ *
+ * `stranded` is the third read-time field, and the only one that is not
+ * a property of the job: it says the row is `processing` but no run in
+ * THIS process owns it (see `isStranded`). The Queue panel offers Retry
+ * for those, because the startup reclaim deliberately leaves a gated
+ * automatic row exactly as the crash left it and nothing else in the
+ * app would ever move it again.
  */
 export function listQueueInPickOrder(): QueueItemView[] {
   const rows = pickOrder(getAIQueue())
@@ -73,8 +80,157 @@ export function listQueueInPickOrder(): QueueItemView[] {
   }
   return rows.map((item) => {
     const job = jobFor(item.jobId)
-    return { ...item, jobTitle: job?.title ?? null, jobCompany: job?.company ?? null }
+    return {
+      ...item,
+      jobTitle: job?.title ?? null,
+      jobCompany: job?.company ?? null,
+      stranded: isStranded(item)
+    }
   })
+}
+
+/**
+ * Is this `processing` row a crash leftover rather than a live run?
+ *
+ * `status: 'processing'` alone cannot tell the two apart. The processor
+ * writes exactly one thing when it claims a row (`status`, alongside
+ * `promotedAt`), and this item carries no `startedAt`, no heartbeat and
+ * no lease — so at list time a row this process is working on and a row
+ * a killed app left mid-generation are the same fields. The only
+ * honest discriminator is memory: which rows were already `processing`
+ * in the store before this process started.
+ *
+ * `strandedRowIds` is that answer, and it is deliberately not persisted.
+ * It is a statement about THIS process rather than about the row, and it
+ * dies with the process — which is what makes it safe: a row it names
+ * can only be one this process has never claimed, so it cannot be a run
+ * the user is watching right now.
+ *
+ * The set is keyed by id, and ids come from a monotonic `nextId` that
+ * `clearAIQueue` deliberately does not rewind, so an id here can never
+ * be handed out again to an unrelated row. (`clearAllData` DOES rewind
+ * it — it replaces the store, empty queue and `nextId: 1` — and it cannot
+ * reach into this set, which is memory. See `clearStranded`.)
+ *
+ * The last clause is the one that does not lean on any of that.
+ * `strandedRowIds` is a claim about the past — "this id was already
+ * `processing` when we looked" — and it is only as good as every path
+ * that can add to it. `ownedByThisProcess` is a claim about the present:
+ * this id is inside a `processItem` right now. So a row this process is
+ * actively paying for cannot read `stranded: true` even if a future edit
+ * gets its id into the set. A Retry button on a live row is the one
+ * output of this whole mechanism that must never happen, so the flag is
+ * the refusal of both stories rather than the acceptance of one.
+ */
+function isStranded(item: AIQueueItem): boolean {
+  return item.status === 'processing' && strandedRowIds.has(item.id) && !ownedByThisProcess(item.id)
+}
+
+/**
+ * Rows `processing` when this process started, i.e. the ones a crash
+ * left behind. Populated once, by the startup reclaim, and pruned the
+ * moment this process takes a row for itself.
+ */
+const strandedRowIds = new Set<number>()
+
+/**
+ * Rows this process is working on RIGHT NOW: added at the claim in
+ * `processItem`, removed when that `processItem` settles.
+ *
+ * This is the other half of `strandedRowIds` and it is what makes the
+ * stranded flag safe rather than merely plausible. `strandedRowIds` is a
+ * record of something observed once, and every function that can write to
+ * it is a place where a live run could get in. `runningRowIds` is the
+ * direct answer to the question the panel is really asking — "is anyone
+ * working on this row?" — and it is true by construction while the answer
+ * is yes, whatever else has happened to the snapshot.
+ *
+ * Not persisted, same reasoning: it is a fact about this process's own
+ * stack frames, and it is meaningful only while they are on the stack.
+ * `stopQueueProcessor` deliberately does NOT clear it — stopping the
+ * processor stops the polling, not the LLM call already in flight.
+ */
+const runningRowIds = new Set<number>()
+
+/**
+ * Is this process the one running the row, at this instant?
+ *
+ * The single predicate every caller asks, so "a row this process owns"
+ * cannot mean one thing where the row is branded stranded and another
+ * where it is requeued or retried. Consulted by `isStranded`, by the
+ * startup snapshot, by the reclaim, and by `retryQueueItem`.
+ */
+function ownedByThisProcess(id: number): boolean {
+  return runningRowIds.has(id)
+}
+
+/** Whether the startup snapshot has been taken yet. */
+let startupStrandedNoted = false
+
+/**
+ * Record the rows that were `processing` before this process began.
+ *
+ * Runs on the FIRST `reclaimInterruptedItems` call — which is the one
+ * `startQueueProcessor` makes, before the first pass — and only on that
+ * one. That "once" is load-bearing: `reclaimInterruptedItems` scans for
+ * rows left `processing`, and a row this process is actively working on
+ * looks identical to one from a previous process. Snapshotting on every
+ * call would eventually record a live run as stranded and put a Retry
+ * button on a row the user is watching work; snapshotting at startup
+ * cannot, because nothing in this process has claimed anything yet at
+ * that moment.
+ *
+ * "Once" is not enough on its own, though, because `stopQueueProcessor`
+ * deliberately forgets the snapshot — that is what lets a restarted
+ * processor take a fresh one — and the pass that was mid-run when it was
+ * stopped is still running. A restart with a pass in flight therefore
+ * reaches this function with a live row in the store and no snapshot
+ * taken, and the un-guarded version branded it stranded: the panel then
+ * offered Retry on a task this process was still paying for, and pressing
+ * it deleted the row (`retryQueueItem` refused nothing, and the in-flight
+ * `processItem` removed the row on completion). The app never does that
+ * today — `stopQueueProcessor` has one caller, immediately followed by
+ * `app.quit()` — which is exactly why it survived review: unreachable
+ * by call-graph luck is not unreachable.
+ *
+ * So the snapshot excludes rows this process owns, by name, and is not
+ * refused wholesale while a pass is in flight. A blanket refusal would
+ * also stop the real crash leftovers that are sitting in the same store
+ * from ever being recorded, which trades a false positive for a false
+ * negative: rows the app genuinely abandoned would lose the Retry button
+ * and be dead ends again. The narrow question is the right one.
+ *
+ * It records EVERY other `processing` row, including the ones the reclaim
+ * is about to requeue — those become `pending` in the same pass and
+ * `isStranded` re-reads their status, so they never qualify.
+ */
+function noteStrandedRows(items: AIQueueItem[]): void {
+  if (startupStrandedNoted) return
+  startupStrandedNoted = true
+  for (const item of items) {
+    if (item.status === 'processing' && !ownedByThisProcess(item.id)) strandedRowIds.add(item.id)
+  }
+}
+
+/**
+ * Forget a row the processor has just taken: it is no longer a crash
+ * leftover, it is a live run this process owns. Called at the claim.
+ *
+ * The invariant this maintains is "an id in `strandedRowIds` names a row
+ * this process has never claimed", and the id is the one way that can go
+ * stale on its own. `clearAllData` (Reset all data) replaces the store:
+ * the queue is emptied and the shared `nextId` rewinds to 1, so an id the
+ * set is still holding — it is memory, and a data reset cannot reach into
+ * it — can be handed straight back out to an unrelated row. Claiming that
+ * row drops the id again.
+ *
+ * The panel no longer rests on this alone (`isStranded` also refuses any
+ * row this process owns), which is the point of having two: the flag that
+ * decides whether a Retry button appears on a running task is not resting
+ * on a bookkeeping detail elsewhere in the file.
+ */
+function clearStranded(id: number): void {
+  strandedRowIds.delete(id)
 }
 
 function pickOrder(items: AIQueueItem[]): AIQueueItem[] {
@@ -139,6 +295,28 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
     // outlive the run that was meant to consume it.
     if (!updateAIQueueItem(item.id, { status: 'processing', promotedAt: undefined })) return
 
+    // The row is ours from here, and every other function in this file
+    // now answers to that. `runningRowIds` is what the panel's Retry
+    // button and `retryQueueItem`'s guard read, and it is set on the same
+    // tick as the `processing` write above — adjacent synchronous lines,
+    // so no list can observe the gap between "claimed" and "recorded".
+    runningRowIds.add(item.id)
+
+    // ...and it stops being a crash leftover. A row the startup reclaim
+    // skipped is still in `strandedRowIds` until somebody claims it, and
+    // that somebody is the user: the row is revived by Retry (the panel's
+    // button) or by a manual Generate on the job, both of which put it
+    // back in line so the next pass can pick it up. Flipping an
+    // Auto-queue switch back on does NOT, and nothing in this file ever
+    // did that for a `processing` row — `runPass` only picks `pending` and
+    // revives `failed`, and `enqueue`'s duplicate path revived only
+    // `failed` until it learned about `stranded`. So the reason this line
+    // exists is the id, not the panel: `clearAllData` rewinds the shared
+    // `nextId` without touching this set, so a row created after a reset
+    // can be handed an id still in it, and dropping the id here is what
+    // keeps a fresh, live row from inheriting the brand.
+    clearStranded(item.id)
+
     // One queue item is one operation and holds the AI slot for its
     // whole duration, so it cannot interleave with a direct renderer
     // action (Recompute Fit / Tailor / Verify) part-way through. The
@@ -156,11 +334,63 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
         // inserting a new one: a new row would carry no
         // auto_regen_attempts, so the loop's budget would reset every
         // round and AUTO_REGEN_MAX could never be reached.
+        const startedAt = Date.now()
         const result = await tailorDocument({
           job_id: item.jobId,
           document_type: docType,
           document_id: item.documentId
         })
+        const ms = Date.now() - startedAt
+
+        // What `tailorJobDocsForJob` does after its own `tailorDocument`
+        // call, and what this case did not do while the fit-landing trigger
+        // was the only producer of the both-documents unit.
+        //
+        // SANITIZATION. `tailorDocument` stores the RAW provider output,
+        // because the ceilings and the rule checks can only run once the
+        // model has returned. `sanitizeDocument` is the one implementation of
+        // both, imported from the tailoring module rather than restated here,
+        // so the two lanes cannot drift. It performs no I/O; storing its
+        // output is this caller's job, and `setDocumentContent` is an UPDATE
+        // of the row `tailorDocument` already created — one generation, one
+        // row, one write, which is Finding 2's fix preserved. A `null` return
+        // means the user deleted the document in the gap and is left as-is:
+        // inserting a replacement would resurrect it behind their back.
+        const { sanitizeDocument } = await import('./tailorJobDocs')
+        const sanitized = sanitizeDocument(
+          result.content,
+          docType,
+          getJob(item.jobId)?.description ?? ''
+        )
+        setDocumentContent(result.document_id, sanitized.content)
+
+        // DOC-DERIVED STATUS. `recomputeJobStatusFromDocs` is the only thing
+        // that moves a job out of Sourced, and until now the per-unit cases
+        // never called it — so every fit-landing-triggered and
+        // sweep-triggered job was stranded in the Sourced column forever
+        // with both documents already generated. Same call, same rule, same
+        // place in the sequence as the `tailor_job_docs` case below: after
+        // the document is stored, before the queue row is retired. The rule
+        // itself is unchanged and still user-owned: documents drive
+        // sourced <-> reviewing only, and 'ready' is the user's decision.
+        recomputeJobStatusFromDocs(item.jobId)
+
+        // TIMING. `writeTailorTimingFields` is the user's only "documents
+        // built at" stamp. `ms_cv` / `ms_cl` are both written by the
+        // signature, so the unit this call did NOT just generate carries its
+        // existing measurement forward instead of having it overwritten with
+        // a fabricated 0 — otherwise the CV's timing was destroyed by the
+        // cover letter that landed a second later, which is exactly what
+        // happened when one lane measured both documents at once.
+        const job = getJob(item.jobId)
+        writeTailorTimingFields({
+          jobId: item.jobId,
+          ms_cv: docType === 'cv' ? ms : (job?.tailor_ms_cv ?? 0),
+          ms_cl: docType === 'cover_letter' ? ms : (job?.tailor_ms_cl ?? 0),
+          generatedAt: Date.now(),
+          lastError: null
+        })
+
         removeAIQueueItem(item.id)
         // P1.7 §2: chain the review, exactly as the `tailor_job_docs`
         // case does. Without this the cycle was verify -> regenerate ->
@@ -330,6 +560,34 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
       /* logging must never break the queue */
     }
 
+    // The per-unit generation lanes are the ones the fit-landing trigger and
+    // the document backlog sweep use, so their failures need the same
+    // user-visible surface the `tailor_job_docs` lane had. Without this the
+    // only record of a failed trigger generation was the queue row's
+    // `lastError`, which the user never sees — the job kept a null
+    // `tailor_last_error` and no "documents built at" stamp to contradict it.
+    //
+    // Guarded on the two generation types: a failing `verify` or `score_fit`
+    // is not a tailoring failure and must not overwrite `tailor_last_error`.
+    // `generatedAt: null` matches the tailor lane, which also treats a failed
+    // build as no build. The millisecond fields are carried forward for the
+    // same reason as on the success path: this attempt measured nothing that
+    // belongs in either slot.
+    try {
+      if (item.type === 'generate_cv' || item.type === 'generate_cover_letter') {
+        const job = getJob(item.jobId)
+        writeTailorTimingFields({
+          jobId: item.jobId,
+          ms_cv: job?.tailor_ms_cv ?? 0,
+          ms_cl: job?.tailor_ms_cl ?? 0,
+          generatedAt: null,
+          lastError: msg
+        })
+      }
+    } catch {
+      /* the error surface must never break the retry bookkeeping below */
+    }
+
     const attempts = item.attempts + 1
     if (isRateLimit && attempts < 10) {
       updateAIQueueItem(item.id, {
@@ -383,6 +641,15 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
         })
       }
     }
+  } finally {
+    // On every exit, including the early `return` for a row the user
+    // cleared out from under the pass and any throw that escaped the
+    // catch's own bookkeeping. Leaking an id here would make the row
+    // permanently un-retryable and permanently un-reclaimable — a
+    // `processItem` that has already stopped running is not a run in
+    // progress, so keeping the claim would be a lie of the same kind the
+    // stranded flag is careful not to tell.
+    runningRowIds.delete(item.id)
   }
 }
 
@@ -437,10 +704,31 @@ let clearEpoch = 0
  * unattended spend the switch says the user bought out of. Either way
  * the row is not lost: it is visible in the panel, and Retry resumes it
  * ungated.
+ *
+ * Not requeueing a row is what makes the panel's job non-trivial, and
+ * the note above is only true now that the panel can see one. The rows
+ * skipped here stay `processing` with nobody working on them, so this
+ * function first records them (`noteStrandedRows`) and `listQueueInPickOrder`
+ * reports them as `stranded`, which is what puts a Retry button on them.
+ * That is the whole escape hatch for a gated automatic row: the app
+ * refuses to spend on it, and the user can always ask.
+ *
+ * A row THIS process is running is not interrupted by anyone and is never
+ * touched here — not requeued and not recorded. The store cannot tell the
+ * two apart, so the only thing that can is `ownedByThisProcess`, and it
+ * is asked before the gate rather than after it: a gated live row must
+ * come out of this loop untouched, and an allowed live row must not be
+ * handed a second run while its first one is still being paid for.
  */
 export function reclaimInterruptedItems(): void {
-  for (const item of getAIQueue()) {
+  const rows = getAIQueue()
+  // First, and before anything is written, so the snapshot describes the
+  // store as this process found it rather than as this pass left it.
+  noteStrandedRows(rows)
+  for (const item of rows) {
     if (item.status !== 'processing') continue
+    // Ours, not abandoned. See above.
+    if (ownedByThisProcess(item.id)) continue
     if (!mayReviveUnattended(item)) continue
     updateAIQueueItem(item.id, {
       status: 'pending',
@@ -460,6 +748,26 @@ export function startQueueProcessor(intervalMs = 30000): void {
 }
 
 export function stopQueueProcessor(): void {
+  // The stranded set describes the rows THIS process found interrupted.
+  // Once the processor is stopped nothing is claiming anything, so the
+  // record is stale: dropped here, which also means the next
+  // `startQueueProcessor` takes a fresh snapshot through its own startup
+  // reclaim rather than inheriting this one's.
+  //
+  // Which makes this the one place that could brand a live row stranded:
+  // the pass that was mid-run is still running, and the fresh snapshot its
+  // reclaim takes would otherwise find that row `processing` and record
+  // it. `noteStrandedRows` excludes rows this process owns for exactly
+  // this reason, and the reclaim requeue loop skips them too, so a
+  // stop/start straddling a run is safe.
+  //
+  // `runningRowIds` is deliberately NOT cleared. Stopping the processor
+  // stops the polling; it does not un-send an LLM call, and that call is
+  // still this process's to finish. Forgetting the claim here would put
+  // the row back in play while its `processItem` is on the stack, which is
+  // the double-spend the claim exists to prevent.
+  strandedRowIds.clear()
+  startupStrandedNoted = false
   if (processorTimer) {
     clearInterval(processorTimer)
     processorTimer = null
@@ -607,8 +915,54 @@ function revivePatch(): Partial<AIQueueItem> {
  * already decide to do, they can only re-run what it decided and that
  * failed. Which is why it does not go through `enqueue` and so needs no
  * gate of its own.
+ *
+ * Status-agnostic on purpose, and it has to be. `revivePatch` sets the
+ * row to `pending` and due now whatever it was doing, so this works on a
+ * row left `processing` by a crash as well as on a `failed` one — which
+ * is the only way out of the state `reclaimInterruptedItems` deliberately
+ * parks a gated automatic row in. A function that answered `null` for
+ * `processing` would leave the panel's button a decoration.
+ *
+ * Status-agnostic is not the same as unowned, and the difference is the
+ * one guard here. A row this process is running has a `processItem` on the
+ * stack that is holding an AI slot and holding a provider call; it reaches
+ * `removeAIQueueItem(item.id)` when that call returns. Reviving it writes
+ * `pending` over a run that is still going, and the run then deletes the
+ * row the user was just looking at: the re-request is swallowed and the
+ * task disappears from the panel. So the write is refused for a row
+ * `ownedByThisProcess`, which is not a second gate on spend — nothing is
+ * spent here either way — but it stops the app destroying a task it is
+ * working on. The panel already declines to offer the button on such a row
+ * (`stranded` is false for it), so this is the backstop under the UI and
+ * under any caller that reaches `aiQueue:retry` with an id of its own
+ * choosing, which the handler does not filter.
+ *
+ * The refusal is logged rather than thrown: it means the renderer's view
+ * was stale (a row it read as stranded had already been claimed), and a
+ * queue call that throws is a queue call the panel has to survive. The
+ * returned list is the unchanged truth, and it is what the panel renders —
+ * so the row keeps saying `Processing…`, which is correct, because it is.
+ *
+ * It also does not clear the stranded record: the row is no longer
+ * stranded the moment it stops being `processing`, which is all
+ * `isStranded` looks at, and the processor forgets the id again when it
+ * claims the row.
  */
 export function retryQueueItem(id: number): QueueItemView[] {
+  if (ownedByThisProcess(id)) {
+    // Best-effort, like the failure log in `processItem`: a refusal that
+    // cannot be reported is a task the user cannot retry, which is the
+    // one outcome this whole feature exists to prevent.
+    try {
+      log.ai.warn(
+        `aiQueue:retry ignored for item ${id}: this process is running it. The row is not lost — ` +
+          'it completes (or fails) on its own, and Retry works on the row afterwards.'
+      )
+    } catch {
+      /* logging must never break the queue */
+    }
+    return listQueueInPickOrder()
+  }
   updateAIQueueItem(id, revivePatch())
   return listQueueInPickOrder()
 }
@@ -671,9 +1025,13 @@ export function clearQueue(): { removed: number; queue: QueueItemView[] } {
  *
  * On a hit the row is brought back to life rather than left alone:
  * a `failed` row is revived in place (`revivePatch` — the same write
- * the Retry button makes, so the two cannot drift), and a `manual`
- * enqueue additionally promotes it. Both are only reachable when the
- * work already has a row, so neither can invent one.
+ * the Retry button makes, so the two cannot drift), a `manual` enqueue
+ * additionally promotes it, and a `manual` enqueue also revives a
+ * STRANDED row — one the startup reclaim left `processing` with nobody
+ * on it — because the alternative was a Generate button that finds the
+ * work already queued and does nothing at all. Both are only reachable
+ * when the work already has a row, so neither can invent one, and
+ * neither touches a row this process is running right now.
  *
  * `manual: true` is the caller's claim that a person asked for this
  * (the direct Verify / Regenerate / Tailor / Quick Apply actions). It
@@ -915,7 +1273,31 @@ export function enqueue(
     // enqueue that lands on a healthy row changes nothing at all, which
     // is why the write is conditional on there being a patch.
     const patch: Partial<AIQueueItem> = {}
-    if (existing.status === 'failed') Object.assign(patch, revivePatch())
+    // `failed`, and `stranded` — the two states a row is in when nobody
+    // is going to move it. A stranded row reads `processing`, which is
+    // why the duplicate guard matches it at all, but the write it needed
+    // was missing: the user pressed Generate on the job, the guard found
+    // the row and reported "already queued", `promotedAt` was set, and the
+    // row stayed `processing` for ever. No run, no button that moves it,
+    // no toast — a button that silently does nothing, sitting next to the
+    // Retry that works.
+    //
+    // A manual re-add revives both, in place, on the row that is already
+    // there: one piece of work is one row, and reviving is what the Retry
+    // button does, so the two buttons cannot drift. An automatic enqueue
+    // still revives neither of these two states beyond the `failed` case
+    // it always handled — it has no business interpreting "queued" as
+    // "run this again" — which is why the stranded revival is keyed on
+    // `opts?.manual`.
+    //
+    // A row this process is RUNNING is `processing` and not stranded, so
+    // it falls through untouched: the guard is right to find it and wrong
+    // to revive it, because the run in flight is the request. Queueing it
+    // again would be the second copy of the same work the panel's
+    // no-Retry-on-a-live-row rule exists to prevent.
+    if (existing.status === 'failed' || (opts?.manual && isStranded(existing))) {
+      Object.assign(patch, revivePatch())
+    }
     if (opts?.manual) {
       patch.promotedAt = Date.now()
       // A manual re-add also makes the row MANUAL for the restart lanes.

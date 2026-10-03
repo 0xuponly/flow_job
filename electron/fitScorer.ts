@@ -19,7 +19,15 @@ import { log } from './logger'
 import * as db from './database'
 import { scoreJobFit } from './ai'
 import { enqueue } from './aiQueue'
-import { autoDocQueueEligible, jobDocWorkInFlight } from './docAutoQueue'
+import {
+  autoDocQueueEligible,
+  autoQueueFlags,
+  docTypeMissing,
+  docUnits,
+  jobDocWorkInFlight,
+  planDocUnit,
+  revivePatchForAutomatic
+} from './docAutoQueue'
 import type { Job } from './types'
 
 /**
@@ -42,23 +50,31 @@ import type { Job } from './types'
  * sweep had to either copy them (and drift) or ignore them (and queue
  * work that could not succeed). One predicate, two callers.
  *
- *   - A `tailor_job_docs` item for this job means generation is already
- *     scheduled, queued or not; enqueueing again would stack duplicate
- *     work. That is decided by `enqueue`'s own duplicate guard, which
- *     returns null instead of adding a second row — this function does
- *     not re-check it. (A `failed` row is included in that guard: it is
- *     revived in place rather than re-queued, so the answer here is
- *     still "not newly added.")
+ * WHAT IT QUEUES: the MISSING UNITS, one row each — `generate_cv` and/or
+ * `generate_cover_letter`, decided per document type. It used to queue a
+ * single `tailor_job_docs` row, which is the both-documents unit, and that
+ * is where this function used to disagree with the sweep. Asked "is this
+ * job's document work in flight?" it declined when a `verify` row was live
+ * for the CV (so it queued nothing at all, stranding the missing cover
+ * letter until the next sweep); asked with the sweep's rows on disk it saw
+ * no live cover-letter row and queued a `tailor_job_docs`, REGENERATING the
+ * CV the sweep had deliberately left alone. Two producers, two answers to
+ * one question, because only one of the two was per document type.
  *
- * The guard above only matches OTHER `tailor_job_docs` rows, and the
- * backlog sweep queues `generate_cv` and `generate_cover_letter`
- * instead — two rows for one job's two documents, where a
- * `tailor_job_docs` row is one row that produces both. So "is this
- * job's document work already covered" is a second question with a
- * second answer per direction, and it is now `jobDocWorkInFlight`
- * (same module), asked by both directions about the document types
- * they are about to produce. See that function for the deferral
- * semantics and for why the trigger asks about both types.
+ * So: same unit list as the sweep, same per-unit questions, same answers.
+ *   - the toggle that gates THIS unit (a CV-only trigger is now a real
+ *     answer, which `tailor_job_docs` could not express: it needs both
+ *     switches because it cannot honour one without doing the other);
+ *   - `docTypeMissing` — is this document still missing at all;
+ *   - `jobDocWorkInFlight` — will some producer's LIVE row produce a first
+ *     generation of it already;
+ *   - `planDocUnit` — is there a dead row to resurrect, and may it be?
+ *
+ * None of that is private to this function. It is why the two producers
+ * cannot drift, and it is why the trigger's cost is bounded: the last
+ * question is the sweep's own budget, `AUTO_REVIVE_MAX` revivals
+ * `AUTO_REVIVE_COOLDOWN_MS` apart, charged on the SAME per-row field the
+ * sweep and the processor charge.
  */
 export function maybeAutoEnqueueDocs(
   jobId: number,
@@ -73,64 +89,69 @@ export function maybeAutoEnqueueDocs(
   if (!job) return false
 
   const settings = db.getSettings()
-  // The user's Auto-queue switches come BEFORE the fit threshold, and
-  // the reason is the return value: a caller reads `false` here as
-  // "generation was not scheduled", which is true whether the job
-  // scored low or the user turned CV auto-queueing off. Checking the
-  // threshold first would make a switch-off indistinguishable from a
-  // below-threshold score in the only signal this function has.
-  //
-  // `tailor_job_docs` generates the CV and the cover letter in one
-  // pass, so it needs both switches on. enqueue() enforces the same
-  // rule for every other caller; this is the same check one step
-  // earlier, made here so the fit-landing trigger cannot report a
-  // queue row it was never allowed to create. Manual Tailor and Quick
-  // Apply do not come through here — they are user actions and are
-  // never gated.
-  //
-  // It stays here rather than moving into the shared predicate, and the
-  // asymmetry with the sweep is deliberate: the sweep gates each
-  // document unit by its OWN toggle (a CV-only sweep is legitimate when
-  // the user turned cover letters off), whereas `tailor_job_docs` is the
-  // both-documents unit and cannot honour one toggle without quietly
-  // doing the other.
-  if (settings.auto_queue_cv === false || settings.auto_queue_cover_letter === false) {
-    return false
-  }
+  const docs = db.listDocuments(jobId)
 
   // Real fit score, `auto_doc_min_fit`, and "not already shippable" all
   // live in `autoDocQueueEligible` (electron/docAutoQueue.ts), which the
   // document backlog sweep also calls — one predicate, two callers, so
-  // the sweep cannot drift from the trigger's preconditions.
-  if (!autoDocQueueEligible(job, settings, db.listDocuments(jobId))) return false
+  // the sweep cannot drift from the trigger's preconditions. This is the
+  // JOB-level gate; the per-document questions come next, per unit.
+  if (!autoDocQueueEligible(job, settings, docs)) return false
 
-  // ...and "is this job's document work already covered or in flight,
-  // by ANY producer?" lives in `jobDocWorkInFlight`, the same shared
-  // predicate the sweep consults for each unit it is about to queue.
-  // `tailor_job_docs` generates BOTH documents, so the trigger asks
-  // about both types: a live `generate_cv` row is producing a CV this
-  // job would otherwise get a second of, and a live
-  // `generate_cover_letter` row the same. This is the direction that
-  // used to be missing entirely, and it is what let one job reach three
-  // queue rows — and three CVs plus three cover letters — because
-  // `enqueue`'s guard below only matches other `tailor_job_docs` rows.
-  //
-  // Deferral semantics: see the doc comment on `jobDocWorkInFlight`.
-  if (jobDocWorkInFlight(db.getAIQueue(), jobId, ['cv', 'cover_letter'])) return false
+  const queue = db.getAIQueue()
+  const now = Date.now()
+  let enqueued = 0
 
-  // Duplicate suppression is `enqueue`'s job: its guard matches a row
-  // of the same work in ANY status on (type, jobId, documentId,
-  // sectionName) — a `failed` one is revived in place, a
-  // pending/processing one is left alone — and a `tailor_job_docs` item
-  // is only ever enqueued with a jobId (see main.ts, jobSearch.ts, and
-  // this function), so the guard's key is exactly this pre-check's
-  // predicate. It used to be re-implemented here — a second full scan
-  // of the queue on every fit-landing, before the one `enqueue` was
-  // about to do anyway. The old comment justified it by claiming
-  // "`enqueue` only dedupes against `pending`"; that stopped being true
-  // when the guard was widened to cover `processing`, and a second copy
-  // of a dedupe rule is a second thing to keep correct.
-  return enqueue({ type: 'tailor_job_docs', jobId }) !== null
+  // One pass per document unit, in the sweep's order, asking the sweep's
+  // questions. `docTypeMissing` is what makes this the "queue only what is
+  // missing" rule rather than the old "queue both or nothing": a job with
+  // a CV whose review is in flight and no cover letter queues exactly one
+  // row here, for the cover letter, and the CV is left alone.
+  for (const unit of docUnits(autoQueueFlags(settings))) {
+    // The user's toggle, applied to THIS unit, exactly as the sweep does.
+    // `enqueue` would enforce the same rule centrally for the `add` case;
+    // reading it here is what keeps the return value honest about what
+    // was queued, and what lets a CV-only or cover-letter-only trigger be
+    // a real answer.
+    if (!unit.enabled) continue
+    if (!docTypeMissing(docs, unit.docType)) continue
+
+    // ...and "is this unit already covered or in flight, by ANY producer?"
+    // — `jobDocWorkInFlight`, the same shared predicate the sweep
+    // consults for each unit it is about to queue. Asked per unit, like
+    // the sweep, so a live `generate_cv` row blocks the CV and leaves the
+    // cover letter free. That granularity is load-bearing: it is what
+    // keeps one job from reaching three queue rows — and three CVs plus
+    // three cover letters — because `enqueue`'s duplicate guard below
+    // cannot see across row types.
+    if (jobDocWorkInFlight(queue, jobId, [unit.docType])) continue
+
+    const plan = planDocUnit(jobId, docs, queue, now, unit)
+    if (plan === 'skip') continue
+
+    if (plan === 'add') {
+      // `enqueue` rather than `addAIQueueItem`: it is the dedupe-aware
+      // writer, so a row that appeared since the snapshot cannot be
+      // duplicated, and it is the same writer the sweep uses.
+      if (enqueue({ type: unit.queueType, jobId }) !== null) enqueued++
+      continue
+    }
+
+    // A dead row for this unit that may be resurrected. `planDocUnit` has
+    // already refused one whose revive budget is spent or whose cooldown
+    // has not elapsed, and the write charges the budget and parks the row
+    // on the cooldown — so a trigger that lands every few minutes cannot
+    // buy one generation per landing, which is exactly the unbounded
+    // lane this function used to be. Deliberately NOT `enqueue`, whose
+    // duplicate path revives a `failed` row with `revivePatch()`:
+    // `attempts: 0`, `nextRetryAt: now`, `autoRevives` untouched.
+    db.updateAIQueueItem(plan.revive.id, revivePatchForAutomatic(plan.revive, now))
+    enqueued++
+  }
+
+  // A caller reads this as "a generation item was enqueued", so it is the
+  // count, not "the gate said yes".
+  return enqueued > 0
 }
 
 /**

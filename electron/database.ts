@@ -1019,53 +1019,21 @@ export function markResponse(jobId: number, responseAt?: number): void {
 }
 
 // Tailor queue helpers (Task 3). Used by electron/tailorJobDocs.ts to land
-// both the CV and cover letter plus the per-job timing fields in a single
-// store read+write. The store is an in-memory JSON file mutated under
-// Node's single-threaded loop, so "atomic" here means: load once, mutate
-// in place, persist once. The existing `deleteJobs` (above) is the
-// canonical reference for this pattern.
-export function writeDocuments(input: {
-  jobId: number
-  cvContent: string | null
-  clContent: string | null
-}): { cvId: number; clId: number } {
-  const s = loadStore()
-  let cvId = 0
-  let clId = 0
-  if (input.cvContent != null) {
-    const doc: Document = {
-      id: s.nextId++,
-      job_id: input.jobId,
-      type: 'cv',
-      title: `Tailored CV — job ${input.jobId}`,
-      content: input.cvContent,
-      is_base: 0,
-      model_used: null,
-      created_at: now(),
-      updated_at: now()
-    }
-    s.documents.push(doc)
-    cvId = doc.id
-  }
-  if (input.clContent != null) {
-    const doc: Document = {
-      id: s.nextId++,
-      job_id: input.jobId,
-      type: 'cover_letter',
-      title: `Tailored cover letter — job ${input.jobId}`,
-      content: input.clContent,
-      is_base: 0,
-      model_used: null,
-      created_at: now(),
-      updated_at: now()
-    }
-    s.documents.push(doc)
-    clId = doc.id
-  }
-  if (cvId !== 0 || clId !== 0) persistStore()
-  return { cvId, clId }
-}
-
+// the per-job timing fields in a single store read+write. The store is an
+// in-memory JSON file mutated under Node's single-threaded loop, so
+// "atomic" here means: load once, mutate in place, persist once. The
+// existing `deleteJobs` (above) is the canonical reference for this
+// pattern.
+//
+// The DOCUMENTS themselves are not written here. `writeDocuments` used to
+// be, and it was the second half of a double write: `tailorDocument`
+// already creates each document row (ai.ts, `createDocument`), so calling
+// it left one tailoring call producing TWO `cv` rows and TWO
+// `cover_letter` rows — one of each orphaned, never reviewed, never
+// deleted, and never seen by the review chain. It is gone rather than left
+// beside `createDocument`, so the next author cannot reintroduce it;
+// `setDocumentContent` is the single supported way to store the sanitized
+// version of content whose row `tailorDocument` already created.
 export function writeTailorTimingFields(input: {
   jobId: number
   ms_cv: number
@@ -1190,6 +1158,35 @@ export function updateDocument(id: number, title: string, content: string): Docu
   const idx = s.documents.findIndex((d) => d.id === id)
   if (idx === -1) throw new Error('Document not found')
   s.documents[idx] = { ...s.documents[idx], title, content, updated_at: now() }
+  persistStore()
+  return s.documents[idx]
+}
+
+/**
+ * Replace ONLY the content of a document row that already exists.
+ *
+ * The counterpart to `createDocument` for the case where the row was
+ * already written by the call that produced the content. `tailorDocument`
+ * (ai.ts) creates the document row as the last step of a FIRST generation
+ * and returns its id, and `tailorJobDocsForJob` then needs to store the
+ * SANITIZED version of that same content (paragraph ceilings, rule
+ * checks). It used to call `writeDocuments`, which pushed a second row —
+ * so one tailoring call left two `cv` rows and two `cover_letter` rows for
+ * the job, one of each unreviewed and orphaned, and the review chain only
+ * ever saw one of them.
+ *
+ * Deliberately does NOT clear `verification_score` /
+ * `verification_feedback` the way `replaceDocumentContent` does: the row
+ * was created moments ago by the same call, so it cannot carry a review
+ * that described different content. Returns the updated row, or null when
+ * the document no longer exists (deleted by the user while the LLM call
+ * was in flight) — the caller must not fall back to inserting.
+ */
+export function setDocumentContent(id: number, content: string): Document | null {
+  const s = loadStore()
+  const idx = s.documents.findIndex((d) => d.id === id)
+  if (idx === -1) return null
+  s.documents[idx] = { ...s.documents[idx], content, updated_at: now() }
   persistStore()
   return s.documents[idx]
 }

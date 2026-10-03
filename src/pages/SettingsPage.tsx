@@ -224,26 +224,26 @@ export default function SettingsPage() {
     setSettings((prev) => (prev ? { ...prev, [key]: on } : prev))
     try {
       const updated = await api.updateSettings({ [key]: on })
-      // Merge ONLY the key that was tapped, exactly as the rollback path
-      // below restores the whole object it captured before the optimistic
-      // write. Taking the whole response would replace this shared state
-      // object with the STORE's copy and silently discard every unsaved
-      // batch edit the user has made on another tab (a raised
-      // scan_min_match, a typed profile name) — while that tab's dirty
-      // flag stays set, so pressing Save persists the old value and looks
-      // like it worked. The response stays authoritative for the one key
-      // it just wrote.
+      // Merge ONLY the key that was tapped, and roll back only that key
+      // on failure below — one rule, both directions. Taking the whole
+      // response would replace this shared state object with the STORE's
+      // copy and silently discard every unsaved batch edit the user has
+      // made on another tab (a raised scan_min_match, a typed profile
+      // name) — while that tab's dirty flag stays set, so pressing Save
+      // persists the old value and looks like it worked. The response
+      // stays authoritative for the one key it just wrote.
       setSettings((prev) => (prev ? { ...prev, [key]: updated[key] } : updated))
     } catch (err) {
       notify(`Failed to save auto-queue switch: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
       // Roll back ONLY the key this function wrote, for the same reason
       // the success path merges only that key: restoring the whole
-      // captured object would discard every unsaved batch edit the user
-      // has made on another tab.
-      if (previous) {
-        const priorValue = previous[key]
-        setSettings((prev) => (prev ? { ...prev, [key]: priorValue } : previous))
-      }
+      // snapshot captured above would discard every unsaved batch edit the
+      // user has made on another tab, and would also revert anything they
+      // typed while this write was in flight — only the five switches are
+      // disabled during it, every other tab's inputs stay live.
+      // `previous?.[key]` is read inside the updater rather than outside
+      // it, so the value cannot come from a stale closure.
+      setSettings((prev) => (prev ? { ...prev, [key]: previous?.[key] } : previous))
     } finally {
       setAutoQueueSaving(false)
     }

@@ -57,6 +57,36 @@ function jobLine(item: QueueItemView): string {
 }
 
 /**
+ * May the user press Retry on this row?
+ *
+ * A `failed` row always may — that has been the button's whole contract.
+ *
+ * A STRANDED row may too, and that is the case this file exists for. A
+ * crash leaves its row `processing` with nothing running; the app
+ * deliberately does not resume it when the relevant Auto-queue switch is
+ * off, because that spend is what the user turned off. That is the right
+ * call, but on its own it made the row a dead end: no run, no retry
+ * button, and no sign it would ever move again — the user had no way to
+ * re-ask for work they had already asked for once. Offering Retry here
+ * puts the decision back where it belongs: the app will not spend on its
+ * own, the user still can.
+ *
+ * A row that IS being worked on does not get one. `stranded` is the main
+ * process saying no run in this session owns the row, so a genuinely
+ * live `processing` row reads false here and renders as it always did.
+ * That is not cosmetic: the main process's in-flight run removes its own
+ * row when it finishes, so a Retry that landed on a live row would have
+ * the run delete the row the user just asked to re-run — the re-request
+ * swallowed and the task gone from the panel. `retryQueueItem` refuses
+ * such a row for the same reason; this is what keeps the button off it in
+ * the first place, and the panel is the one place that can be working
+ * from a stale picture of which rows are live (it polls every 10s).
+ */
+function canRetry(item: QueueItemView): boolean {
+  return item.status === 'failed' || item.stranded === true
+}
+
+/**
  * One row, memoized on its own props.
  *
  * The status text is computed here rather than in the parent so the
@@ -105,7 +135,7 @@ const QueueRow = memo(function QueueRow({
           )}
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
-          {item.status === 'failed' && (
+          {canRetry(item) && (
             <button
               type="button"
               className="btn btn-primary btn-sm"

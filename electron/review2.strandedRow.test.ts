@@ -129,11 +129,14 @@ function addJob(): number {
 function retryButtonCondition(): string {
   const src = readFileSync('src/notifications/QueuePanel.tsx', 'utf8')
   const i = src.indexOf('onClick={() => onRetry(item)}')
-  // Walk back to the nearest `{` that opens the guarding JSX condition,
-  // i.e. the `{item.status === 'failed' && (` immediately above.
   const before = src.slice(Math.max(0, i - 600), i)
-  const at = before.lastIndexOf('{item.')
-  return at === -1 ? before.slice(-200) : before.slice(at)
+  // The guard is `{canRetry(item) && (` — the predicate was extracted into a
+  // named function when the `stranded` arm was added, so the real condition
+  // lives in that function's body, not inline above the button. Return the
+  // call site AND the predicate body together, so neither can change alone.
+  const call = before.slice(before.lastIndexOf('{canRetry'))
+  const m = src.match(/function canRetry\(item: QueueItemView\): boolean \{[\s\S]*?\n\}/)
+  return `${call}\n${m ? m[0] : '/* canRetry not found */'}`
 }
 
 beforeEach(() => {
@@ -172,7 +175,12 @@ describe('a row the crash gate strands is a DEAD END in the UI', () => {
 
   it('HALF 2 — the Queue panel shows no Retry for a `processing` row', () => {
     // The condition under which QueuePanel renders the Retry button.
-    expect(retryButtonCondition(), 'HALF 2').toMatch(/status\s*===\s*'failed'/)
+    // The gate now reads `status === 'failed' || item.stranded === true`.
+    // The `failed` arm is the button's original contract and must survive;
+    // the `stranded` arm is the fix for the dead end this test proved.
+    expect(retryButtonCondition(), 'HALF 2').toMatch(
+      /status\s*===\s*'failed'\s*\|\|\s*item\.stranded\s*===\s*true/
+    )
   })
 
   it('...so the stranded row reads "Processing…" with no way to ask for it again', () => {

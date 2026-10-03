@@ -361,23 +361,42 @@ describe('deferral to the sweep\'s rows completes the job', () => {
 // ---------------------------------------------------------------------------
 
 describe('the trigger running first still stops the sweep', () => {
-  it('a live tailor_job_docs row makes the sweep queue nothing', () => {
+  it('the trigger queues the MISSING UNITS, so the sweep then queues nothing', () => {
     const job = eligibleJob()
     expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
-    expect(typesFor(job.id)).toEqual(['tailor_job_docs'])
+    // Two rows, one per document — the same shape the sweep produces. It
+    // used to be a single `tailor_job_docs` row, the both-documents unit,
+    // which cannot honour one toggle without doing the other and which
+    // REGENERATED a CV the sweep had deliberately left alone.
+    expect(typesFor(job.id)).toEqual(['generate_cover_letter', 'generate_cv'])
 
     expect(runDocsAutoQueueBacklog()).toBe(0)
     expect(enqueueDocsBacklog()).toBe(0)
-    expect(rowsFor(job.id)).toHaveLength(1)
+    expect(rowsFor(job.id)).toHaveLength(2)
   })
 
-  it('a PROCESSING tailor row still stops the sweep, not just a pending one', () => {
+  it('a live tailor_job_docs row still covers BOTH units, in both directions', () => {
+    // The one shape that still produces a both-documents row: Quick Apply,
+    // which queues it with `manual: true`. The predicate maps it to both
+    // documents, so the trigger declines the job entirely and the sweep
+    // queues nothing.
     const job = eligibleJob()
-    maybeAutoEnqueueDocs(job.id)
+    addAIQueueItem({ type: 'tailor_job_docs', jobId: job.id })
+
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(false)
+    expect(runDocsAutoQueueBacklog()).toBe(0)
+    expect(enqueueDocsBacklog()).toBe(0)
+    expect(typesFor(job.id)).toEqual(['tailor_job_docs'])
+  })
+
+  it('a PROCESSING row still stops the other producer, not just a pending one', () => {
+    const job = eligibleJob()
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
     updateAIQueueItem(rowsFor(job.id)[0].id, { status: 'processing' })
 
     expect(runDocsAutoQueueBacklog()).toBe(0)
-    expect(rowsFor(job.id)).toHaveLength(1)
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(false)
+    expect(rowsFor(job.id)).toHaveLength(2)
   })
 
   it('trigger then sweep, end to end: still one CV and one cover letter', async () => {
@@ -388,16 +407,16 @@ describe('the trigger running first still stops the sweep', () => {
     expect(runDocsAutoQueueBacklog()).toBe(0)
     await drainQueue()
 
-    // NOTE: this direction is the pre-existing behaviour and it produces
-    // FOUR document rows for the job — `tailorJobDocsForJob` writes each
-    // document twice, once inside `tailorDocument` (which calls
-    // createDocument) and again through `writeDocuments`. That double
-    // write is a separate defect in a module this change does not own
-    // (electron/tailorJobDocs.ts / electron/ai.ts) and it is unchanged by
-    // this fix; it is pinned here so the number in the report is measured
-    // rather than assumed, and so a future fix to that path has to update
-    // this assertion on purpose.
+    // ONE document row per generated document, from ONE tailoring call
+    // each. `tailor_job_docs` used to write each document TWICE — once
+    // inside `tailorDocument` (which calls `createDocument`) and again
+    // through `writeDocuments` — so this direction produced two of
+    // everything. Asserted here as well as in the dedicated
+    // `moneyleaks.doubleWrite.store.test.ts`, because this is the path a
+    // reader of the cross-producer contract will come to.
     expect(rowsFor(job.id)).toHaveLength(0)
+    expect(docsOfType(job.id, 'cv')).toHaveLength(1)
+    expect(docsOfType(job.id, 'cover_letter')).toHaveLength(1)
     expect(calls.cvTailorings).toBe(1)
     expect(calls.clTailorings).toBe(1)
   })
@@ -410,20 +429,17 @@ describe('the trigger running first still stops the sweep', () => {
 // ---------------------------------------------------------------------------
 
 describe('partial coverage leaves the other document to the sweep', () => {
-  it('a live generate_cv row stops the trigger, and the sweep still queues the cover letter', () => {
+  it('a live generate_cv row stops the trigger on the CV, and the cover letter still gets queued', () => {
     const job = eligibleJob()
     addAIQueueItem({ type: 'generate_cv', jobId: job.id })
 
-    // The trigger produces BOTH documents, so a live CV row means it
-    // would duplicate the CV.
-    expect(maybeAutoEnqueueDocs(job.id)).toBe(false)
-
-    // ...but the cover letter is nobody's work yet. The sweep is what
-    // brings it back, and it has to: a blanket skip on "this job is
-    // covered" here would leave the job with a CV and no cover letter and
-    // nothing queued to produce one.
-    expect(runDocsAutoQueueBacklog()).toBe(1)
+    // Per unit. A blanket "is this job covered?" here would leave the job
+    // with a CV and no cover letter and nothing queued to produce one.
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
     expect(typesFor(job.id)).toEqual(['generate_cover_letter', 'generate_cv'])
+
+    // ...and now the sweep has nothing left to add either.
+    expect(runDocsAutoQueueBacklog()).toBe(0)
     expect(docsOfType(job.id, 'cover_letter')).toHaveLength(0)
   })
 
@@ -431,32 +447,32 @@ describe('partial coverage leaves the other document to the sweep', () => {
     const job = eligibleJob()
     addAIQueueItem({ type: 'generate_cover_letter', jobId: job.id })
 
-    expect(maybeAutoEnqueueDocs(job.id)).toBe(false)
-
-    expect(runDocsAutoQueueBacklog()).toBe(1)
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
     expect(typesFor(job.id)).toEqual(['generate_cover_letter', 'generate_cv'])
+
+    expect(runDocsAutoQueueBacklog()).toBe(0)
   })
 
-  it('a live generate_cv row that is PROCESSING stops the trigger too', () => {
+  it('a live generate_cv row that is PROCESSING stops the trigger on that unit too', () => {
     const job = eligibleJob()
     const row = addAIQueueItem({ type: 'generate_cv', jobId: job.id })
     updateAIQueueItem(row.id, { status: 'processing' })
 
-    expect(maybeAutoEnqueueDocs(job.id)).toBe(false)
-    expect(rowsFor(job.id)).toHaveLength(1)
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
+    expect(typesFor(job.id)).toEqual(['generate_cover_letter', 'generate_cv'])
   })
 
-  it('a FAILED row is not in flight: the trigger queues and the sweep revives', () => {
+  it('a FAILED row is not in flight, and BOTH producers revive it rather than stack a second row', () => {
     const job = eligibleJob()
     const row = addAIQueueItem({ type: 'generate_cv', jobId: job.id })
     updateAIQueueItem(row.id, { status: 'failed', attempts: 9, nextRetryAt: 0 })
 
-    // Deferring to a failed row would defer to work that will never
-    // happen: the sweep's revive branch is what brings a spent row back,
-    // and `tailor_job_docs` produces both documents, so the trigger has
-    // work the failed CV row cannot do.
+    // The trigger revives it (charged to the budget) and queues the
+    // cover letter; the sweep then finds both units covered.
     expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
-    expect(typesFor(job.id)).toEqual(['generate_cv', 'tailor_job_docs'])
+    expect(typesFor(job.id)).toEqual(['generate_cover_letter', 'generate_cv'])
+    expect(getAIQueue().find((q) => q.id === row.id)?.autoRevives).toBe(1)
+    expect(runDocsAutoQueueBacklog()).toBe(0)
   })
 
   it('a regeneration row carrying a documentId does not block a first generation', () => {
@@ -496,18 +512,16 @@ describe('partial coverage leaves the other document to the sweep', () => {
 // THE auto_queue_cover_letter EDGE CASE
 // ---------------------------------------------------------------------------
 
-describe('the toggles: the trigger needs BOTH, and deferral cannot override them', () => {
+describe('the toggles: each unit is gated by its OWN switch, in both producers', () => {
   it('a live generate_cv row with cover-letter auto-queueing OFF leaves nothing owed', () => {
     updateSettings({ auto_queue_cv: true, auto_queue_cover_letter: false })
     const job = eligibleJob()
     addAIQueueItem({ type: 'generate_cv', jobId: job.id })
 
-    // `tailor_job_docs` produces both documents, so it needs both
-    // switches; with the cover letter off the trigger was never allowed to
-    // produce this job's documents at all. Declining is not a deferral
-    // here, so it cannot leave the job holding a CV and no cover letter
-    // that something was supposed to finish: the cover letter is off, and
-    // the CV has its own live row.
+    // Per unit, and the same answer from both producers: the CV has its
+    // own live row and the cover letter is switched off. Declining is not
+    // a deferral here, so it cannot leave the job holding a CV and no
+    // cover letter that something was supposed to finish.
     expect(maybeAutoEnqueueDocs(job.id)).toBe(false)
     expect(typesFor(job.id)).toEqual(['generate_cv'])
 
@@ -515,6 +529,21 @@ describe('the toggles: the trigger needs BOTH, and deferral cannot override them
     // the cover letter either.
     expect(runDocsAutoQueueBacklog()).toBe(0)
     expect(rowsFor(job.id)).toHaveLength(1)
+  })
+
+  it('CV-only trigger: cover letters OFF and no live rows means a CV-only queue', () => {
+    // The case `tailor_job_docs` could not express: that unit needs both
+    // switches, so it refused the whole job here. Per-unit queueing makes
+    // this a legitimate answer, and it is the SAME answer the sweep gives.
+    updateSettings({ auto_queue_cv: true, auto_queue_cover_letter: false })
+    const job = eligibleJob()
+
+    expect(maybeAutoEnqueueDocs(job.id)).toBe(true)
+    expect(typesFor(job.id)).toEqual(['generate_cv'])
+
+    const other = eligibleJob()
+    expect(runDocsAutoQueueBacklog()).toBe(1)
+    expect(typesFor(other.id)).toEqual(['generate_cv'])
   })
 
   it('cover letters OFF and a live tailor row: the sweep still queues nothing', () => {
@@ -530,17 +559,22 @@ describe('the toggles: the trigger needs BOTH, and deferral cannot override them
     expect(typesFor(job.id)).toEqual(['tailor_job_docs'])
   })
 
-  it('CV auto-queueing OFF, cover letters ON: a CV-only job is left alone entirely', () => {
-    // The mirror image. The sweep's per-unit gating is the reason the
-    // trigger's switch check cannot simply move into the shared
-    // predicate: here a cover-letter-only sweep is legitimate.
+  it('CV auto-queueing OFF, cover letters ON: both producers say the same thing', () => {
+    // The mirror image, and the case that decided the trigger's switch
+    // check could not live inside the shared eligibility predicate: here a
+    // cover-letter-only queue is legitimate work for either producer.
     updateSettings({ auto_queue_cv: false, auto_queue_cover_letter: true })
     const job = eligibleJob()
 
     expect(runDocsAutoQueueBacklog()).toBe(1)
     expect(typesFor(job.id)).toEqual(['generate_cover_letter'])
+    // The sweep's live row already covers it, so the trigger defers.
     expect(maybeAutoEnqueueDocs(job.id)).toBe(false)
     expect(rowsFor(job.id)).toHaveLength(1)
+
+    const other = eligibleJob()
+    expect(maybeAutoEnqueueDocs(other.id)).toBe(true)
+    expect(typesFor(other.id)).toEqual(['generate_cover_letter'])
   })
 })
 
@@ -558,14 +592,14 @@ describe('the toggles: the trigger needs BOTH, and deferral cannot override them
 
 describe('both directions CALL the shared coverage predicate', () => {
   // The whole `if (...)` statement is matched, not the function name: an
-  // import line cannot produce `if (`, and pinning the arguments means the
-  // assertion also says the trigger asks about BOTH document types (which
-  // is what `tailor_job_docs` produces) while the sweep asks about one
-  // (which is what a unit produces).
-  const TRIGGER_GATE =
-    /if \(jobDocWorkInFlight\(db\.getAIQueue\(\), jobId, \['cv', 'cover_letter'\]\)\) return false/
+  // import line cannot produce `if (`, and pinning the arguments says the
+  // trigger asks about ONE document type — the unit it is about to queue —
+  // exactly as the sweep does. Asking about both types is what let the two
+  // producers disagree about a job whose CV was mid-review.
+  const TRIGGER_GATE = /if \(jobDocWorkInFlight\(queue, jobId, \[unit\.docType\]\)\) continue/
+  const SWEEP_GATE = /if \(jobDocWorkInFlight\(queue, job\.id, \[unit\.docType\]\)\) continue/
 
-  it('the fit-landing trigger gates on it', async () => {
+  it('the fit-landing trigger gates on it, per unit', async () => {
     const src = await readFile('electron/fitScorer.ts', 'utf8')
     const body = bodyOf(
       src,
@@ -573,15 +607,28 @@ describe('both directions CALL the shared coverage predicate', () => {
       '/**\n * Send a \'job:scoreUpdated\''
     )
     expect(body).toMatch(TRIGGER_GATE)
+    // Exactly one call: two calls in one function is how a second
+    // implementation starts.
+    expect(body.split('if (jobDocWorkInFlight(queue, jobId, [unit.docType])) continue').length - 1).toBe(1)
   })
 
   it('BOTH sweep paths gate on it, per unit', async () => {
     const src = await readFile('electron/docsAutoQueue.ts', 'utf8')
     // The call, not the import: matched as a whole statement.
-    expect(src).toMatch(/if \(jobDocWorkInFlight\(queue, job\.id, \[unit\.docType\]\)\) continue/)
+    expect(src).toMatch(SWEEP_GATE)
     // Two of them — one per exported path. Counting rather than
     // `toContain`-ing is what makes editing one of them fail.
     expect(src.split('if (jobDocWorkInFlight(queue, job.id, [unit.docType])) continue').length - 1).toBe(2)
+  })
+
+  it('the trigger no longer produces the both-documents row at all', async () => {
+    // The management decision, pinned structurally so it cannot creep back:
+    // an automatic producer that queues `tailor_job_docs` cannot honour one
+    // generation toggle without doing the other, and it regenerates a
+    // document the other producer deliberately left alone.
+    const code = codeOnly(await readFile('electron/fitScorer.ts', 'utf8'))
+    expect(code).not.toContain('tailor_job_docs')
+    expect(code).toMatch(/enqueue\(\{ type: unit\.queueType, jobId \}\)/)
   })
 
   it('neither module keeps a private copy of "is this job covered"', async () => {

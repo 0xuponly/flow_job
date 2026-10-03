@@ -315,8 +315,15 @@ describe('no AUTOMATIC producer can flag a row manual', () => {
     const jobId = addJob()
     const doc = createDocument('cv', 'CV', 'CONTENT', jobId)
     // The generation has to SUCCEED for the chain at aiQueue.ts:177 to
-    // fire; with the provider down the catch runs instead.
-    vi.mocked(ai.tailorDocument).mockResolvedValueOnce({ document_id: doc.id } as never)
+    // fire; with the provider down the catch runs instead. `content` is
+    // part of the `TailorResult` contract and is not optional: the case
+    // hands it to the sanitizer that stores the culled text, so a mock
+    // that omits it (as this one did, behind an `as never`) threw inside
+    // the case and the chain below it never ran.
+    vi.mocked(ai.tailorDocument).mockResolvedValueOnce({
+      content: 'CONTENT',
+      document_id: doc.id
+    } as never)
     enqueue({ type: 'generate_cv', jobId }, { manual: true })
     await processQueue()
     const rows = getAIQueue()
