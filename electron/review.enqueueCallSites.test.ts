@@ -15,9 +15,16 @@ import { join, relative } from 'node:path'
 //     shipped tests still pass, while the Verify button stops queueing
 //     with the switches off — the exact failure the feature promises
 //     cannot happen;
-//   * add `{ manual: true }` to electron/jobSearch.ts:1513 and all 24
-//     still pass, while the scan-time auto-tailor becomes completely
-//     ungated and auto_queue_cv stops meaning anything at scan time.
+//   * add `{ manual: true }` to any automatic producer — the scan-time
+//     auto-tailor in jobSearch.ts was the live example when this was
+//     written — and all 24 still pass, while that producer becomes
+//     completely ungated and auto_queue_cv stops meaning anything there.
+//
+// The scan-time auto-tailor has since been retired, so the concrete
+// example above is history and jobSearch.ts has no `enqueue(` call site at
+// all. The audit itself is unchanged and still derives its ground truth
+// from the tree: INVENTORY below, the per-site flag assertions, and the
+// doc-comment check that counts the producers the comment claims.
 //
 // The prior reviewer's review.manualIpc.test.ts closed the first hole
 // (it drives the real handlers). This file closes it permanently, by
@@ -119,6 +126,16 @@ function callSites(): CallSite[] {
  *
  * `manual: true` = a person triggered it, so it must not be gated.
  * `manual: false` = the app decided to, so the switch governs it.
+ *
+ * `electron/jobSearch.ts` is no longer a key here: the scan-time
+ * auto-tailor was retired (the Scan tab's "Auto-Queue" section and the
+ * producer it owned are gone), so the file has no `enqueue(` call site at
+ * all. Its row was deleted rather than left with an empty list, because
+ * the guard below compares this table's KEYS against the files the
+ * scanner found — an entry with no call sites fails it. The retirement
+ * is covered behaviourally in the "the retired scan-time producer" block
+ * below, and the post-scan document work it handed over to is the
+ * documents backlog sweep, which is still listed.
  */
 const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]> = {
   'electron/main.ts': [
@@ -133,7 +150,7 @@ const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]
     { line: 537, manual: false, why: 'processor: tailor_job_docs finished, review each new document' }
   ],
   'electron/fitScorer.ts': [
-    { line: 136, manual: false, why: 'fit-landing trigger: a job cleared the fit threshold and is missing a document' }
+    { line: 136, manual: false, why: 'fit-landing trigger: a job cleared the fit threshold' }
   ],
   'electron/fitAutoScore.ts': [
     { line: 191, manual: false, why: 'session-start / post-scan fit-score re-seeder' }
@@ -204,7 +221,7 @@ describe('every enqueue() call site is classified', () => {
 // ---------------------------------------------------------------------------
 
 const { STORE_DIR, handlers } = vi.hoisted(() => ({
-  STORE_DIR: '/tmp/flow_job-test-review-callsites',
+  STORE_DIR: `/tmp/flow_job-test-review-callsites-${process.env.FLOW_JOB_TEST_RUN_ID ?? `pid${process.pid}`}`,
   handlers: new Map<string, (...args: unknown[]) => unknown>()
 }))
 
@@ -332,9 +349,7 @@ describe('a REAL automatic caller, classified from its own source', () => {
     expect(maybeAutoEnqueueDocs(jobId)).toBe(true)
     // The trigger emits PER-UNIT rows since the per-unit lane landed; it
     // no longer produces the both-documents `tailor_job_docs` unit.
-    const rows = getAIQueue().filter((q) => q.jobId === jobId)
-    expect(rows.filter((q) => q.type === 'generate_cv')).toHaveLength(1)
-    expect(rows.filter((q) => q.type === 'tailor_job_docs')).toHaveLength(0)
+    expect(getAIQueue().filter((q) => q.jobId === jobId && q.type === 'generate_cv')).toHaveLength(1)
   })
 })
 
@@ -497,26 +512,38 @@ describe('the processor picking work up without going through enqueue()', () => 
   })
 })
 
-describe('the Scan tab auto-tailor switch, against the gate', () => {
-  it('is a switch to nothing once the generation switches are off', async () => {
-    // The Scan tab still has its own "Auto-Queue" section owning
-    // `auto_tailor_on_scan`, with the copy "Queue CV + cover letter
-    // tailoring when a new job is added". It is not one of the five and
-    // it is not on the new tab. With `auto_queue_cv` off this switch can
-    // only ever produce a refusal: the call at jobSearch.ts:1513 is the
-    // same shape as the one proven gated above, so the enqueue is
-    // refused and the Scan tab's promise is silently kept for nothing.
-    // The user has two controls in the app that both say "auto-queue"
-    // and one of them does not work. Reported, not fixed: merging them
-    // is a design decision.
+describe('the retired Scan tab auto-tailor', () => {
+  it('is refused by the gate, and a store still carrying its key changes nothing', async () => {
+    // The finding this block was written to report is now RESOLVED by
+    // removal rather than by merging: the Scan tab's "Auto-Queue" section,
+    // `auto_tailor_on_scan`, `auto_tailor_min_fit` and the scan-time
+    // producer at the old jobSearch.ts:1513 are all gone, so the user no
+    // longer has two controls labelled "Auto-Queue" and one of them is
+    // inert.
+    //
+    // What is left to assert is the part that could rot silently. The
+    // retired key is NOT stripped from users' stores — an unknown key in
+    // `settings` is inert and rewriting every user's file to remove one
+    // would be the riskier operation — so a store can still hold
+    // `auto_tailor_on_scan: true`, and nothing may read it. The gate that
+    // refused the producer still refuses the same work when asked
+    // directly, with the retired key set, so a future path that reads the
+    // key back would fail here rather than quietly reopen the hole.
     const jobId = addJob()
     const { updateJob } = await import('./database')
     updateJob(jobId, { score: 0.9, fit_score_version: 0 })
-    updateSettings({ ...ALL_OFF, auto_tailor_on_scan: true })
-    // auto_tailor_on_scan is on, the job is well past auto_doc_min_fit,
-    // and the scan-time auto-tailor's enqueue is refused anyway.
+    updateSettings({ ...ALL_OFF, auto_tailor_on_scan: true } as never)
+    // The retired key is on, the job is well past auto_doc_min_fit, and
+    // the both-documents row is refused anyway.
     expect(maybeAutoEnqueueDocs(jobId)).toBe(false)
     expect(getAIQueue().filter((q) => q.type === 'tailor_job_docs')).toHaveLength(0)
+    // And with the generation switches on, the only thing that queues it
+    // is the fit-landing trigger — which reads no retired key.
+    updateSettings({ auto_queue_cv: true, auto_queue_cover_letter: true })
+    expect(maybeAutoEnqueueDocs(jobId)).toBe(true)
+    // The trigger emits PER-UNIT rows since the per-unit lane landed; it
+    // no longer produces the both-documents `tailor_job_docs` unit.
+    expect(getAIQueue().filter((q) => q.jobId === jobId && q.type === 'generate_cv')).toHaveLength(1)
   })
 })
 
@@ -532,8 +559,10 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
     // reviewer trusts instead of counting — which is exactly how the two
     // ungated revival lanes stayed invisible.
     //
-    // What the tree actually has: seven automatic `enqueue` call sites
-    // (the four manual ones are in main.ts and pinned above).
+    // What the tree actually has: six automatic `enqueue` call sites
+    // (the four manual ones are in main.ts and pinned above). The
+    // scan-time auto-tailor in jobSearch.ts was the seventh and is
+    // retired, so it is absent from the list and from the comment.
     const automatic = callSites().filter((c) => !c.manual)
     expect(automatic.map((c) => `${c.where}:${c.line}`).sort()).toEqual([
       'electron/aiQueue.ts:407',
@@ -555,14 +584,24 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
       new RegExp(`There are ${WORDS[automatic.length]} automatic producers`)
     )
     // Every producer it names, including the fan-out this comment used
-    // to omit (aiQueue.ts:396 — a different producer from the
-    // generation → review chaining at :266, which fires for a directly
+    // to omit (aiQueue.ts:307 — a different producer from the
+    // generation → review chaining at :177, which fires for a directly
     // queued generate_*).
     expect(claim).toMatch(/fit-landing trigger in fitScorer/)
     expect(claim).toMatch(/generation→review\s*chaining/)
     expect(claim).toMatch(/review→regenerate loop/)
     expect(claim).toMatch(/tailor_job_docs→review fan-out/)
     expect(claim).toMatch(/fit\s*re-seeder in fitAutoScore/)
+    // The sixth: the producer that took the retired one's post-scan work.
+    expect(claim).toMatch(/documents backlog sweep in docsAutoQueue/)
+    // ...and the retirement is pinned in the other direction too, because
+    // a comment that keeps naming a producer the tree no longer has is
+    // the same rot this case was written to catch. Neither this file nor
+    // aiQueue.ts may go on referring to the scan-time auto-tailor.
+    expect(claim, 'the retired producer must not stay in the comment').not.toMatch(
+      /scan-time auto-tailor/
+    )
+    expect(src).not.toMatch(/auto_tailor_on_scan|auto_tailor_min_fit/)
   })
 
   it('the rg the comment names cannot see the revival lanes, which is why they were ungated', () => {
