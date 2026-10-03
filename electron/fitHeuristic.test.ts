@@ -1448,6 +1448,7 @@ describe('performance guard', () => {
               const measured = finished ? ` (${finished} in the repeats that finished)` : ''
               throw new Error(
                 `the 1000-listing measurement reached an interference factor of ${factorSoFar.toFixed(0)}` +
+                  ` against a reference of ${referenceSoFar.toFixed(1)}ms` +
                   ` (tripwire ${SCAN_MEASUREMENT_CPU_TRIPWIRE}, budget ${SCAN_INTERFERENCE_FACTOR_BUDGET})` +
                   ` after ${repeat} completed repeats and ${listingsScored + i} listings, using` +
                   ` ${scanCpu.toFixed(0)}ms of CPU over ${(performance.now() - wallStart).toFixed(0)}ms of wall clock` +
