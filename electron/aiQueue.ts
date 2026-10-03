@@ -1,7 +1,7 @@
 import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, clearAIQueue, getDocument, getJob, getSettings, listJobDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts, setDocumentContent, writeTailorTimingFields, recomputeJobStatusFromDocs } from './database'
 import { log } from './logger'
 import { withAiOperation } from './ai'
-import { tailorDocument, regenerateSection, verifyDocumentContent, RateLimitError, type AiCallOptions } from './ai'
+import { tailorDocument, regenerateSection, verifyDocumentContent, nextProviderCapFreeAt, ProviderCapError, RateLimitError, type AiCallOptions } from './ai'
 import type { AIQueueItem, Job, QueueItemView } from './types'
 import { AUTO_REGEN_MAX, AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX, PASSING_REVIEW_SCORE } from './types'
 
@@ -10,6 +10,59 @@ function backoffMs(item: AIQueueItem): number {
   const base = 30000
   const max = 1800000
   return Math.min(base * Math.pow(2, item.attempts), max)
+}
+
+/**
+ * Park a row whose provider is out of call budget, without spending
+ * anything on it.
+ *
+ * A `ProviderCapError` is not a failure, it is a full stop sign: the app
+ * decided this work on its own, the credential it was going to pay for has
+ * no allowance left in this rolling 24h window, and the window frees on a
+ * schedule `nextProviderCapFreeAt` already knows. So the row is put back at
+ * the front of the queue — `pending`, with the provider's own message on it —
+ * and is neither counted as an attempt nor charged a revival.
+ *
+ * WHY THE OLD LADDER WAS WRONG FOR IT. A rate limit clears in a minute, so
+ * ten attempts over ~2h33m of backoff and three revivals four hours apart is
+ * the right budget for one. A cap clears in up to 24h, and the same ladder
+ * spent all of it and then declared the row terminally `failed` at 22.07h
+ * into the window — with the provider still capped and ~1.9h of budget left
+ * to free. Work the app had decided to do on its own was destroyed by a
+ * condition that resolves on its own, and the four automated lanes all did
+ * it. More retries would not have been the fix either: the finding is that
+ * this is a DIFFERENT KIND of limit, so it gets its own treatment rather
+ * than a bigger allowance from the wrong one.
+ *
+ * WHY IT RE-CHECKS SO OFTEN. `nextRetryAt` is the earlier of the ordinary
+ * backoff and the moment the earliest capped provider frees, so the row never
+ * sleeps past the budget and never idles for longer than one retry tick. That
+ * costs a claim and a re-park every tick, which is exactly what a row in an
+ * ordinary rate-limit backoff already costs, and it buys the thing the user
+ * actually notices: adding a key, switching provider, or raising the cap
+ * moves the queue within one tick instead of up to a day later. Nothing here
+ * re-checks the cap on its own — the row simply asks again.
+ *
+ * `attempts` and `autoRevives` are deliberately left untouched, which is what
+ * makes this free: the row can be refused a hundred times and still have its
+ * whole budget when the provider finally answers.
+ */
+function parkOnProviderCap(item: AIQueueItem, msg: string): void {
+  const freeAt = nextProviderCapFreeAt()
+  const wake = Date.now() + backoffMs(item)
+  // `freeAt` is null only if no provider is capped any more, which is the
+  // moment this row should be running rather than waiting — so the backoff
+  // stands alone. The floor keeps a freeAt in the past from parking the row
+  // in a loop it can never leave.
+  const nextRetryAt = freeAt === null
+    ? wake
+    : Math.min(wake, Math.max(freeAt, Date.now()))
+  updateAIQueueItem(item.id, {
+    status: 'pending',
+    lastError: msg,
+    nextRetryAt,
+    parkedReason: 'provider_cap'
+  })
 }
 
 /**
@@ -305,7 +358,12 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
     // which is not a thing the user asked for and is not one they could
     // undo. Every pass goes through this write, so a boost cannot
     // outlive the run that was meant to consume it.
-    if (!updateAIQueueItem(item.id, { status: 'processing', promotedAt: undefined })) return
+    //
+    // `parkedReason: undefined` spends the park the same way: the row is
+    // being run again, so it is not parked any more, and whatever happens
+    // next it should read as what it is — an ordinary failure, an ordinary
+    // success — rather than as a provider budget that has already cleared.
+    if (!updateAIQueueItem(item.id, { status: 'processing', promotedAt: undefined, parkedReason: undefined })) return
 
     // The row is ours from here, and every other function in this file
     // now answers to that. `runningRowIds` is what the panel's Retry
@@ -555,6 +613,11 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error'
     const isRateLimit = err instanceof RateLimitError
+    // `instanceof ProviderCapError` first, and it has to come before the
+    // rate-limit ladder below: ProviderCapError EXTENDS RateLimitError, so
+    // the ordinary branch would catch it and spend ten attempts plus three
+    // revivals on a budget that frees in a day.
+    const isCap = err instanceof ProviderCapError
 
     // Log every failure, not just the terminal one. The queue's own
     // `lastError` is the only other record of this, and it is a single
@@ -585,8 +648,18 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
     // build as no build. The millisecond fields are carried forward for the
     // same reason as on the success path: this attempt measured nothing that
     // belongs in either slot.
+    //
+    // NOT for a cap refusal, and that exclusion is the point. The document
+    // was never opened: nothing was built, nothing was measured, and nothing
+    // went wrong with a document the user already has. Writing
+    // `generatedAt: null` here erased the real "documents built at" stamp of
+    // a CV that was perfectly fine, and `tailor_last_error` then showed the
+    // user a hard failure for a condition that clears itself when the budget
+    // does — under two hours, on the reviewer's measurement. The row's own
+    // `lastError` is where that story belongs, and the job surface is left
+    // describing the document that is actually there.
     try {
-      if (item.type === 'generate_cv' || item.type === 'generate_cover_letter') {
+      if (!isCap && (item.type === 'generate_cv' || item.type === 'generate_cover_letter')) {
         const job = getJob(item.jobId)
         writeTailorTimingFields({
           jobId: item.jobId,
@@ -601,7 +674,11 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
     }
 
     const attempts = item.attempts + 1
-    if (isRateLimit && attempts < 10) {
+    if (isCap) {
+      // Before every other branch, and it returns: this row's next step is
+      // decided by the budget, not by the retry ladder.
+      parkOnProviderCap(item, msg)
+    } else if (isRateLimit && attempts < 10) {
       updateAIQueueItem(item.id, {
         status: 'pending',
         attempts,

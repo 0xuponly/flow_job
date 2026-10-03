@@ -190,6 +190,20 @@ export function queueItemStatusText(
   // stopped, and it pairs with the Retry button that starts it again.
   if (item.stranded === true) return 'Stopped — the app closed before this finished'
   if (item.status === 'processing') return 'Processing…'
+  if (item.parkedReason === 'provider_cap') {
+    // Its own branch, before every other one, because this row is `pending`
+    // with a future `nextRetryAt` and would otherwise be described by the
+    // two lines below it as a retry in progress — which is the opposite of
+    // what it is. Nothing is being retried here: the app spent no attempt
+    // and no revival to park it, and it will be picked up as soon as any
+    // provider has budget again. The countdown is to the next CHECK, so it
+    // is worded as a check rather than a retry, and it is the useful part:
+    // it is what tells the user this task is waiting rather than stuck.
+    const parkedWait = Math.max(0, Math.ceil((item.nextRetryAt - now) / 1000))
+    return parkedWait > 0
+      ? `Paused — provider at its call cap, checks again in ${formatWait(parkedWait)}`
+      : 'Paused — provider at its call cap, due now'
+  }
   if (item.status === 'failed') {
     // A failed item with revive budget left is not stranded — the
     // processor will bring it back on its own. Saying so stops a task

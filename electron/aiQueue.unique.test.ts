@@ -82,13 +82,25 @@ vi.mock('./database', () => ({
 // The AI layer is stubbed rather than the real one: these tests are
 // about queue bookkeeping, and `withAiOperation` is a no-op wrapper here
 // so a pass is not serialised behind anything.
-vi.mock('./ai', () => ({
-  withAiOperation: (fn: () => unknown) => fn(),
-  verifyDocumentContent: vi.fn(async () => ({ kind: 'review', score: 90, passed: true, feedback: '', rules: [] })),
-  tailorDocument: vi.fn(async () => ({ content: 'x', document_id: 1 })),
-  regenerateSection: vi.fn(async () => 'x'),
-  RateLimitError: class RateLimitError extends Error {}
-}))
+vi.mock('./ai', () => {
+  // Declared inside the factory, not as sibling properties of the returned
+  // object: a hoisted mock factory cannot close over module-level bindings,
+  // and a property key is not a binding either.
+  class RateLimitError extends Error {}
+  class ProviderCapError extends RateLimitError {}
+  return {
+    withAiOperation: (fn: () => unknown) => fn(),
+    verifyDocumentContent: vi.fn(async () => ({ kind: 'review', score: 90, passed: true, feedback: '', rules: [] })),
+    tailorDocument: vi.fn(async () => ({ content: 'x', document_id: 1 })),
+    regenerateSection: vi.fn(async () => 'x'),
+    RateLimitError,
+    // The cap lane. `aiQueue` reads the class to decide a refusal is a park
+    // rather than a retry, and asks the ledger when the budget frees; a full
+    // `./ai` mock has to carry both or the pass throws on an undefined export.
+    ProviderCapError,
+    nextProviderCapFreeAt: vi.fn(() => null)
+  }
+})
 
 vi.mock('./fitScorer', () => ({
   scoreOneJobInBackground: vi.fn(async () => ({ id: 1, score: 0.8 }) as unknown as Job)

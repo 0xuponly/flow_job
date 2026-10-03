@@ -712,7 +712,7 @@ describe('F2: exactly one sanitization per generation, on every lane', () => {
     // file and its own declaration line sits inside the grepped range. It is
     // the declaration, not a fourth store path — the storage it does is
     // `createDocument` at ai.ts:1633, already covered by the assertion below.
-    .filter((l) => !l.startsWith('electron/ai.ts:1491'))
+    .filter((l) => !l.startsWith('electron/ai.ts:1455'))
 
     // The processor's per-unit case, both of `tailorJobDocsForJob`'s, and
     // the handler. Nothing else. Sorted because `rg` walks the tree.

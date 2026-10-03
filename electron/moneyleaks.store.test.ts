@@ -265,8 +265,13 @@ async function thirtyDays(
       for (const row of getAIQueue()) {
         const prev = before.get(row.id) ?? 0
         if (row.attempts > prev) attempts += row.attempts - prev
-        else if (prev > 0) attempts += 1
-        else attempts += row.attempts
+        // A counter that was CLEARED means the attempt that spent it is gone
+        // from the row, so it still has to be counted. A counter that did not
+        // move means nothing was billed — the row was not picked, or it was
+        // picked and parked on a spent provider budget, which by design
+        // charges no attempt at all. The old `else if (prev > 0)` conflated
+        // the two and charged a phantom attempt for every park.
+        else if (row.attempts === 0 && prev > 0) attempts += 1
       }
     }
 
@@ -548,13 +553,23 @@ describe('FINDING 3: the fit-landing trigger is bounded', () => {
     //     charge, so whichever producer revives, the cycles are finite;
     //   - a landing that finds a row `pending` / `processing` spends
     //     nothing at all (`jobDocWorkInFlight`).
+    //
+    // The TOTAL is unchanged at 80 — that is the bound this case exists to
+    // hold, and the ladder still holds it. What the per-provider call cap
+    // changed is WHEN the money goes out: 80 429s are 80 billed requests
+    // against one credential, so the cap refuses the 51st, the refusals
+    // charge no attempt (that is the whole point of parking a cap refusal),
+    // and the rest of the ladder runs on day two once the window has slid.
+    // Before the cap, all 80 came out of day one.
     const job = eligibleJob()
     const r = await thirtyDays([job], true)
 
     expect(r.attempts).toBe(10 * (AUTO_REVIVE_MAX + 1) * 2)
     expect(r.attempts).toBe(80)
-    // Day one, and 29 zeroes. It was [80, 12 x 29] = 428 before.
-    expect(r.perDay).toEqual([80, ...new Array(29).fill(0)])
+    // It was [80, 0 x 29] before the cap and [80, 12 x 29] before the
+    // trigger's bound. Bounded either way; bounded EARLIER now, which is
+    // what the cap is for.
+    expect(r.perDay).toEqual([52, 28, ...new Array(28).fill(0)])
     // Nothing succeeded, so nothing exists and the whole 80 is waste.
     expect(docsOf(job.id, 'cv')).toHaveLength(0)
     expect(docsOf(job.id, 'cover_letter')).toHaveLength(0)

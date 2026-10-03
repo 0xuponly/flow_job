@@ -29,7 +29,11 @@ vi.mock('./aiQueue', () => ({
 }))
 
 vi.mock('./ai', () => ({
-  scoreJobFit: vi.fn()
+  scoreJobFit: vi.fn(),
+  // The one error this module lets out rather than absorbing into
+  // `fit_last_error`; a full `./ai` mock has to carry the class or the
+  // `instanceof` in the catch throws on every failing case.
+  ProviderCapError: class ProviderCapError extends Error {}
 }))
 
 vi.mock('electron', () => ({

@@ -8,6 +8,7 @@ import { normalizeEmploymentType, normalizeWorkMode } from './employmentType'
 import { matchGradeFor } from './matchGrade'
 import { nextStatusFromDocs } from './docStatus'
 import { DEFAULT_DISABLED_BOARDS, DEFAULT_DISABLED_BOARDS_V1, DEFAULT_DISABLED_BOARDS_V2_ADDITIONS, unionDisabledBoards } from './boards'
+import { providerKey, providerKeyMoved } from './providerKey'
 import type {
   ApiModelConfig,
   AIQueueItem,
@@ -1695,8 +1696,77 @@ export function listApiModels(): ApiModelConfig[] {
   return loadStore().api_models
 }
 
+/**
+ * Spend recorded against a bucket that a model edit is about to rename.
+ *
+ * The bucket is `(endpoint, credential hash)`, and the Settings page writes
+ * the WHOLE model list back on any edit to any model row. So pasting a
+ * reissued key for an account the app has already been spending through
+ * changed the bucket identity, and the same account started again at a full
+ * allowance — the very next automated call went out on top of an existing
+ * cap-1 spend. A key rotation was a spend-cap reset, which made the bound
+ * weaker than advertised in the only direction an attacker or an accident
+ * needs.
+ *
+ * Two things are deliberately NOT the fix. The bucket is not re-keyed to the
+ * endpoint alone: two keys configured at the same time are two independent
+ * allowances, deliberately (see providerKey.ts), and conflating them would
+ * silently cap an unrelated credential. And the spend is COPIED rather than
+ * moved — a bucket another configured model still shares is untouched, so no
+ * bucket can end up under-counted. Where one old bucket fans out to several
+ * new ones the sum across them over-counts, which is the direction this
+ * design already accepts everywhere else: over-counting ages out, and
+ * under-counting is the hole the cap exists to close.
+ *
+ * Only an UNCHANGED endpoint counts as the same account. A model moved to a
+ * different base URL is a different provider with a different allowance, and
+ * carrying spend into it would refuse work the new provider could do.
+ */
+function carryProviderSpendOnKeyEdit(before: ApiModelConfig[], after: ApiModelConfig[]): void {
+  if (before.length === 0 || after.length === 0) return
+  // Old model -> new model, by store id, so an edit to one row is visible as
+  // an edit to that row and not as the whole list being replaced.
+  const byId = new Map(before.map((m) => [m.id, m]))
+  const moves = new Map<string, Set<string>>()
+  for (const model of after) {
+    const was = byId.get(model.id)
+    if (!was || !providerKeyMoved(was, model)) continue
+    const from = providerKey(was)
+    const to = providerKey(model)
+    if (from === to) continue
+    const targets = moves.get(from) ?? new Set<string>()
+    targets.add(to)
+    moves.set(from, targets)
+  }
+  if (moves.size === 0) return
+  const spend = getProviderSpend()
+  let carried = 0
+  for (const [from, targets] of moves) {
+    const history = spend[from]
+    if (!Array.isArray(history) || history.length === 0) continue
+    for (const to of targets) {
+      const target = spend[to] ?? []
+      // Deduplicated: two models that rotated into the same new credential
+      // are one account, so the same window must not be counted twice.
+      if (target.some((c) => c && history.some((h) => h.at === c.at))) continue
+      spend[to] = [...target, ...history.map((c) => ({ ...c }))]
+      carried++
+    }
+  }
+  if (carried > 0) persistStore()
+}
+
+/**
+ * Replace the whole model list.
+ *
+ * Also the seam where a credential edit is noticed, because it is the one
+ * writer that sees both the old list and the new one — see
+ * `carryProviderSpendOnKeyEdit` for why the spend has to move with the key
+ * rather than being orphaned by it.
+ */
 export function saveApiModels(models: ApiModelConfig[]): ApiModelConfig[] {
   const s = loadStore()
+  carryProviderSpendOnKeyEdit(s.api_models, models)
   s.api_models = models.map((m) => ({
     ...m,
     id: m.id || nextModelId()
@@ -2461,7 +2531,39 @@ export function recordBoardScanTime(name: string, durationMs: number): void {
 // bound it exists to hold.
 
 export function getProviderSpend(): Record<string, ProviderCall[]> {
-  return loadStore().provider_spend
+  const s = loadStore()
+  const spend = s.provider_spend ?? (s.provider_spend = {})
+  // Prune on READ as well as on write, because the write prunes one bucket
+  // at a time: a bucket nobody writes to again — a key the user replaced, a
+  // provider they deleted — is never rewritten, so a write-time-only prune
+  // left it in the persisted map for ever. The MAP therefore only ever grew,
+  // by one leaked key per credential the user had ever typed. Bounding each
+  // array is not bounding the record.
+  //
+  // One-sided, like the window in ai.ts: a stamp dated in the future stays —
+  // it is the record of a clock anomaly, and deleting it would hide the
+  // anomaly rather than fix it (see `ProviderBudget.clockSkewed`). Only what
+  // has aged out of the window goes.
+  //
+  // Pruned in place on the loaded store, so the next persist drops it from
+  // disk too rather than this being a read-time fiction.
+  const cutoff = Date.now() - PROVIDER_SPEND_WINDOW_MS
+  for (const [key, history] of Object.entries(spend)) {
+    if (!Array.isArray(history)) {
+      delete spend[key]
+      continue
+    }
+    const live = history.filter(
+      (c) => !!c && typeof c.at === 'number' && Number.isFinite(c.at) && c.at > cutoff
+    )
+    // A bucket with nothing left in the window is not a provider with a
+    // budget of zero, it is a provider this app has no record of. Deleting
+    // the key is what makes the record bounded; keeping it as an empty array
+    // would satisfy nothing.
+    if (live.length === 0) delete spend[key]
+    else if (live.length !== history.length) spend[key] = live
+  }
+  return spend
 }
 
 /**
@@ -2486,12 +2588,15 @@ export function recordProviderCall(key: string, manual: boolean, at?: number): v
   const now = at ?? Date.now()
   const history = s.provider_spend[key] || []
   history.push({ at: now, manual })
+  // In-window calls only. A FILTER rather than the old prefix drop, which
+  // only ever removed from the front: the array is not sorted when the clock
+  // moves backwards, so a corrected clock left the entries behind the new
+  // one pruned-in-place and the aged-out calls they were hiding counted
+  // against the cap for ever.
   const cutoff = now - PROVIDER_SPEND_WINDOW_MS
-  // In-window calls only. Oldest first, so this is a prefix drop.
-  let firstLive = 0
-  while (firstLive < history.length && history[firstLive].at <= cutoff) firstLive++
-  if (firstLive > 0) history.splice(0, firstLive)
-  s.provider_spend[key] = history
+  s.provider_spend[key] = history.filter(
+    (c) => !!c && typeof c.at === 'number' && Number.isFinite(c.at) && c.at > cutoff
+  )
   persistStore()
 }
 

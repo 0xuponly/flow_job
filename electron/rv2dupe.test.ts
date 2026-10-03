@@ -1219,9 +1219,9 @@ describe('5. the five previously-fixed defects are still fixed', () => {
       'electron/main.ts:709'
     ])
     expect(rows.filter((r) => !r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:418',
-      'electron/aiQueue.ts:475',
-      'electron/aiQueue.ts:549',
+      'electron/aiQueue.ts:476',
+      'electron/aiQueue.ts:533',
+      'electron/aiQueue.ts:607',
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:136'

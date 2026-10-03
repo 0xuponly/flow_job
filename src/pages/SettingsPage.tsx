@@ -882,12 +882,12 @@ export default function SettingsPage() {
                 <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>requests per 24 hours</span>
               </div>
               <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                A provider's budget covers every model sharing one account with it, not each model
+                A provider's budget covers every model sharing one API key with it, not each model
                 separately — which is why a pool of free models on one key runs out sooner than the
                 model count suggests. Once a provider reaches its budget the app stops calling it on
-                its own and picks up the work later, on a rolling 24-hour count. Anything you ask for
-                directly — Generate, Regenerate, Verify, Tailor, Quick Apply — always runs; it just
-                counts against the same budget.
+                its own, keeps the work queued, and picks it up when the budget frees on a rolling
+                24-hour count. Anything you ask for directly — Generate, Regenerate, Verify, Tailor,
+                Quick Apply — always runs; it just counts against the same budget.
               </p>
             </div>
           </div>
