@@ -1323,7 +1323,10 @@ describe('performance guard', () => {
     allocAcc += hits
   }
 
-  /** Proof, asserted below, that the reference work actually ran. */
+  /**
+   * The reference work's own output, read back so neither half can be optimised
+   * away -- a performance reference the optimiser deletes is worse than none.
+   */
   function referenceAcc(): number {
     return computeAcc + allocAcc
   }
@@ -1427,6 +1430,12 @@ describe('performance guard', () => {
     // the failure says which number was zero instead of what it divided into.
     expect(referenceSoFar, `the reference workload measured ${referenceSoFar.toFixed(2)}ms of CPU`).toBeGreaterThan(0)
 
+    // Taken after the warm-up and asserted against at the end, so this proves the
+    // reference ran inside the measured rounds rather than merely somewhere
+    // earlier in the file: computeAcc/allocAcc are describe-scoped, so an
+    // assertion on the bare accumulator is satisfied by the 12k-word test above.
+    const referenceAccAtStart = referenceAcc()
+
     for (let i = 0; i < LISTINGS; i++) {
       scoreCompatibility('Financial Analyst, Reporting', `${posting} warmup ${i}`, CV_FINANCE)
     }
@@ -1516,7 +1525,13 @@ describe('performance guard', () => {
         ` above the ${SCAN_CLEAN_FACTOR_CEILING} this guard is calibrated for.${drift}`
     ).toBeLessThan(SCAN_CLEAN_FACTOR_CEILING)
 
-    expect(referenceAcc()).toBeGreaterThan(0)
+    // The reference work is only a reference if it ran. Asserted as growth across
+    // this test's own rounds, which the previous bare `> 0` could not distinguish
+    // from the 12k-word test's contribution.
+    expect(
+      referenceAcc(),
+      `the reference workload's output did not grow across this test's ${cpu.length} measured rounds`
+    ).toBeGreaterThan(referenceAccAtStart)
   }, SCAN_MEASUREMENT_CEILING_MS)
 
   it('brackets the trip point between the two recorded conditions', () => {
