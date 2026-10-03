@@ -1,7 +1,8 @@
 import { getAIQueue, updateAIQueueItem, removeAIQueueItem, addAIQueueItem, clearAIQueue, getDocument, getJob, getSettings, listJobDocuments, getDocumentAutoRegenAttempts, bumpDocumentAutoRegenAttempts, setDocumentContent, writeTailorTimingFields, recomputeJobStatusFromDocs } from './database'
 import { log } from './logger'
 import { withAiOperation } from './ai'
-import { tailorDocument, regenerateSection, verifyDocumentContent, RateLimitError, type AiCallOptions } from './ai'
+import { tailorDocument, regenerateSection, verifyDocumentContent, RateLimitError, ProviderCooldownError, providerAvailability, type AiCallOptions } from './ai'
+import { PROVIDERS_COOLING_DOWN_MESSAGE } from './cooldownBlock'
 import type { AIQueueItem, Job, QueueItemView } from './types'
 import { AUTO_REGEN_MAX, AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX, PASSING_REVIEW_SCORE } from './types'
 
@@ -10,6 +11,142 @@ function backoffMs(item: AIQueueItem): number {
   const base = 30000
   const max = 1800000
   return Math.min(base * Math.pow(2, item.attempts), max)
+}
+
+/**
+ * Ceiling on how long a row parked by a provider block waits before the
+ * queue looks again.
+ *
+ * Ten minutes, and specifically MAX_429_BACKOFF_MS — the longest
+ * cooldown the 429 ladder itself ever hands out. So for the case that
+ * actually caused the outage (every model answering 429) the cap never
+ * binds and the queue wakes exactly when the provider said it would.
+ *
+ * It exists for the cases where the provider's own clock is a poor
+ * answer: a circuit-broken model stays silent for
+ * CIRCUIT_BREAKER_MS (1 hour), and a health map that keeps moving
+ * would otherwise let a row sleep through an hour in which the user
+ * fixed their model list and the queue never noticed. Waking every 10
+ * minutes instead costs nothing — a blocked pass makes ZERO provider
+ * requests, writes one log line, and updates a timestamp per due row —
+ * and it bounds how long the app can look idle while work is
+ * available.
+ */
+export const PROVIDER_REPROBE_CAP_MS = 10 * 60 * 1000
+
+/**
+ * Shortest wait a parked row ever gets, and the base of its own ladder.
+ *
+ * One poll interval (`startQueueProcessor`'s 30s default), so a row can
+ * never be re-probed faster than the queue's own tick even if the health
+ * map says "free in 1ms". Doubles per block up to the cap; see
+ * `providerBlockedWaitMs`.
+ */
+const PROVIDER_REPROBE_FLOOR_MS = 30000
+
+/**
+ * How long until this row should be tried again, given that no provider
+ * is available until `providerFreeAt`.
+ *
+ *   wait = min( max(providerWait, ownLadder), PROVIDER_REPROBE_CAP_MS )
+ *
+ * Three terms, each load-bearing:
+ *
+ *   providerWait  — the provider's own answer. Taking the max with it
+ *                   is the point of the function: the queue must never
+ *                   re-probe a provider that said "not for another 15
+ *                   minutes", which is what the old item ladder did by
+ *                   waking on its own 30s schedule regardless.
+ *   ownLadder     — 30s, 60s, 2m, 4m … capped, escalated by how many
+ *                   times this row has already been blocked. This is
+ *                   what "remember that you were blocked" buys: a
+ *                   health map whose `nextAvailableAt` keeps moving
+ *                   forward (each free failure pushes the next one
+ *                   later) cannot keep the row on the shortest
+ *                   possible wake-up forever. It is cleared the moment
+ *                   the row is claimed for real work, so a row that
+ *                   finally runs starts fresh.
+ *   CAP           — see PROVIDER_REPROBE_CAP_MS. Bounded both ways:
+ *                   not earlier than the provider frees up, not later
+ *                   than ten minutes from now.
+ */
+function providerBlockedWaitMs(providerFreeAt: number, now: number, blockedCount: number): number {
+  const providerWait = Math.max(0, providerFreeAt - now)
+  const ladder = Math.min(
+    PROVIDER_REPROBE_FLOOR_MS * 2 ** Math.max(0, blockedCount - 1),
+    PROVIDER_REPROBE_CAP_MS
+  )
+  return Math.min(Math.max(providerWait, ladder), PROVIDER_REPROBE_CAP_MS)
+}
+
+/**
+ * Park ONE row on the provider's clock. Spent nothing, so nothing is
+ * charged: `attempts` is left exactly as it was.
+ *
+ * The write is deliberately `status: 'pending'` + a future
+ * `nextRetryAt` rather than a retry-ladder bump, because no attempt
+ * happened. `blockedSince` / `blockedCount` are the row's own memory of
+ * the block — what the panel renders, and what escalates the re-probe
+ * above — and `lastError` records the plain reason so a row that
+ * outlives the process still says why it is waiting.
+ *
+ * `autoRevives` is NOT touched. A block costs no attempt and so spends
+ * none of the recovery budget; charging it here would make a queue that
+ * sat through one provider outage come back with less runway than one
+ * that never had to wait.
+ */
+function parkBlockedRow(item: AIQueueItem, providerFreeAt: number, now: number): number {
+  const blockedCount = (item.blockedCount ?? 0) + 1
+  const waitMs = providerBlockedWaitMs(providerFreeAt, now, blockedCount)
+  updateAIQueueItem(item.id, {
+    status: 'pending',
+    nextRetryAt: now + waitMs,
+    blockedSince: now,
+    blockedCount,
+    lastError: PROVIDERS_COOLING_DOWN_MESSAGE
+  })
+  return waitMs
+}
+
+/**
+ * The app-wide blocked state the Queue panel renders.
+ *
+ * One state for the whole app rather than a per-row flag: "no provider
+ * is available" is a property of the model pool, and every queued task
+ * is waiting on the same door. It comes from `providerAvailability()`,
+ * the same query the queue parks itself on, so the panel can never say
+ * "waiting" while the queue is running, or the reverse.
+ *
+ * Carries no model names, statuses or health internals — see the copy
+ * in QueuePanel. `blockedRowIds` is only the ids of rows the queue has
+ * actually parked, so a row is distinguished from one merely queued
+ * behind other work without exposing why any particular model is out.
+ */
+export interface AIQueueBlockedState {
+  blocked: boolean
+  /** Epoch ms the first eligible provider frees up, uncapped. */
+  providerFreeAt: number | null
+  /** Epoch ms the queue will actually wake, i.e. providerFreeAt clamped. */
+  retryAt: number | null
+  /** Rows parked on the provider clock right now. */
+  waitingRows: number
+  /** Their ids, so the panel can mark them apart from ordinary pending rows. */
+  blockedRowIds: number[]
+}
+
+export function aiQueueBlockedState(now: number = Date.now()): AIQueueBlockedState {
+  const availability = providerAvailability(now)
+  const parked = availability.blocked
+    ? getAIQueue().filter((q) => q.status === 'pending' && q.blockedSince !== undefined)
+    : []
+  const freeAt = availability.nextAvailableAt
+  return {
+    blocked: availability.blocked,
+    providerFreeAt: freeAt,
+    retryAt: freeAt === null ? null : now + providerBlockedWaitMs(freeAt, now, 1),
+    waitingRows: parked.length,
+    blockedRowIds: parked.map((q) => q.id)
+  }
 }
 
 /**
@@ -305,7 +442,19 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
     // which is not a thing the user asked for and is not one they could
     // undo. Every pass goes through this write, so a boost cannot
     // outlive the run that was meant to consume it.
-    if (!updateAIQueueItem(item.id, { status: 'processing', promotedAt: undefined })) return
+    //
+    // `blockedSince` / `blockedCount` are spent the same way. The row is
+    // being handed to the provider now, so whatever it was waiting out
+    // is over: leaving the block on it would keep the panel rendering a
+    // "waiting for an AI provider" marker on a row that is running, and
+    // would carry the escalated re-probe ladder into the next block
+    // instead of starting it fresh.
+    if (!updateAIQueueItem(item.id, {
+      status: 'processing',
+      promotedAt: undefined,
+      blockedSince: undefined,
+      blockedCount: undefined
+    })) return
 
     // The row is ours from here, and every other function in this file
     // now answers to that. `runningRowIds` is what the panel's Retry
@@ -554,6 +703,40 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error'
+
+    // A block, not a failure. `callAI` throws this when every eligible
+    // model is inside its cooldown window, which means it never reached
+    // the provider: no request, no tokens, no quota. Charging it an
+    // attempt is charging a ~70ms map lookup the price of a 45s call,
+    // and that mismatch is the whole bug — measured on 2026-10-02, 4,122
+    // of 4,143 logged failures were this throw, and rows burned all 10
+    // attempts on it before the provider ever recovered.
+    //
+    // So this branch is FIRST and it spends nothing: `attempts` is left
+    // untouched, no autoRevive is charged, and the row wakes on the
+    // provider's own clock. `runPass` normally catches a blocked pool
+    // before any row is claimed; this branch is the race (a rotation
+    // part-way through a pass marked the last model cooling) and the
+    // direct-to-AI entry points that never go through a pass at all.
+    if (err instanceof ProviderCooldownError) {
+      const now = Date.now()
+      // Re-read rather than trust the throw site: another rotation can
+      // clear the last health entry in between, and if it did the
+      // provider is free NOW — which `?? now` says, leaving the row on
+      // its own 30s floor instead of waiting on a stale hour.
+      const freeAt = providerAvailability(now).nextAvailableAt ?? now
+      const waitMs = parkBlockedRow(item, freeAt, now)
+      try {
+        log.ai.warn(
+          `aiQueue item ${item.id} (${item.type}, job ${item.jobId}) is waiting: no AI provider is available. ` +
+          `No attempt spent (${item.attempts} unchanged); next try in ${Math.round(waitMs / 1000)}s.`
+        )
+      } catch {
+        /* logging must never break the queue */
+      }
+      return
+    }
+
     const isRateLimit = err instanceof RateLimitError
 
     // Log every failure, not just the terminal one. The queue's own
@@ -601,6 +784,8 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
     }
 
     const attempts = item.attempts + 1
+    // From here on `attempts` is NOT spent (the block above returned), so
+    // a provider-free failure always leaves it alone.
     if (isRateLimit && attempts < 10) {
       updateAIQueueItem(item.id, {
         status: 'pending',
@@ -786,7 +971,7 @@ export function stopQueueProcessor(): void {
   }
 }
 
-export { RateLimitError }
+export { RateLimitError, ProviderCooldownError }
 
 export async function processQueue(): Promise<void> {
   // A pass already running owns the store for this tick; a second
@@ -806,6 +991,52 @@ export async function processQueue(): Promise<void> {
 async function runPass(): Promise<void> {
   const queue = getAIQueue()
   const now = Date.now()
+
+  // Every eligible model is cooling down: there is nothing this pass can
+  // accomplish, so it does not claim a row.
+  //
+  // Claiming one is what turned an outage into an outage with collateral
+  // damage. Each claimed row was handed to `callAI`, threw immediately,
+  // was charged an attempt and rescheduled — so a queue of 265 drained
+  // its entire retry budget into a provider that was never asked, and by
+  // the time the provider came back every row had nothing left to retry
+  // with (2026-10-02: 0 successes in 20 hours, 4,122 of 4,143 failures
+  // were this throw, at a median of 370 minutes per row).
+  //
+  // So the whole pass is a no-op except for parking the due rows on the
+  // provider's clock. Zero requests, zero attempts, zero autoRevives, and
+  // one log line however many rows are queued — which is also the app-wide
+  // signal that was missing entirely: before this, 265 rows sat in the
+  // panel indistinguishable from ordinary backlog for 20 hours and the
+  // only trace was a per-row `lastError` string.
+  //
+  // `failed` rows are deliberately left alone. Reviving one spends an
+  // autoRevive, and there is no point spending recovery budget while the
+  // provider that caused the failure is still refusing: the revival
+  // happens on the first unblocked pass instead, with its budget intact.
+  const availability = providerAvailability(now)
+  if (availability.blocked && availability.nextAvailableAt !== null) {
+    let parked = 0
+    let shortestWaitMs = Number.POSITIVE_INFINITY
+    for (const q of queue) {
+      if (q.status !== 'pending' || q.nextRetryAt > now) continue
+      const waitMs = parkBlockedRow(q, availability.nextAvailableAt, now)
+      parked++
+      if (waitMs < shortestWaitMs) shortestWaitMs = waitMs
+    }
+    if (parked > 0) {
+      try {
+        log.ai.warn(
+          `aiQueue: ${parked} queued task(s) are waiting — no AI provider is available. ` +
+          `No attempts spent, no provider requests made. Next check in ` +
+          `${Math.round(shortestWaitMs / 1000)}s.`
+        )
+      } catch {
+        /* logging must never break the queue */
+      }
+    }
+    return
+  }
 
   // An item parked by the auto-revival loop is already `pending` with a
   // future nextRetryAt, so the first clause picks it up once its
@@ -843,7 +1074,9 @@ async function runPass(): Promise<void> {
       updateAIQueueItem(q.id, {
         status: 'pending',
         attempts: 0,
-        autoRevives: (q.autoRevives ?? 0) + 1
+        autoRevives: (q.autoRevives ?? 0) + 1,
+        blockedSince: undefined,
+        blockedCount: undefined
       })
       due.push(reviveInMemory(q))
     }
@@ -873,7 +1106,12 @@ function reviveInMemory(item: AIQueueItem): AIQueueItem {
     ...item,
     status: 'pending',
     attempts: 0,
-    autoRevives: (item.autoRevives ?? 0) + 1
+    autoRevives: (item.autoRevives ?? 0) + 1,
+    // Mirrors the write above: the in-memory shape has to agree with the
+    // stored one or this pass would process a row that still looks
+    // provider-blocked.
+    blockedSince: undefined,
+    blockedCount: undefined
   }
 }
 
@@ -910,7 +1148,12 @@ function revivePatch(): Partial<AIQueueItem> {
     status: 'pending',
     nextRetryAt: Date.now(),
     attempts: 0,
-    lastError: undefined
+    lastError: undefined,
+    // Same reasoning as clearing `lastError`: a row the user just asked
+    // to run again is not still parked on a provider block, and the
+    // escalated re-probe ladder belongs to the block that just ended.
+    blockedSince: undefined,
+    blockedCount: undefined
   }
 }
 

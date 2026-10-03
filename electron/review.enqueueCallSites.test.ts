@@ -145,15 +145,15 @@ const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]
   // `manual` column below is unchanged, which is the claim this table
   // exists to make.
   'electron/main.ts': [
-    { line: 495, manual: true, why: 'documents:verify — the Verify button' },
-    { line: 509, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
-    { line: 693, manual: true, why: 'ai:tailor — Tailor / Generate' },
-    { line: 709, manual: true, why: 'tailor:quickApply — Quick Apply' }
+    { line: 506, manual: true, why: 'documents:verify — the Verify button' },
+    { line: 523, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
+    { line: 710, manual: true, why: 'ai:tailor — Tailor / Generate' },
+    { line: 726, manual: true, why: 'tailor:quickApply — Quick Apply' }
   ],
   'electron/aiQueue.ts': [
-    { line: 418, manual: false, why: 'processor: generation finished, chain the review' },
-    { line: 475, manual: false, why: 'processor: review failed, auto-regenerate the document' },
-    { line: 549, manual: false, why: 'processor: tailor_job_docs finished, review each new document' }
+    { line: 567, manual: false, why: 'processor: generation finished, chain the review' },
+    { line: 624, manual: false, why: 'processor: review failed, auto-regenerate the document' },
+    { line: 698, manual: false, why: 'processor: tailor_job_docs finished, review each new document' }
   ],
   'electron/fitScorer.ts': [
     { line: 136, manual: false, why: 'fit-landing trigger: a job cleared the fit threshold and is missing a document' }
@@ -617,9 +617,9 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
     // retired, so it is absent from the list and from the comment.
     const automatic = callSites().filter((c) => !c.manual)
     expect(automatic.map((c) => `${c.where}:${c.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:418',
-      'electron/aiQueue.ts:475',
-      'electron/aiQueue.ts:549',
+      'electron/aiQueue.ts:567',
+      'electron/aiQueue.ts:624',
+      'electron/aiQueue.ts:698',
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:136'

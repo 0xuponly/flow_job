@@ -20,6 +20,10 @@ const store = vi.hoisted(() => ({
 }))
 
 vi.mock('./database', () => ({
+  // The processor's provider-health gate reads this before it claims a
+  // row; an empty pool answers "not blocked" so these cases exercise the
+  // pass itself. See queueCooldown.test.ts for the blocked half.
+  listApiModels: () => [],
   // The auto-queue gate in enqueue() reads these; all true = every
   // automatic enqueue allowed, which is the shipped default. The
   // switches themselves are covered against the real store in
@@ -87,7 +91,12 @@ vi.mock('./ai', () => ({
   verifyDocumentContent: vi.fn(async () => ({ kind: 'review', score: 90, passed: true, feedback: '', rules: [] })),
   tailorDocument: vi.fn(async () => ({ content: 'x', document_id: 1 })),
   regenerateSection: vi.fn(async () => 'x'),
-  RateLimitError: class RateLimitError extends Error {}
+  RateLimitError: class RateLimitError extends Error {},
+  // The provider-health gate the processor consults before claiming a
+  // row. "Not blocked" here so these cases exercise the pass itself; the
+  // blocked half needs a real health map and is in queueCooldown.test.ts.
+  providerAvailability: () => ({ blocked: false, nextAvailableAt: null, eligibleCount: 1 }),
+  ProviderCooldownError: class ProviderCooldownError extends Error {}
 }))
 
 vi.mock('./fitScorer', () => ({

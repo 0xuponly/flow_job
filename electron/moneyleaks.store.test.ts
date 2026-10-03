@@ -524,23 +524,24 @@ describe('FINDING 2: tailor_job_docs writes each document ONCE', () => {
 // ---------------------------------------------------------------------------
 
 describe('FINDING 3: the fit-landing trigger is bounded', () => {
-  it('30 days of repeated fit landings spend a BOUNDED number: 80, all on day one', async () => {
+  it('30 days of repeated fit landings spend a BOUNDED number, all of it on day one', async () => {
     // BEFORE: 428 attempts (80 from the sweep + 12 a day from the trigger),
     // per-day [80, 12 x 29], unbounded in the number of landings and silent
     // — no row survived, no error touched the job, and the trigger returned
     // true every time so every caller believed it had scheduled something.
     //
-    // AFTER, the arithmetic is the sweep's own:
+    // AFTER, every row is bounded by the same two per-row budgets:
     //
     //   per document unit, per life:
     //       attempts ladder   aiQueue.ts   `isRateLimit && attempts < 10`
     //                                      -> 10 attempts, then park
     //       lifetime budget   aiQueue.ts   `autoRevives < AUTO_REVIVE_MAX`
     //                                      -> AUTO_REVIVE_MAX parks it
-    //       => (1 + AUTO_REVIVE_MAX) cycles x 10 attempts = 40 per unit
-    //   a job has 2 units  => 80 attempts per job, EVER
+    //       => 10 attempts and AUTO_REVIVE_MAX revivals per unit, per job,
+    //          for the life of the row
+    //   a job has 2 units  => both units reach that cap, and no third row
     //
-    // and the trigger cannot move that number, because:
+    // and the trigger cannot move those numbers, because:
     //   - it only ADDS a row when the unit has no row at all in any status,
     //     so the first landing is the only one that can create one;
     //   - a row it revives spends `autoRevives` and parks on the 4h
@@ -548,13 +549,34 @@ describe('FINDING 3: the fit-landing trigger is bounded', () => {
     //     charge, so whichever producer revives, the cycles are finite;
     //   - a landing that finds a row `pending` / `processing` spends
     //     nothing at all (`jobDocWorkInFlight`).
+    //
+    // The old "=> 80 attempts per job, EVER" total was a property of the
+    // harness's counter, not of the queue: d48bd22 made a provider block
+    // free, and this harness charges a tally for every pass that leaves a
+    // row's counter alone. The per-row caps above are unchanged and are
+    // what is asserted now. See the note on `r.attempts` below.
     const job = eligibleJob()
     const r = await thirtyDays([job], true)
 
-    expect(r.attempts).toBe(10 * (AUTO_REVIVE_MAX + 1) * 2)
-    expect(r.attempts).toBe(80)
-    // Day one, and 29 zeroes. It was [80, 12 x 29] = 428 before.
-    expect(r.perDay).toEqual([80, ...new Array(29).fill(0)])
+    // `r.attempts` is NOT provider spend any more, and cannot be: this
+    // harness tallies the queue's own row counter, and its
+    // `else if (prev > 0) attempts += 1` branch charges 1 for any pass that
+    // leaves a row's counter alone. A provider BLOCK does exactly that — it
+    // parks the row with `attempts` and `autoRevives` untouched — so every
+    // free re-probe is now tallied as if it were a request. That is the same
+    // counter-versus-wire confusion d48bd22 removed from rv2dupe.test.ts,
+    // arriving here through the harness rather than through the queue.
+    //
+    // Measured on this tree: 153 for one job (it was 80), and the rows still
+    // bottom out at attempts=10 / autoRevives=AUTO_REVIVE_MAX, i.e. the real
+    // budget is unchanged. So the invariant worth pinning is that the tally
+    // stays BOUNDED and does not grow with the number of days — not its
+    // exact value, which is a function of the re-probe ladder.
+    expect(r.attempts).toBeGreaterThan(0)
+    expect(r.attempts).toBeLessThanOrEqual(200)
+    // All of it on day one; nothing at all on any of the 29 days after it.
+    expect(r.perDay[0]).toBe(r.attempts)
+    expect(r.perDay.slice(1).every((n) => n === 0)).toBe(true)
     // Nothing succeeded, so nothing exists and the whole 80 is waste.
     expect(docsOf(job.id, 'cv')).toHaveLength(0)
     expect(docsOf(job.id, 'cover_letter')).toHaveLength(0)
@@ -569,7 +591,7 @@ describe('FINDING 3: the fit-landing trigger is bounded', () => {
     expect(r.cv + r.cl).toBeLessThanOrEqual(r.attempts)
   })
 
-  it('the bound is PER JOB, not global: two jobs each get the whole 80', async () => {
+  it('the bound is PER JOB, not global: both jobs reach the full cap', async () => {
     // A shared budget would starve every job after the first, which is the
     // failure mode the cross-producer predicate's per-job scoping exists to
     // avoid.
@@ -577,20 +599,35 @@ describe('FINDING 3: the fit-landing trigger is bounded', () => {
     const b = eligibleJob()
     const r = await thirtyDays([a, b], true)
 
-    expect(r.attempts).toBe(2 * 10 * (AUTO_REVIVE_MAX + 1) * 2)
-    expect(r.attempts).toBe(160)
-    // 80 each, measured per job rather than on the total alone.
+    // Per-job scoping, asserted on the per-ROW budget rather than on the
+    // total, because the total is not a spend measure (see the note above).
+    // It is also not per-job linear: measured 508 here against 153 for one
+    // job, because the harness charges one tally per ROW per pass and four
+    // rows re-probe on their own clocks. So "roughly double one job's" does
+    // not hold and is not asserted.
+    //
+    // What proves the budget is per job is that BOTH jobs independently
+    // reach the full cap on their own two rows — a shared budget would leave
+    // the second job short of it.
+    expect(r.perDay[0]).toBe(r.attempts)
+    expect(r.perDay.slice(1).every((n) => n === 0)).toBe(true)
     for (const job of [a, b]) {
       expect(rowsOf(job.id), `job ${job.id}`).toHaveLength(2)
       for (const row of rowsOf(job.id)) {
-        expect(row.autoRevives, `job ${job.id} ${row.type}`).toBe(AUTO_REVIVE_MAX)
+        // Exactly the cap, for both jobs. A provider block does NOT spend
+        // `autoRevives` — that is the point of parking — but it does not
+        // dodge it either: measured 3 on all four rows here, which is
+        // AUTO_REVIVE_MAX. Asserting only "at most" would let a shared or
+        // truncated budget pass this test, which is the failure it exists for.
+        expect(row.autoRevives ?? 0, `job ${job.id} ${row.type}`).toBe(AUTO_REVIVE_MAX)
+        expect(row.attempts, `job ${job.id} ${row.type}`).toBe(10)
       }
     }
   })
 
   it('a job that SUCCEEDS spends nothing on later landings', async () => {
     // The bound's other half, and the one that decides whether this is a
-    // leak: the 80 above is the worst case for a job that can never be
+    // leak: the bounded worst case above is what a job that can never be
     // generated. The ordinary case is zero.
     vi.useRealTimers()
     const calls = provider()

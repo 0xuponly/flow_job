@@ -708,11 +708,17 @@ describe('F2: exactly one sanitization per generation, on every lane', () => {
         .split('\n')
         .filter(Boolean)
         .filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*'))
-        // `electron/ai.ts` is now also a MATCH: `tailorDocument` moved down that
-    // file and its own declaration line sits inside the grepped range. It is
-    // the declaration, not a fourth store path — the storage it does is
-    // `createDocument` at ai.ts:1633, already covered by the assertion below.
-    .filter((l) => !l.startsWith('electron/ai.ts:1491'))
+        // `electron/ai.ts` is also a MATCH: `tailorDocument` moved down that
+        // file and its own declaration line sits inside the grepped range. It is
+        // the declaration, not a fourth store path — the storage it does is
+        // `createDocument`, already covered by the assertion below.
+        //
+        // Matched by CONTENT, not by line number. A pinned line here has
+        // already broken twice: the declaration moves every time ai.ts grows
+        // (it moved again in the provider-block rebase), and a stale pin
+        // fails the audit for a reason that has nothing to do with
+        // sanitization.
+        .filter((l) => !/^electron\/ai\.ts:\d+:export async function tailorDocument\(/.test(l))
 
     // The processor's per-unit case, both of `tailorJobDocsForJob`'s, and
     // the handler. Nothing else. Sorted because `rg` walks the tree.

@@ -8,6 +8,7 @@ import { normalizeEmploymentType, normalizeWorkMode } from './employmentType'
 import { matchGradeFor } from './matchGrade'
 import { nextStatusFromDocs } from './docStatus'
 import { DEFAULT_DISABLED_BOARDS, DEFAULT_DISABLED_BOARDS_V1, DEFAULT_DISABLED_BOARDS_V2_ADDITIONS, unionDisabledBoards } from './boards'
+import { isCooldownBlockedMessage } from './cooldownBlock'
 import type {
   ApiModelConfig,
   AIQueueItem,
@@ -165,6 +166,9 @@ function defaultStore(): Store {
       // a store already collapsed under v1 went on collecting a second
       // row for work it had a row for. See dedupeAIQueueItems.
       queue_dedup_v2: '',
+      // One-shot gate for the cooldown-poisoning repair. See
+      // unpoisonCooldownFailedAIQueueItems.
+      queue_cooldown_reset_v1: '',
       // 0 = the user has never pressed "Clear queue". Any other value is
       // the epoch ms of the last clear, paired with the job-id watermark
       // that says which jobs it covered; both are the durable tombstone
@@ -2659,6 +2663,124 @@ export function removeAIQueueItem(id: number): void {
   const s = loadStore()
   s.ai_queue = s.ai_queue.filter((q) => q.id !== id)
   persistStore()
+}
+
+/**
+ * Hand back the retry budget that a provider outage spent for free.
+ *
+ * The 2026-10-02 overnight run: 265 queued tasks, 0 processed, ~20 hours.
+ * Every provider call was HTTP 429, so `callAI` spent most of its time
+ * throwing `ProviderCooldownError` — before any request — and the queue
+ * charged that throw an attempt anyway. Rows therefore burned all 10
+ * attempts while the provider was still refusing, and by the time it
+ * recovered every one of them had nothing left to retry with. Some sat
+ * `failed`; others were parked `pending` on the 4h auto-revive cooldown
+ * carrying the same message in `lastError`.
+ *
+ * The bug is fixed for new failures, but a store written by the old
+ * build still holds those rows, and their work is not lost — it is
+ * stalled, with an exhausted budget and nothing to show for it. This is
+ * the one-shot repair for them.
+ *
+ * WHAT IT MATCHES, precisely:
+ *
+ *   status `failed` — reset `attempts` to 0 and make the row due now.
+ *     Its budget was spent on requests that never happened.
+ *   status `pending` — leave `attempts` alone (a parked row was already
+ *     reset to 0 by the auto-revive path) and pull `nextRetryAt` forward
+ *     to now, so it stops sitting out a 4h cooldown for a provider that
+ *     may have recovered an hour ago.
+ *
+ *   and in both cases only when `lastError` is the cooldown throw's
+ *   message (`isCooldownBlockedMessage`, anchored on its fixed prefix).
+ *   A row that failed for any other reason — a parse failure, a
+ *   timeout, a validation rejection, a 402 — keeps its budget, because
+ *   those DID cost a provider request and its budget was honestly
+ *   spent. Matching the message is the only option here: these rows have
+ *   no other record. Control flow at runtime branches on the error type
+ *   instead; this is data repair over what an older build wrote.
+ *
+ *   `processing` rows are NOT matched and NOT touched. That state means
+ *   "claimed, in flight", it is reclaimed at startup by
+ *   `reclaimInterruptedItems`, and its `lastError` is whatever the
+ *   PREVIOUS round happened to record — not evidence about this one.
+ *
+ * WHAT IT NEVER DOES:
+ *
+ *   It adds no row. Only rows already in `ai_queue` are rewritten, so a
+ *   user who pressed "Clear queue" cannot have that work come back
+ *   through this door — `clearAIQueue` deletes the rows, and there is
+ *   nothing here that re-seeds from the jobs table.
+ *
+ *   It does not resurrect a row the user cleared even when one is still
+ *   present. The clear's tombstone (`queue_cleared_at` +
+ *   `queue_cleared_max_job_id`) is honoured per row: a row whose job id
+ *   is at or below the watermark is work the user cancelled, and
+ *   re-running it here would be exactly the leak the tombstone exists
+ *   to close — so those rows are counted as skipped and left alone, with
+ *   their attempts and status untouched. Rows above the watermark are
+ *   work that arrived after the clear and are repaired normally.
+ *
+ *   It invents nothing. `autoRevives` is left as found even though a
+ *   no-op failure may have charged one: handing a row recovery budget it
+ *   has not earned is the same fabrication as inventing an attempt
+ *   count, and the Reset button is the user's way to grant it.
+ *
+ * One-shot under `queue_cooldown_reset_v1`, so re-running is a no-op and
+ * a user's later rows are never touched by it.
+ */
+export function unpoisonCooldownFailedAIQueueItems(): {
+  reset: number
+  unstuck: number
+  clearedWorkSkipped: number
+  alreadyMigrated: boolean
+} {
+  const s = loadStore()
+  if (s.settings.queue_cooldown_reset_v1 === '1') {
+    return { reset: 0, unstuck: 0, clearedWorkSkipped: 0, alreadyMigrated: true }
+  }
+
+  const maxClearedJobId = getQueueClearedMaxJobId()
+  const isClearedWork = (jobId: number): boolean => maxClearedJobId > 0 && jobId <= maxClearedJobId
+
+  const now = Date.now()
+  let reset = 0
+  let unstuck = 0
+  let clearedWorkSkipped = 0
+  for (const q of s.ai_queue) {
+    if (q.status !== 'failed' && q.status !== 'pending') continue
+    if (!isCooldownBlockedMessage(q.lastError)) continue
+    if (isClearedWork(q.jobId)) {
+      clearedWorkSkipped++
+      continue
+    }
+    if (q.status === 'failed') {
+      // The row is re-queued rather than deleted: the user still wants
+      // this document / score, and `failed` is what the Queue panel's
+      // Retry button acts on. Nothing is spent here — the next pass
+      // decides whether a provider is available at all.
+      q.status = 'pending'
+      q.attempts = 0
+      q.nextRetryAt = now
+      // The block is over: the cooldown that produced this error has
+      // been repaired, so the row must not keep rendering (or waiting
+      // on) the provider clock.
+      q.blockedSince = undefined
+      q.blockedCount = undefined
+      reset++
+    } else {
+      // A parked row already carries a fresh attempt count; all it needs
+      // is to stop waiting out a cooldown it is not blocked by.
+      q.nextRetryAt = now
+      q.blockedSince = undefined
+      q.blockedCount = undefined
+      unstuck++
+    }
+  }
+
+  s.settings.queue_cooldown_reset_v1 = '1'
+  persistStore()
+  return { reset, unstuck, clearedWorkSkipped, alreadyMigrated: false }
 }
 
 /**

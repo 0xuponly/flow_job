@@ -17,7 +17,7 @@
 import { BrowserWindow } from 'electron'
 import { log } from './logger'
 import * as db from './database'
-import { scoreJobFit, type AiCallOptions } from './ai'
+import { scoreJobFit, ProviderCooldownError, type AiCallOptions } from './ai'
 import { enqueue } from './aiQueue'
 import {
   autoDocQueueEligible,
@@ -269,10 +269,10 @@ export async function scoreOneJobInBackground(
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error'
     log.fit.warn(`job ${jobId} (${job.company} — ${job.title}): ${msg}`)
+    let updated: Job | null
     try {
-      const updated = db.updateJob(jobId, { fit_last_error: msg })
+      updated = db.updateJob(jobId, { fit_last_error: msg })
       emitJobScoreUpdatedModule(jobId)
-      return updated
     } catch (writeErr) {
       if (writeErr instanceof Error && writeErr.message === 'Job not found') {
         log.fit.warn(`scoreOneJobInBackground: job ${jobId} was deleted mid-run, skipping`)
@@ -280,5 +280,21 @@ export async function scoreOneJobInBackground(
       }
       throw writeErr
     }
+    // A provider block is not a fit failure, so it is recorded on the
+    // job (above) but NOT laundered into a plain return.
+    //
+    // This function is the boundary between the scorer and the queue: the
+    // `score_fit` case in aiQueue turns a null `score` back into an
+    // exception, so swallowing here is what let a no-request cooldown
+    // block reach the queue as `new Error(msg)` and be charged one of
+    // the five score_fit attempts — the same bug as in the generate /
+    // review lanes, one file over, reached through a string instead of
+    // through a type (2026-10-02).
+    //
+    // Both callers want the type preserved: aiQueue parks the row on the
+    // provider's clock for free, and `jobs:recomputeFit` surfaces "no
+    // provider available" rather than a fit score nobody computed.
+    if (err instanceof ProviderCooldownError) throw err
+    return updated
   }
 }

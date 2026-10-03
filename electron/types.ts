@@ -324,6 +324,17 @@ export interface Settings {
    */
   queue_dedup_v2: string
   /**
+   * One-shot gate for `unpoisonCooldownFailedAIQueueItems`: the repair
+   * for queue rows that burned their whole attempt budget on failures
+   * that never reached the provider (2026-10-02).
+   *
+   * A NEW flag rather than a reset of `queue_dedup_v1`/`_v2`, for the
+   * same reason those were separate: each is the record that a given
+   * store went through that repair, and re-arming one would re-run a
+   * pass forever. A store carrying this flag has been repaired.
+   */
+  queue_cooldown_reset_v1: string
+  /**
    * Epoch ms of the user's last "Clear queue", 0 when never cleared.
    *
    * The durable half of the clear: the queue rows it deleted can be
@@ -613,6 +624,33 @@ export interface AIQueueItem {
    * still get a chance to recover.
    */
   autoRevives?: number
+  /**
+   * Epoch ms when this row was last parked because no AI provider was
+   * available, or absent when it was not.
+   *
+   * The row's own record of a block that cost nothing — `callAI` threw
+   * before making a request (see ProviderCooldownError), so `attempts`
+   * was not incremented. Without a marker the row is
+   * indistinguishable from one that is merely queued behind other work:
+   * both are `pending` with a future `nextRetryAt`, which is exactly how
+   * 265 tasks looked like ordinary backlog while the app was unable to
+   * run any of them for 20 hours (2026-10-02). It is what the Queue
+   * panel renders as a distinct state, and what `aiQueueBlockedState`
+   * counts.
+   *
+   * Cleared when the row is claimed for real work, when the user hits
+   * Retry, and when the revival lanes revive it — the block is over in
+   * all three cases.
+   */
+  blockedSince?: number
+  /**
+   * How many times this row has been parked on a provider block without
+   * spending an attempt. Escalates that row's re-probe interval
+   * (30s, 60s, 2m … capped) so a health map that keeps pushing the
+   * provider's own clock forward cannot hold the row on the shortest
+   * possible wake-up. Reset to absent with `blockedSince`.
+   */
+  blockedCount?: number
   createdAt: number
   nextRetryAt: number
   /**
