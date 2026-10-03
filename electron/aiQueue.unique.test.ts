@@ -243,6 +243,7 @@ describe('a failed row is revived in place rather than re-added', () => {
     // drift, a re-add and a Retry hand the user different budgets for
     // the same failure.
     seedRow({ type: 'score_fit', jobId: 42, status: 'failed' })
+    const before = Date.now()
     enqueue({ type: 'score_fit', jobId: 42 })
     const viaEnqueue = store.writes[0].patch
     store.writes = []
@@ -259,10 +260,25 @@ describe('a failed row is revived in place rather than re-added', () => {
     const { nextRetryAt: enqueueAt, ...enqueueRest } = viaEnqueue
     const { nextRetryAt: retryAt, ...retryRest } = viaRetry
     expect(enqueueRest).toEqual(retryRest)
-    // And both deadlines are "now" rather than a backoff or the old
-    // nextRetryAt, which is the property the deadline is there to carry.
-    expect(enqueueAt).toBeLessThanOrEqual(Date.now())
-    expect(retryAt).toBeLessThanOrEqual(Date.now())
+    // Both deadlines are "now" rather than a backoff or the old nextRetryAt,
+    // which is the property the deadline is there to carry. Read the clock
+    // after both calls so the comparison cannot lose a millisecond to a tick,
+    // and bound the other end so a deadline from before this test cannot pass
+    // as "now" either.
+    const after = Date.now()
+    expect(before).toBeLessThanOrEqual(Number(enqueueAt))
+    expect(before).toBeLessThanOrEqual(Number(retryAt))
+    expect(Number(enqueueAt)).toBeLessThanOrEqual(after)
+    expect(Number(retryAt)).toBeLessThanOrEqual(after)
+    // And the two paths stamp the same instant, not merely a plausible one.
+    // "Both are now" was strictly weaker than comparing the whole patch: a path
+    // that stamped `Date.now() - 60_000`, a minute-old deadline the checks above
+    // cannot see, passed that and fails this. 1s is three orders of magnitude
+    // above the millisecond tick that made the original flake, and both reads
+    // happen inside one synchronous test body, so only a stall longer than a
+    // second separates them.
+    expect(Number(enqueueAt)).toBeGreaterThanOrEqual(after - 1_000)
+    expect(Math.abs(Number(enqueueAt) - Number(retryAt))).toBeLessThan(1_000)
   })
 
   it('does not write at all when an automatic enqueue lands on a healthy row', () => {

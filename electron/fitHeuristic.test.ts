@@ -992,92 +992,157 @@ describe('determinism', () => {
  * stay cheap. Same synthetic 12k-word posting the keyword extractor is
  * guarded on, plus a guard on the size real postings actually are.
  *
- * These guards measure CPU, not wall clock, and that is the whole point.
+ * Both guards below measure CPU and divide it by a fixed reference workload
+ * measured in the same rounds, in the same process, interleaved with the work
+ * under test. That ratio is the whole point, and everything else follows.
  *
- * The property worth guarding is "the scorer burns little CPU", not "the
- * scorer returns within N ms of wall clock on whatever machine happens to be
- * running the suite". A wall-clock bound measures the machine as much as it
- * measures the scorer: a worker descheduled by its siblings, or a CI box with
- * something else on it, inflates wall clock without the scorer getting any
- * slower. Measured here, 1000 scorings of a realistic posting:
+ * The property worth guarding is "the scorer burns little CPU *for this
+ * machine, right now*". Not "it returns within N ms of wall clock on whatever
+ * machine happens to be running the suite", and not "it burns fewer than N ms
+ * of CPU on every machine ever built". Both of those measure the machine at
+ * least as much as the scorer: a worker descheduled by its siblings, a CI box
+ * with something else on it, or a slow core all move the number without the
+ * scorer changing at all.
  *
- *              idle           under 24 competing CPU spinners
- *     wall     409-425ms      2390-2745ms    <- 6x swing, all of it the box
- *     cpu      409-428ms       743-768ms     <- 1.9x swing
+ * What a busy box does to a CPU measurement, measured with this guard on an
+ * 8-core box (vitest 4.1.10, `maxWorkers = 4`, `availableParallelism() == 8`),
+ * median of 5 repeats of 1000 scorings of a realistic posting:
  *
- * Wall clock moved 6x and CPU moved under 2x for byte-identical work, so the
- * old `elapsed < 1000` bound was failing on scheduling rather than on the
- * scorer. Both tests below assert CPU. The wall-clock number is reported in
- * the failure message so a slow run still says what it cost.
+ *                     idle        light load    24 spinners   4 foreign workers
+ *                     load 2.6    load 6-36     load ~35      load 40-80
+ *     scan cpu        417-442ms   426-813ms     946-1023ms    935-1226ms
+ *     reference       25.9-26.4   26.3-42.0     47.3-50.7     47.9-55.2
+ *     scan/reference  16.2-16.3   16.2-20.2     18.9-21.5     19.3-23.1
  *
- * The budgets are set from those measurements, not from the old wall-clock
- * numbers:
+ * The raw CPU figure moves 2.9x across those conditions, so no fixed
+ * millisecond budget can be a trip point on it. At the 1500ms of headroom
+ * this branch settled on, a 3x-slowdown mutation is caught when the box is
+ * quiet (3.6x trip point) and missed when it is busy (1.2x trip point), and
+ * the busiest condition measured is 1226ms of *clean* scorer -- 1.2x of margin
+ * on correct code, one background GC spike from failing on nothing. Dividing by
+ * a reference workload fixes the first problem and creates the margin for the
+ * second: the normalised figure moves 1.42x, not 2.9x.
  *
- *   - 1000 realistic listings: see SCAN_CPU_BUDGET_MS below.
- *   - one 12k-word posting: ~34ms of CPU idle, ~50ms loaded. The 2000ms
- *     budget is carried over unchanged and is now measured against CPU, so it
- *     has ~40x headroom in every condition measured.
+ * It takes two halves of a reference, not one, and that is the other measured
+ * result. A busy box inflates process CPU time because V8's background threads
+ * -- concurrent marking during GC, the optimising compiler -- get scheduled
+ * alongside the main thread, and which of them does the inflating depends on
+ * the *shape* of the contention. Measured as the spread of the factor across
+ * the four conditions above:
  *
- * Each guard measures 5 times and asserts the best CPU figure. See
- * `bestOfCpu` for why.
+ *   - a tight numeric loop as the reference: 1.96x. Compute bound, so it barely
+ *     sees the background threads the scorer pays for.
+ *   - a regexp-and-Set pass over a 64KB posting as the reference: 1.69x. Same
+ *     shape as the scorer, and it tracks it under CPU starvation -- but it
+ *     allocates ~450k strings per call, so under memory pressure it inflates
+ *     3.5x where the scorer inflates 2.2x, and the factor collapses.
+ *   - both, geometric mean: 1.24x.
+ *
+ * Neither half touches the code under test, so a change to the scorer cannot
+ * move them, and neither can be optimised away: the compute half's arithmetic
+ * is accumulated and the allocation half's count is derived from the strings it
+ * builds. Cost: 53ms of CPU idle per repeat, against the scan's 417-1226ms.
  *
  * `process.cpuUsage()` is process-wide rather than per-thread, which is why
- * each guard takes the best of several runs -- see `bestOfCpu`. Node has no
- * per-thread CPU clock, so a per-run figure also picks up V8's own background
- * threads. Under this config each worker still runs one isolated file at a
- * time and this file is pure synchronous scoring with no timers or async work,
- * so the main thread's work is the only thing that varies between repeats.
- *
- * No warm-up run: V8's interpreter ramp is worth ~4% of the CPU figure here
- * (425ms for the first 1000 calls against 409ms once tiered up), which is far
- * inside the headroom, and paying 500-2000 extra scorings on every run would
- * spend test time and push the whole test towards the 5s test timeout for
- * nothing.
- *
- * The 1000-listing test also carries its own wall-clock budget, because 1000
- * synchronous scorings take 0.4s of CPU and there is no way to make that cost
- * less wall time on a busier machine -- only a slower machine buys it. Five
- * repeats of that under 30 competing CPU spinners measure 2.7-3.1s each, so
- * the whole measurement is ~15s of wall clock on a badly loaded box and ~2s
- * idle. The 60s budget is a hang detector for the five repeats, several times
- * the worst measured. The guard against a slow scorer is the CPU assertion
- * above, not this number: the wall clock is reported so a failure says how much
- * of it was the machine.
+ * every repeat is measured next to the reference rather than on its own, and
+ * why the median is used rather than the minimum: the first sample after a
+ * warm-up is still ~35% high (V8's ramp), and the median discards that and any
+ * single background-thread spike without needing a longer warm-up.
  */
-const SCAN_WALL_CLOCK_BUDGET_MS = 60_000
 
-/** How many times each guard measures before taking the best CPU figure. */
+/**
+ * The tripwire for the 1000-listing measurement, and it is deliberately not
+ * measured in wall-clock milliseconds.
+ *
+ * The obvious version of this -- "give up if the measurement has been going
+ * 45s" -- was written, measured, and thrown out: at a load average of 80 on
+ * this box a 2x slowdown legitimately needs 10s of wall clock per repeat, so it
+ * fired on a measurement that was about to report correctly and printed a 45s
+ * that was not the time the scorer had taken. A wall-clock budget on a
+ * synchronous measurement is a statement about the box, not about the scorer,
+ * which is the mistake the old `elapsed < 1000` guard made in the first place.
+ *
+ * So the tripwire counts CPU against the same reference the guard asserts
+ * against, and only a scorer already 3x past the budget can reach it: clean code
+ * measures 16.2-23.1 and the budget is 45. Being CPU-based it cannot be moved
+ * by a busy box, because the same work costs the same CPU.
+ */
+const SCAN_MEASUREMENT_CPU_TRIPWIRE = 150
+
+/**
+ * Budget for 1000 scorings of a realistic posting, as a normalised factor.
+ *
+ * The guard used to assert raw CPU against 1500ms, which is not a trip point
+ * on any machine whose speed nobody controls. This is the same 1500ms of
+ * headroom expressed against the machine in front of you instead, and it is set
+ * from the measured factor range of 16.2 (idle) to 23.1 (busiest):
+ *
+ *   - correct code runs 45/23.1 = 1.9x below this budget in the busiest
+ *     condition measured, and 2.8x below it when idle;
+ *   - a 3x slowdown measures 48.6-69.3 and fails in every condition measured,
+ *     with at least 8% to spare against the worst trip point (2.78x);
+ *   - a 2x slowdown measures 32.4-46.2 and passed in every condition measured,
+ *     as it did under the old budget.
+ *
+ * The honest limit is the band between those two: the trip point is 1.95x on
+ * the busiest box measured and 2.78x on the quietest, so somewhere in 2x-2.8x
+ * the verdict still depends on the machine. Below ~2x this workload cannot
+ * separate correct code from a real regression, which is stated here rather
+ * than papered over, and the last test in this describe pins the band.
+ *
+ * Verified by mutation rather than assumed: `scoreCompatibilityStructured` was
+ * made to do its real work N times per call -- identical return value, pure CPU
+ * cost -- and this guard re-run at N=1,2,3,4 idle, at 3x CPU oversubscription
+ * and under a foreign memory-heavy load. Every level gave the same verdict in
+ * every condition.
+ */
+const SCAN_INTERFERENCE_FACTOR_BUDGET = 45
+
+/**
+ * Vitest's own timeout for the same test, which is a ceiling and nothing more.
+ * Node cannot preempt a synchronous body, so vitest's timer is only evaluated
+ * once the body returns: a body that busy-loops for 7094ms under a 3000ms
+ * timeout reports "Test timed out in 3000ms" after 7094ms, and an unbounded
+ * synchronous hang reports nothing at all (measured: still running after 600s).
+ *
+ * So it is sized as the ceiling on legitimate work rather than as a hang
+ * detector: the slowest legitimate measurement seen here is a 2x slowdown at a
+ * load average of 80 -- 10s of wall clock per repeat, ~60s for the whole test --
+ * and this is 2x that. What actually stops a runaway scorer is
+ * SCAN_MEASUREMENT_CPU_TRIPWIRE, from inside the loop it is watching, reporting
+ * the CPU and wall clock it actually measured.
+ */
+const SCAN_MEASUREMENT_CEILING_MS = 120_000
+
+/** How many times the scan guard measures. The median of 5 discards one high end and one low end. */
 const REPEATS = 5
 
 /**
- * CPU budget for 1000 scorings of a realistic posting.
- *
- * The old guard asserted wall clock against 1000ms. It failed 3 runs in 5 on
- * an untouched main, and 18 runs in 20 with the file alone -- not even the
- * worker pool, just a busy box.
- *
- * Measured, 1000 scorings:
- *
- *              idle           under 30 competing CPU spinners (3.75x)
- *     wall     405-486ms      2743-3104ms    <- 7x swing, all of it the box
- *     cpu      411-486ms       715-769ms     <- under 2x
- *
- * so the guard asserts CPU, at the best of 5 runs, and 1500ms sits ~2x above
- * the worst loaded figure measured. What that headroom buys is verified rather
- * than assumed: running the whole scorer N times inside the wrapper leaves all
- * 96 other tests in the file green and fails this one at 4x (best-of-5 CPU
- * 1650ms) and at 6x (2410ms), while 3x stays green. So the guard holds a 3x
- * regression and fails a 4x one.
- *
- * Best-of-5 is what makes the number stable rather than merely less noisy: a
- * single measurement inflated to 1875ms on a box at load average 33, while the
- * five repeats on that same box came out at 724, 715, 752, 721, 730ms.
- *
- * The earlier 1000ms figure is deliberately not kept. It was only 1.3x over the
- * worst single loaded measurement, which is not a stable guard, and a budget
- * chosen to make the number pass is not a guard.
+ * How many times the 12k-word posting guard measures: 3, not 5. Its cost is
+ * 34ms against the scan's 421ms, so its wall clock is dominated by measuring
+ * the reference beside it -- 5.8s of the 5.8s total at 6x oversubscription, of
+ * which the posting itself is 0.2s -- and 3 repeats keep the whole test inside
+ * the 5s global timeout on a box that busy. The median of 3 still discards a
+ * single background-thread spike, which is the only thing the extra repeats
+ * were buying.
  */
-const SCAN_CPU_BUDGET_MS = 1500
+const POSTING_REPEATS = 3
+
+/**
+ * Ceiling on that same test, because "inside the 5s default" is a statement
+ * about this box: 0.4s idle, 5.8s at 6x oversubscription. The assertion inside
+ * is on CPU, so the wall clock is only ever a ceiling here.
+ */
+const POSTING_MEASUREMENT_CEILING_MS = 30_000
+
+/**
+ * Budget for scoring one 12k-word posting, as a normalised factor.
+ *
+ * ~34ms of CPU idle and ~46ms loaded against a reference of 26-55ms, so the
+ * clean factor is 1.4-2.3 and the old 2000ms bound was 28-43x of headroom. 65
+ * keeps that headroom, now measured against this machine rather than assumed.
+ */
+const POSTING_INTERFERENCE_FACTOR_BUDGET = 65
 
 describe('performance guard', () => {
   const filler =
@@ -1086,6 +1151,69 @@ describe('performance guard', () => {
   const big = ['Staff Platform Engineer', ''].join('\n') + (filler + skills).repeat(320)
 
   const engCv = `${CV_ENG}\nLed platform teams, delivered services, quarterly planning cycles.`
+
+  /**
+   * Reference half one: compute bound, nothing allocated, ~31ms of CPU idle
+   * here.
+   */
+  const REFERENCE_COMPUTE_PASSES = 4_500_000
+
+  /**
+   * Reference half two: allocation bound, and shaped like the scorer --
+   * lowercase, tokenise with a global regexp, build a Set, probe it per token --
+   * over a 64KB posting-shaped blob. ~22ms of CPU idle here, ~26ms loaded, and
+   * ~450k short-lived strings per call, which is what makes it sensitive to the
+   * memory pressure the compute half cannot see.
+   */
+  const referenceDoc = (filler + skills).repeat(200)
+  const referenceTerms = new Set([
+    'python',
+    'kafka',
+    'postgres',
+    'kubernetes',
+    'terraform',
+    'spark',
+    'airflow',
+    'redis',
+    'golang',
+    'reporting',
+    'finance'
+  ])
+  const REFERENCE_ALLOC_PASSES = 45
+
+  /**
+   * Sinks for the two halves' results. They exist so neither half can be
+   * optimised away -- a performance reference the optimiser deletes is worse
+   * than no reference -- and `referenceAcc` reads them back.
+   */
+  let computeAcc = 0
+  let allocAcc = 0
+
+  function computeReferenceWork(): void {
+    let x = 0x12345678
+    let y = 1.0000001
+    for (let i = 0; i < REFERENCE_COMPUTE_PASSES; i++) {
+      x = (x * 1103515245 + 12345) & 0x7fffffff
+      y = y * 1.0000001 + ((x >>> 7) & 1023) / 1024
+    }
+    computeAcc += x + (y | 0)
+  }
+
+  function allocReferenceWork(): void {
+    let hits = 0
+    for (let pass = 0; pass < REFERENCE_ALLOC_PASSES; pass++) {
+      const tokens = referenceDoc.toLowerCase().match(/[a-z]+/g) ?? []
+      const distinct = new Set(tokens)
+      for (const token of tokens) if (referenceTerms.has(token)) hits++
+      hits += distinct.size
+    }
+    allocAcc += hits
+  }
+
+  /** Proof, asserted below, that the reference work actually ran. */
+  function referenceAcc(): number {
+    return computeAcc + allocAcc
+  }
 
   /** Wall ms and CPU ms for one run of `body`. */
   function timed(body: () => void): { wall: number; cpu: number } {
@@ -1096,30 +1224,30 @@ describe('performance guard', () => {
     return { wall: performance.now() - wallStart, cpu: (used.user + used.system) / 1000 }
   }
 
+  function median(values: number[]): number {
+    const sorted = [...values].sort((a, b) => a - b)
+    const mid = sorted.length >> 1
+    return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+  }
+
+  /** Both reference halves of one round, measured back to back. */
+  function referenceRound(): { compute: number; alloc: number } {
+    const compute = timed(computeReferenceWork).cpu
+    const alloc = timed(allocReferenceWork).cpu
+    return { compute, alloc }
+  }
+
+  /** Both reference halves across the rounds, combined the way the docs above describe. */
+  function referenceCost(compute: number[], alloc: number[]): number {
+    return Math.sqrt(median(compute) * median(alloc))
+  }
+
   /**
-   * Best of `REPEATS` runs, by CPU.
-   *
-   * CPU time is much steadier than wall clock, but it is not perfectly flat:
-   * `process.cpuUsage()` is process-wide, so it also counts V8's background
-   * threads -- concurrent marking during GC, and the optimising compiler. On a
-   * badly oversubscribed box those threads get scheduled more, and a single
-   * measurement inflated from ~640ms to 1875ms that way, which is what left
-   * this test intermittently red at a 1500ms budget.
-   *
-   * Interference of any kind can only ever make a run slower, never faster, so
-   * the minimum over several runs is the closest available estimate of the
-   * interference-free cost. Taking the best is what makes the guard a statement
-   * about the scorer rather than about whatever else the machine was doing.
+   * The one decision both guards and the estimator test below make: is this
+   * much CPU, for this machine, a regression?
    */
-  function bestOfCpu(repeats: number, body: () => void): { cpu: number; wall: number; cpuAll: number[] } {
-    const cpuAll: number[] = []
-    let best = { cpu: Infinity, wall: 0 }
-    for (let i = 0; i < repeats; i++) {
-      const run = timed(body)
-      cpuAll.push(run.cpu)
-      if (run.cpu < best.cpu) best = run
-    }
-    return { cpu: best.cpu, wall: best.wall, cpuAll }
+  function withinBudget(scanCpu: number, reference: number): boolean {
+    return scanCpu / reference < SCAN_INTERFERENCE_FACTOR_BUDGET
   }
 
   function scoreBigPosting(): number {
@@ -1132,25 +1260,154 @@ describe('performance guard', () => {
     })
   }
 
-  it('scores a 12k-word posting well under the 2s bound', () => {
+  it('scores a 12k-word posting well inside its own budget', () => {
     expect(big.split(/\s+/).length).toBeGreaterThan(10000)
     expect(scoreBigPosting()).toBeGreaterThan(0)
 
-    const { wall, cpu } = bestOfCpu(REPEATS, scoreBigPosting)
-    expect(cpu, `scoring used ${cpu.toFixed(0)}ms of CPU over ${wall.toFixed(0)}ms of wall clock`).toBeLessThan(2000)
-  })
+    // One warm-up pass, unmeasured: the first pass through both the scorer and
+    // the reference pays V8's ramp, and the median would rather not have to
+    // throw that sample away.
+    computeReferenceWork()
+    allocReferenceWork()
+    scoreBigPosting()
 
-  it('scores realistic postings fast enough for a scan (1000 listings under 1s)', () => {
-    const posting = ['Financial Analyst, Reporting', ''].join('\n') + (filler + skills).repeat(2)
-    const { wall, cpu, cpuAll } = bestOfCpu(REPEATS, () => {
-      for (let i = 0; i < 1000; i++) {
-        scoreCompatibility('Financial Analyst, Reporting', `${posting} posting ${i}`, CV_FINANCE)
-      }
-    })
+    const cpu: number[] = []
+    const compute: number[] = []
+    const alloc: number[] = []
+    const wall: number[] = []
+    for (let i = 0; i < POSTING_REPEATS; i++) {
+      const ref = referenceRound()
+      const run = timed(scoreBigPosting)
+      cpu.push(run.cpu)
+      compute.push(ref.compute)
+      alloc.push(ref.alloc)
+      wall.push(run.wall)
+    }
+    const reference = referenceCost(compute, alloc)
+    const factor = median(cpu) / reference
     expect(
-      cpu,
-      `1000 scorings used ${cpu.toFixed(0)}ms of CPU at best of ${REPEATS}` +
-        ` (${cpuAll.map((c) => c.toFixed(0)).join(', ')}ms; best was over ${wall.toFixed(0)}ms of wall clock)`
-    ).toBeLessThan(SCAN_CPU_BUDGET_MS)
-  }, SCAN_WALL_CLOCK_BUDGET_MS)
+      factor,
+      `one 12k-word posting used ${median(cpu).toFixed(0)}ms of CPU at the median of ${POSTING_REPEATS}` +
+        ` (${cpu.map((c) => c.toFixed(0)).join(', ')}ms) against a reference of ${reference.toFixed(1)}ms` +
+        ` (${median(compute).toFixed(1)}ms compute, ${median(alloc).toFixed(1)}ms allocation),` +
+        ` a factor of ${factor.toFixed(1)} against a budget of ${POSTING_INTERFERENCE_FACTOR_BUDGET},` +
+        ` over ${median(wall).toFixed(0)}ms of wall clock`
+    ).toBeLessThan(POSTING_INTERFERENCE_FACTOR_BUDGET)
+  }, POSTING_MEASUREMENT_CEILING_MS)
+
+  it('scores realistic postings fast enough for a scan (1000 listings, fails at 3x)', () => {
+    const posting = ['Financial Analyst, Reporting', ''].join('\n') + (filler + skills).repeat(2)
+    const LISTINGS = 1000
+    /** How often the tripwire looks at the clock and the CPU. */
+    const TRIPWIRE_EVERY = 100
+
+    // Warm-up pass, unmeasured, and the reference cost it implies: the tripwire
+    // needs a denominator before the first repeat has finished.
+    computeReferenceWork()
+    allocReferenceWork()
+    let referenceSoFar = Math.sqrt(timed(computeReferenceWork).cpu * timed(allocReferenceWork).cpu)
+    for (let i = 0; i < LISTINGS; i++) {
+      scoreCompatibility('Financial Analyst, Reporting', `${posting} warmup ${i}`, CV_FINANCE)
+    }
+
+    const cpu: number[] = []
+    const compute: number[] = []
+    const alloc: number[] = []
+    const wall: number[] = []
+    let listingsScored = 0
+    const wallStart = performance.now()
+    let scanCpuStart = process.cpuUsage()
+
+    for (let repeat = 0; repeat < REPEATS; repeat++) {
+      const ref = referenceRound()
+      scanCpuStart = process.cpuUsage()
+      const run = timed(() => {
+        for (let i = 0; i < LISTINGS; i++) {
+          // Checked from inside the loop, so it can stop a runaway scorer
+          // instead of waiting for it to finish. Counted in CPU against the same
+          // reference the guard asserts against, so a busy box cannot move it.
+          if (i % TRIPWIRE_EVERY === 0) {
+            const used = process.cpuUsage(scanCpuStart)
+            const scanCpu = (used.user + used.system) / 1000
+            const factorSoFar = scanCpu / referenceSoFar
+            if (factorSoFar > SCAN_MEASUREMENT_CPU_TRIPWIRE) {
+              const finished = cpu.map((c) => `${c.toFixed(0)}ms`).join(', ')
+              const measured = finished ? ` (${finished} in the repeats that finished)` : ''
+              throw new Error(
+                `the 1000-listing measurement reached an interference factor of ${factorSoFar.toFixed(0)}` +
+                  ` (tripwire ${SCAN_MEASUREMENT_CPU_TRIPWIRE}, budget ${SCAN_INTERFERENCE_FACTOR_BUDGET})` +
+                  ` after ${repeat} completed repeats and ${listingsScored + i} listings, using` +
+                  ` ${scanCpu.toFixed(0)}ms of CPU over ${(performance.now() - wallStart).toFixed(0)}ms of wall clock` +
+                  `${measured}. Stopped mid-measurement rather than spending five repeats confirming it.`
+              )
+            }
+          }
+          scoreCompatibility('Financial Analyst, Reporting', `${posting} posting ${i}`, CV_FINANCE)
+        }
+      })
+      cpu.push(run.cpu)
+      compute.push(ref.compute)
+      alloc.push(ref.alloc)
+      wall.push(run.wall)
+      listingsScored += LISTINGS
+      referenceSoFar = referenceCost(compute, alloc)
+
+      // The verdict only needs two repeats to be decided, and a regression large
+      // enough to trip it costs 1-7s of wall clock per repeat under load:
+      // spending three more repeats to reach the same answer is what let a 6x
+      // regression overrun the whole budget before it could report anything.
+      if (cpu.length >= 2 && !withinBudget(median(cpu), referenceSoFar)) break
+    }
+
+    const reference = referenceCost(compute, alloc)
+    const factor = median(cpu) / reference
+    expect(
+      factor,
+      `1000 scorings used ${median(cpu).toFixed(0)}ms of CPU at the median of ${cpu.length} of ${REPEATS} repeats` +
+        ` (${cpu.map((c) => c.toFixed(0)).join(', ')}ms) against a reference of ${reference.toFixed(1)}ms` +
+        ` (${median(compute).toFixed(1)}ms compute, ${median(alloc).toFixed(1)}ms allocation),` +
+        ` a factor of ${factor.toFixed(1)} against a budget of ${SCAN_INTERFERENCE_FACTOR_BUDGET},` +
+        ` over ${median(wall).toFixed(0)}ms of wall clock (${wall.map((w) => w.toFixed(0)).join(', ')}ms)` +
+        ` over ${listingsScored} listings`
+    ).toBeLessThan(SCAN_INTERFERENCE_FACTOR_BUDGET)
+    expect(referenceAcc()).toBeGreaterThan(0)
+  }, SCAN_MEASUREMENT_CEILING_MS)
+
+  it('gives a slowdown the same verdict idle and under load', () => {
+    // The defect this guard had: the verdict depended on the machine, so the
+    // same 3x regression passed on an idle box and failed on a busy one. These
+    // are two recorded conditions -- quietest and busiest measured with this
+    // guard, 1.31x of factor apart -- replayed at several slowdown factors.
+    const QUIET_BOX = { scanCpu: 430, reference: 26.4 }
+    const BUSY_BOX = { scanCpu: 1020, reference: 47.9 }
+
+    // Outside the band between the two trip points the verdicts must agree.
+    for (const slowdown of [1, 1.5, 2, 3, 4, 7]) {
+      expect(withinBudget(QUIET_BOX.scanCpu * slowdown, QUIET_BOX.reference), `quiet box at ${slowdown}x`).toBe(
+        withinBudget(BUSY_BOX.scanCpu * slowdown, BUSY_BOX.reference)
+      )
+    }
+
+    // And the same numbers say what the guard is worth: correct code is inside
+    // the budget in both conditions, and 3x is outside it in both.
+    expect(withinBudget(QUIET_BOX.scanCpu, QUIET_BOX.reference)).toBe(true)
+    expect(withinBudget(BUSY_BOX.scanCpu, BUSY_BOX.reference)).toBe(true)
+    expect(withinBudget(QUIET_BOX.scanCpu * 3, QUIET_BOX.reference)).toBe(false)
+    expect(withinBudget(BUSY_BOX.scanCpu * 3, BUSY_BOX.reference)).toBe(false)
+
+    // Inside the band -- and only inside it -- the two boxes still disagree, and
+    // that is the guard's stated limit rather than a gap in the test: at 2.5x
+    // the quiet box is still inside the budget and the busy box is not.
+    expect(withinBudget(QUIET_BOX.scanCpu * 2.5, QUIET_BOX.reference)).toBe(true)
+    expect(withinBudget(BUSY_BOX.scanCpu * 2.5, BUSY_BOX.reference)).toBe(false)
+
+    // A machine that is merely slow, rather than busy, must not matter either:
+    // both sides scale with the core, so the factor is unchanged.
+    for (const slowerCore of [0.25, 0.5, 2, 4]) {
+      expect(
+        withinBudget(QUIET_BOX.scanCpu * slowerCore, QUIET_BOX.reference * slowerCore),
+        `${slowerCore}x slower core`
+      ).toBe(true)
+    }
+  })
 })
