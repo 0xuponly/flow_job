@@ -218,7 +218,17 @@ export default function QueuePanel({ items, busyId, onRetry, onRemove }: QueuePa
             item={item}
             position={index + 1}
             statusText={queueItemStatusText(item)}
-            error={item.status === 'failed' && item.lastError ? item.lastError : null}
+            // A parked-on-the-cap row carries the provider's own message —
+            // which provider, how much of its budget is gone, when it frees —
+            // and that is the only place the user is told why their work is
+            // not moving. `failed` alone hid it, which is what made the cap
+            // look like a queue that had simply forgotten the task.
+            error={
+              (item.status === 'failed' || item.parkedReason === 'provider_cap') &&
+              item.lastError
+                ? item.lastError
+                : null
+            }
             busy={busyId === item.id}
             onRetry={onRetry}
             onRemove={onRemove}

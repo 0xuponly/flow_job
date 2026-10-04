@@ -613,6 +613,24 @@ export interface AIQueueItem {
    * still get a chance to recover.
    */
   autoRevives?: number
+  /**
+   * Set while this row is parked on a provider whose call budget is spent,
+   * and cleared the moment the processor takes it again.
+   *
+   * It records WHY a `pending` row is not running, which is the one thing
+   * `status` and `nextRetryAt` cannot express: a row in a rate-limit backoff
+   * and a row waiting for a 24-hour budget are both `pending` with a future
+   * `nextRetryAt`, and only the second is free of charge — no attempt spent,
+   * no revival charged, and it will still be here when the budget returns.
+   * The Queue panel reads it to say so instead of counting down a retry the
+   * row is not spending.
+   *
+   * Absent means the row is not parked on a cap. It is a reason, not a
+   * state: `status` stays `pending`, so every lane that already handles a
+   * parked row (the pick, the dedupe guard, the stranded check) handles this
+   * one without knowing this field exists.
+   */
+  parkedReason?: 'provider_cap'
   createdAt: number
   nextRetryAt: number
   /**

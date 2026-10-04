@@ -376,6 +376,13 @@ export interface AIQueueItem {
    * shape the main process does not send.
    */
   promotedAt?: number
+  /**
+   * Why this `pending` row is not running: `provider_cap` while a provider's
+   * call budget is spent. Mirrors the main-process field, which writes it on
+   * the way in and clears it on the way out; the renderer only reads it, to
+   * tell a free-to-retry row apart from one waiting out a real budget.
+   */
+  parkedReason?: 'provider_cap'
   createdAt: number
   nextRetryAt: number
 }

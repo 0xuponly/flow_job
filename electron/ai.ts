@@ -468,107 +468,15 @@ export function resetModelHealthByIds(ids: Iterable<string>): void {
   }
 }
 
-function modelKey(model: ApiModelConfig): string {
-  return model.id || `${model.base_url}::${model.model}`
-}
-
-// -------------------------------------------------------------------------
-// THE PROVIDER KEY
-//
-// `modelKey()` above answers "which configured model is this?", which is the
-// wrong unit for money. Twenty free OpenRouter models on one key are twenty
-// health entries with twenty independent cooldowns, so the provider can be
-// called twenty times the moment those lapse — and what gets cut off when a
-// free tier runs dry is the KEY, not the model.
-//
-// So the bucket is derived the same way `modelKey` derives its key — from
-// the base URL / the credential, never from the model name — as
-// `normalised endpoint + credential fingerprint`:
-//
-//   * the endpoint, so a model on a different base URL is its own provider
-//     (opencode Zen and OpenRouter never share a budget), compared
-//     case-insensitively and without a trailing slash, so
-//     `https://openrouter.ai/api/v1` and `https://openrouter.ai/api/v1/`
-//     are one provider rather than two;
-//   * the credential, so two keys against the same host are two budgets —
-//     each key has its own allowance, and the thing being protected is the
-//     key.
-//
-// The credential is stored as a one-way hash, never as the key and never as
-// a fragment of it, so the persisted ledger can match two models that share a
-// credential without the store holding one.
-// -------------------------------------------------------------------------
-
-/** Host + normalised path of a base URL, or null if it cannot be classified. */
-function providerEndpoint(baseUrl: string | undefined): { key: string; label: string } | null {
-  const raw = (baseUrl ?? '').trim()
-  if (raw.length === 0) return null
-  let url: URL
-  try {
-    url = new URL(raw)
-  } catch {
-    return null
-  }
-  const protocol = url.protocol.toLowerCase()
-  // http is legitimate and expected: local models (Ollama, LM Studio) are
-  // served over plain http on localhost. Anything else is not an endpoint we
-  // know how to spend against.
-  if (protocol !== 'http:' && protocol !== 'https:') return null
-  const host = url.host.toLowerCase()
-  const path = url.pathname.replace(/\/+$/, '')
-  // Query and hash are dropped: an API version or a trailing slash is not a
-  // different provider, and `?api-key=` style query credentials would put a
-  // secret in a persisted key for no benefit.
-  return { key: `${protocol}//${host}${path}`, label: host }
-}
-
-function credentialFingerprint(apiKey: string | undefined): string {
-  const raw = (apiKey ?? '').trim()
-  if (raw.length === 0) return 'anonymous'
-  // One-way and stable. Not a security boundary and not claimed to be — the
-  // ledger lives inside the encrypted store — but it is enough that the same
-  // credential always lands in the same bucket and nothing readable is
-  // written down.
-  return hashString(raw)
-}
-
-/**
- * The canonical provider bucket for a model.
- *
- * UNCLASSIFIABLE BASE URL — the one case that has no honest single answer.
- * If the base URL is not a parseable http(s) URL there is no way to tell
- * whether two such models share a credential, and both available answers are
- * wrong in a way the user pays for:
- *
- *   * bucket them all together, and one typo'd or exotic endpoint silently
- *     spends the whole budget of twenty unrelated models — the rotation goes
- *     dark with no cause on the provider that is working fine;
- *   * treat them as uncapable, and the cap is not a cap.
- *
- * So each unclassifiable model gets a bucket of its own, keyed by its own
- * model key: still capped (the bound holds for every model), never silently
- * merged (nothing else is affected), and logged once per model, because a
- * base URL the app cannot parse is a configuration error the user should
- * hear about rather than a condition to work around quietly.
- */
-// One warning per unclassifiable model per process, not one per rotation.
-const unclassifiedProvidersLogged = new Set<string>()
-
-export function providerKey(model: ApiModelConfig): string {
-  const endpoint = providerEndpoint(model.base_url)
-  if (!endpoint) {
-    const key = `unclassified:${credentialFingerprint(model.api_key)}:${modelKey(model)}`
-    if (!unclassifiedProvidersLogged.has(key)) {
-      unclassifiedProvidersLogged.add(key)
-      log.ai.warn(
-        `[ai] model "${model.name}" has a base URL this app cannot classify; ` +
-        'it gets its own provider budget rather than sharing one'
-      )
-    }
-    return key
-  }
-  return `${endpoint.key}#${credentialFingerprint(model.api_key)}`
-}
+// `providerKey` (the bucket identity), `modelKey` (the health key) and the
+// fingerprint helper all live in their own module now, because `database.ts`
+// has to derive the same bucket when a model row is edited — see the note at
+// the top of providerKey.ts. Re-exported here because every importer of the
+// cap's public surface has always reached for them through ai.ts, and a
+// money-path refactor is not the moment to make eleven call sites learn a
+// new module path.
+export { providerKey, providerKeyMoved } from './providerKey'
+import { hashString, modelKey, providerKey, resetProviderKeyWarnings } from './providerKey'
 
 /**
  * A provider's spend in the current rolling window.
@@ -589,6 +497,21 @@ export interface ProviderBudget {
   cap: number
   /** When the oldest in-window call ages out — null while under the cap. */
   freeAt: number | null
+  /**
+   * A recorded call is dated more than a whole window AHEAD of now, so the
+   * machine's clock was wrong when it was written and every timestamp in
+   * this ledger — including the ones that look fine — is suspect.
+   *
+   * The cap does not apply while this is true (`providerOverCap`), because
+   * the alternative is what this flag exists to prevent: a clock once set to
+   * the wrong year left every entry permanently inside the window, so the
+   * provider read as capped until that imaginary year was over, with the only
+   * clearing path being a test-only export behind no IPC. A bound that cannot
+   * be evaluated must not be enforced — the spend is what it is, the user
+   * still gets their work done, and `used` below still reports what was
+   * recorded so the anomaly is visible rather than silently corrected.
+   */
+  clockSkewed: boolean
 }
 
 function providerLabel(key: string): string {
@@ -600,22 +523,34 @@ function providerLabel(key: string): string {
   return slash === -1 ? endpoint : endpoint.slice(slash + 2)
 }
 
-function providerCalls(key: string, now: number): { at: number; manual: boolean }[] {
+function providerCalls(key: string, now: number): { calls: { at: number; manual: boolean }[]; clockSkewed: boolean } {
   const history = getProviderSpend()[key]
-  if (!Array.isArray(history)) return []
+  if (!Array.isArray(history)) return { calls: [], clockSkewed: false }
   const cutoff = now - PROVIDER_SPEND_WINDOW_MS
   // Filtered rather than sliced: a store written by an older build, or a
   // clock that moved backwards, must not make the count wrong in the
   // direction that spends money. Over-counting is recoverable; under-counting
   // is the hole this whole thing exists to close.
-  return history.filter(
+  //
+  // The window is one-sided ON PURPOSE. `c.at` is written with `Date.now()`,
+  // so a stamp in the future can only mean the clock was wrong when it was
+  // written — and a two-sided window would simply delete it, taking the only
+  // record of what the app did with the anomaly along with it. So the
+  // impossible stamp is counted, not corrected, and `clockSkewed` says so.
+  const calls = history.filter(
     (c): c is { at: number; manual: boolean } =>
       !!c && typeof c.at === 'number' && Number.isFinite(c.at) && c.at > cutoff
   )
+  // A whole window of forward slack, not zero: a machine a few minutes fast
+  // is an ordinary thing and its entries are real spend that must keep
+  // counting, and the tolerance costs nothing because a correctly-clocked
+  // machine never reaches it.
+  const horizon = now + PROVIDER_SPEND_WINDOW_MS
+  return { calls, clockSkewed: calls.some((c) => c.at > horizon) }
 }
 
 export function providerBudget(key: string, now = Date.now()): ProviderBudget {
-  const calls = providerCalls(key, now)
+  const { calls, clockSkewed } = providerCalls(key, now)
   let automated = 0
   let manual = 0
   for (const c of calls) {
@@ -631,7 +566,8 @@ export function providerBudget(key: string, now = Date.now()): ProviderBudget {
     cap: resolveProviderCap(),
     // The oldest call in the window is the one that frees first: the budget
     // is available again one full window after it was spent.
-    freeAt: calls.length === 0 ? null : Math.min(...calls.map((c) => c.at)) + PROVIDER_SPEND_WINDOW_MS
+    freeAt: calls.length === 0 ? null : Math.min(...calls.map((c) => c.at)) + PROVIDER_SPEND_WINDOW_MS,
+    clockSkewed
   }
 }
 
@@ -653,7 +589,43 @@ function resolveProviderCap(): number {
  */
 function providerOverCap(key: string, now = Date.now()): ProviderBudget | null {
   const budget = providerBudget(key, now)
+  // A ledger the clock has invalidated is not a budget the app can evaluate,
+  // and enforcing it anyway is the dead end: over-counting that never ages
+  // out is not recoverable, so a wrong clock would cost the user their
+  // automated work for as long as the wrong clock implied. See
+  // `ProviderBudget.clockSkewed`.
+  if (budget.clockSkewed) return null
   return budget.used >= budget.cap ? budget : null
+}
+
+/**
+ * When does the EARLIEST capped provider get its budget back?
+ *
+ * The queue's answer to "how long does a refused row have to wait", and the
+ * reason a cap refusal can be parked rather than counted as a failure: the
+ * budget frees on a schedule this code already knows — `providerBudget`
+ * computes it from the ledger, every time, from real records. So there is
+ * nothing to guess and no new constant to invent; the only question was
+ * which providers to consider.
+ *
+ * Every ENABLED model, and only capped ones: the point of the number is "the
+ * earliest moment some provider could serve this row", so a disabled model
+ * (which the rotation would never reach) must not push it later, and an
+ * unfunded one must not pull it earlier. Null when nothing is capped, which
+ * is the honest reading and the one the queue treats as "no reason to wait".
+ */
+export function nextProviderCapFreeAt(now = Date.now()): number | null {
+  let soonest: number | null = null
+  const seen = new Set<string>()
+  for (const model of eligibleModels()) {
+    const key = providerKey(model)
+    if (seen.has(key)) continue
+    seen.add(key)
+    const over = providerOverCap(key, now)
+    if (!over || over.freeAt === null) continue
+    if (soonest === null || over.freeAt < soonest) soonest = over.freeAt
+  }
+  return soonest
 }
 
 function clockTime(at: number): string {
@@ -729,7 +701,7 @@ function countProviderCall(key: string, manual: boolean): void {
 export function resetProviderSpend(): void {
   clearProviderSpend()
   capAnnounced.clear()
-  unclassifiedProvidersLogged.clear()
+  resetProviderKeyWarnings()
 }
 
 function getHealth(model: ApiModelConfig): ModelHealth {
@@ -838,14 +810,6 @@ function recordModelFailure(
   }
 
   modelHealth.set(key, health)
-}
-
-function hashString(s: string): string {
-  let h = 5381
-  for (let i = 0; i < s.length; i++) {
-    h = ((h << 5) + h + s.charCodeAt(i)) >>> 0
-  }
-  return h.toString(36)
 }
 
 function coalesceKey(systemPrompt: string, userPrompt: string, temperature: number, maxTokens: number): string {
@@ -2160,6 +2124,29 @@ Return the JSON object now.`
         undefined, exclude, opts
       )
     } catch (err) {
+      // A SPENT BUDGET is not the scorer being broken, and folding it into the
+      // heuristic fallback makes it indistinguishable from one. The fallback
+      // is the honest answer to "the model answered and the answer was
+      // unusable" and to an ordinary failure — a 429 storm included, which is
+      // the scorer being temporarily unavailable while a real verdict is still
+      // derivable: the job row records the reason and `fit_source` says
+      // `heuristic`, and the queue's bounded score_fit ladder retries it.
+      //
+      // A cap is different in kind. It is not an error to recover from, it is
+      // a decision the app already made — stop spending on this account for
+      // the rest of this window — and there is no verdict to fall back to
+      // *now*: the spend happens again in an hour, when the budget is back, so
+      // anything stamped in the meantime is a guess the user would have to
+      // notice was one. So the refusal is allowed out, and the lane that owns
+      // refusals parks the row and comes back.
+      //
+      // `ProviderCapError` and not `RateLimitError`, and that narrowness is
+      // load-bearing in both directions: widening it to every rate limit moves
+      // `score_fit` off its own 5-attempt ladder onto the 10-attempt one that
+      // the generation lanes use, which doubles the worst-case spend on a 429
+      // storm (moneyleaks.store.test.ts measures exactly that bound). A cap
+      // spends nothing at all, so it needs no ladder.
+      if (err instanceof ProviderCapError) throw err
       const msg = err instanceof Error ? err.message : 'Unknown error'
       return fallbackWithError(msg)
     }

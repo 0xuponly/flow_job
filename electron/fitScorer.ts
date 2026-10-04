@@ -17,7 +17,7 @@
 import { BrowserWindow } from 'electron'
 import { log } from './logger'
 import * as db from './database'
-import { scoreJobFit, type AiCallOptions } from './ai'
+import { scoreJobFit, ProviderCapError, type AiCallOptions } from './ai'
 import { enqueue } from './aiQueue'
 import {
   autoDocQueueEligible,
@@ -272,6 +272,29 @@ export async function scoreOneJobInBackground(
     try {
       const updated = db.updateJob(jobId, { fit_last_error: msg })
       emitJobScoreUpdatedModule(jobId)
+      // A SPENT BUDGET is recorded and then re-thrown; every other failure —
+      // including a 429 storm, which has a real heuristic fallback waiting at
+      // `scoreJobFit` — is recorded and swallowed, exactly as before.
+      //
+      // Swallowing is load-bearing. A provider that answers with garbage, a
+      // scorer that throws on one malformed posting, a no-config read: all of
+      // them end up here, and the function's contract with its other two
+      // callers (jobs:create, jobs:recomputeFit, both fire-and-forget from the
+      // renderer) is "the job row carries the reason and the app carries on".
+      // Turning that into a rethrow would reject a promise nobody awaits.
+      //
+      // A ProviderCapError is a different thing. It says the app already decided
+      // to stop spending on this account for the rest of this window — not that
+      // anything went wrong — and there is no verdict on the job to record: the
+      // spend happens again in an hour, when the budget is back, so any fit
+      // stamped now would be a guess. It also has an owner: `aiQueue.processItem`
+      // knows how to park a row for a provider that will not answer, how long to
+      // wait, and how to resume when the budget returns. Returning the job here
+      // meant that owner never heard about it: `score_fit` saw a job that
+      // already carried a score, concluded the work had been done, and DELETED
+      // the row — the cap silently threw away the scoring, and `fit_last_error`
+      // was the only trace it had ever happened.
+      if (err instanceof ProviderCapError) throw err
       return updated
     } catch (writeErr) {
       if (writeErr instanceof Error && writeErr.message === 'Job not found') {
