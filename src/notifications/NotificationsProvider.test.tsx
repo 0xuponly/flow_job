@@ -8,6 +8,7 @@ const mockApi = {
   notificationsDismiss: vi.fn(),
   notificationsDismissAll: vi.fn(),
   notificationsPurgeOldDismissed: vi.fn(),
+  onNotificationsChanged: vi.fn(() => () => undefined),
 }
 
 beforeEach(() => {
@@ -74,5 +75,67 @@ describe('NotificationsProvider', () => {
     await act(async () => { await result.current.dismissAll() })
     // rollback: list reloaded
     expect(result.current.list).toHaveLength(1)
+  })
+})
+
+/**
+ * A read that failed is not a centre with nothing in it.
+ *
+ * `loadStore` genuinely throws — on a store whose encryption key was
+ * regenerated, for instance, and it refuses to fall back to an empty store
+ * so it does not silently wipe the user's data. So the list channel is
+ * reachable in a state where it cannot answer, and before this the provider
+ * swallowed that quietly: `list` stayed at whatever it was, which at mount
+ * is `[]`, and the drawer rendered its empty state over records that were
+ * on disk. A crash recorded by the main process while no renderer was
+ * listening is exactly the record that went missing that way.
+ */
+describe('a failed read is reported, not rendered as an empty centre', () => {
+  it('exposes the failure when the channel answers with an error envelope', async () => {
+    mockApi.notificationsList.mockResolvedValue({ error: 'INTERNAL' })
+    const { result } = renderHook(() => useNotifications(), { wrapper: NotificationsProvider })
+    await act(async () => { await Promise.resolve() })
+
+    expect(result.current.loadError).toBeTruthy()
+    expect(result.current.hasUnread).toBe(false)
+  })
+
+  it('exposes the failure when the channel rejects outright', async () => {
+    mockApi.notificationsList.mockRejectedValue(new Error('ipc channel closed'))
+    const { result } = renderHook(() => useNotifications(), { wrapper: NotificationsProvider })
+    await act(async () => { await Promise.resolve() })
+
+    expect(result.current.loadError).toBeTruthy()
+  })
+
+  it('keeps the rows it last managed to read', async () => {
+    mockApi.notificationsList.mockResolvedValue({ rows: [
+      { id: 1, type: 'info', source: 'app', message: 'a', full_message: 'a', created_at: 1, dismissed_at: null },
+    ]})
+    const { result } = renderHook(() => useNotifications(), { wrapper: NotificationsProvider })
+    await act(async () => { await Promise.resolve() })
+    expect(result.current.loadError).toBeNull()
+
+    mockApi.notificationsList.mockResolvedValue({ error: 'INTERNAL' })
+    await act(async () => { await result.current.refresh() })
+
+    // Blanking the list would replace one lie — "there is nothing" — with
+    // another on a screen holding rows the user had already read.
+    expect(result.current.list).toHaveLength(1)
+    expect(result.current.loadError).toBeTruthy()
+  })
+
+  it('clears the failure once a read succeeds again', async () => {
+    mockApi.notificationsList.mockResolvedValue({ error: 'INTERNAL' })
+    const { result } = renderHook(() => useNotifications(), { wrapper: NotificationsProvider })
+    await act(async () => { await Promise.resolve() })
+    expect(result.current.loadError).toBeTruthy()
+
+    mockApi.notificationsList.mockResolvedValue({ rows: [] })
+    await act(async () => { await result.current.refresh() })
+
+    // An empty list that was actually read is a different answer from a
+    // failed read, and the banner has to go away.
+    expect(result.current.loadError).toBeNull()
   })
 })

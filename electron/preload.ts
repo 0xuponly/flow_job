@@ -124,13 +124,29 @@ export interface Api {
   // Notification center — 6 channels, all invoke-style. Param shapes
   // mirror the helpers in electron/notifications.ts; the renderer
   // wrapper in src/api.ts re-strict-types the return shape.
+  //
+  // `notificationsList` can report a failure. It used to answer
+  // `{ rows: [] }` when the store could not be read, which is
+  // indistinguishable from "the store is empty" — so a failed read
+  // rendered as a notification center with nothing in it, and every
+  // record in the file, including a crash recorded while no renderer was
+  // listening, was invisible. An empty answer to "what is in here?" is
+  // the one thing a reader of this list is not allowed to fabricate.
   notificationsAdd: (params: { type: string; source?: NotificationSource; message: string; full_message: string; group_key?: string; job?: NotificationJobContext }) =>
-    Promise<{ id: number } | { error: 'INTERNAL' }>
-  notificationsList: () => Promise<{ rows: NotificationRow[] }>
+    Promise<{ id: number; occurrences: number } | { error: 'INTERNAL' }>
+  notificationsList: () => Promise<{ rows: NotificationRow[] } | { error: 'INTERNAL' }>
   notificationsDismiss: (params: { id: number }) => Promise<{ ok: true } | { error: 'INTERNAL' }>
   notificationsDismissMany: (params: { ids: number[] }) => Promise<{ updated: number } | { error: 'INTERNAL' }>
   notificationsDismissAll: () => Promise<{ updated: number } | { error: 'INTERNAL' }>
   notificationsPurgeOldDismissed: () => Promise<{ deleted: number }>
+  /**
+   * Fired when the MAIN process writes a record — today that means an
+   * `uncaughtException`. Renderer-side writes announce themselves on the
+   * window event in src/notifications/record.ts, because they happen in
+   * the same renderer that would refresh; this one cannot, which is the
+   * whole reason it is a channel.
+   */
+  onNotificationsChanged: (cb: () => void) => () => void
   onMainError: (cb: (message: string) => void) => () => void
 }
 
@@ -244,6 +260,11 @@ const api: Api = {
   notificationsDismissMany: (params) => ipcRenderer.invoke('notifications:notificationsDismissMany', params),
   notificationsDismissAll: () => ipcRenderer.invoke('notifications:notificationsDismissAll'),
   notificationsPurgeOldDismissed: () => ipcRenderer.invoke('notifications:notificationsPurgeOldDismissed'),
+  onNotificationsChanged: (cb) => {
+    const handler = () => cb()
+    ipcRenderer.on('notifications:changed', handler)
+    return () => ipcRenderer.removeListener('notifications:changed', handler)
+  },
   onMainError: (cb: (message: string) => void) => {
     const handler = (_e: Electron.IpcRendererEvent, message: string) => cb(message)
     ipcRenderer.on('main:errorToast', handler)

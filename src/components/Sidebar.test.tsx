@@ -13,6 +13,7 @@ const mockApi = {
   notificationsDismissMany: vi.fn(),
   notificationsDismissAll: vi.fn(),
   notificationsPurgeOldDismissed: vi.fn(),
+  onNotificationsChanged: vi.fn(() => () => undefined),
   getScanStatus: vi.fn(),
   openQuickAddWindow: vi.fn(),
 }

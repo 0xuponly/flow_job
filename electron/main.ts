@@ -110,6 +110,35 @@ process.on('unhandledRejection', (reason) => {
   log.crash.error(`unhandledRejection: ${msg}`)
 })
 
+/**
+ * Tell every live window that the store's notification list changed.
+ *
+ * All windows, not the focused one, and the asymmetry with the crash toast
+ * below is deliberate. The toast is a claim about one error and asks one
+ * person to act on it, so it goes where the user is. This carries no
+ * content at all — "go and look" — and what it lights up is each window's
+ * own unread badge, which is correct in every window regardless of which
+ * one is focused. Sending it to only the focused window would mean a crash
+ * recorded while quick-add is in front left the main window's badge dark,
+ * which is the original hole: the main window is the one that can show it.
+ *
+ * Never throws. `send` on a window whose renderer has gone raises, and
+ * this runs from inside the `uncaughtException` handler, where a second
+ * throw replaces the crash the user is being told about with a crash they
+ * are not.
+ */
+function notifyStoreChanged(): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    try {
+      if (!w.isDestroyed() && !w.webContents.isDestroyed()) {
+        w.webContents.send('notifications:changed')
+      }
+    } catch (err) {
+      log.crash.error(`could not announce a new notification record: ${String(err)}`)
+    }
+  }
+}
+
 process.on('uncaughtException', (err) => {
   log.crash.error(`uncaughtException: ${err.stack || `${err.name}: ${err.message}`}`)
   const message = `Internal error: ${err.message}`
@@ -139,9 +168,17 @@ process.on('uncaughtException', (err) => {
       full_message: err.stack || `${err.name}: ${err.message}`,
       group_key: `error|app|internal error: ${err.name}`,
     })
+    // And the ping, which is what makes it a notification rather than a
+    // line in a file. Without it the record is durable and invisible: the
+    // drawer re-reads on open, so the user finds the crash only if they
+    // happen to open the center and look, and the badge — the one thing on
+    // screen that says "there is something you have not seen" — stays dark.
+    notifyStoreChanged()
   } catch (notifyErr) {
     // A store that cannot be written must not mask the crash that is
-    // already logged above. crash.log still has it either way.
+    // already logged above. crash.log still has it either way. Notifying
+    // from inside this catch would be worse than useless: with nothing in
+    // the store, a badge that re-reads would find nothing to show.
     log.crash.error(`could not record the crash as a notification: ${String(notifyErr)}`)
   }
 
@@ -1308,7 +1345,14 @@ function registerIpc(): void {
       return listActiveNotifications()
     } catch (err) {
       logToNotifications(`listActiveNotifications failed: ${(err as Error).message}`)
-      return { rows: [] }
+      // An error envelope, NOT `{ rows: [] }`. The old answer was the
+      // shape this file already uses to mean "nothing to report", so a
+      // store that could not be decrypted, read or parsed was reported to
+      // the renderer as a notification center with nothing in it — and
+      // "nothing in it" is the one claim the user is entitled to trust.
+      // The renderer keeps the rows it last read and says the read failed;
+      // see `refresh` in src/notifications/NotificationsProvider.tsx.
+      return { error: 'INTERNAL' as const }
     }
   })
 
