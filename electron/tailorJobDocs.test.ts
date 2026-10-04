@@ -1,17 +1,31 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { tailorJobDocsForJob } from './tailorJobDocs'
-import { tailorDocument } from './ai'
+import { tailorDocument, ProviderCapError, ProviderCooldownError } from './ai'
 import { getJob, setDocumentContent, writeTailorTimingFields, setJobStatus } from './database'
 import { log } from './logger'
 
 // Mock the LLM and store so the test is hermetic.
-vi.mock('./ai', () => ({
-  tailorDocument: vi.fn(async (req: { document_type: 'cv' | 'cover_letter' }) => ({
-    content: `mocked ${req.document_type} content`,
-    document_id: req.document_type === 'cv' ? 10 : 11,
-    model_used: 'mock',
-  })),
-}))
+vi.mock('./ai', () => {
+  // The two REFUSALS, declared inside the factory with the real
+  // hierarchy, because `tailorJobDocs.ts` reads them with `instanceof` to
+  // decide a lane was never asked rather than that it failed. Without them
+  // on the mock every catch in the file throws "not a callable" and the
+  // failure lands nowhere near the assertion it broke. A hoisted factory
+  // cannot close over module-level bindings, hence the declaration here.
+  class RateLimitError extends Error {}
+  class ProviderCapError extends RateLimitError {}
+  class ProviderCooldownError extends RateLimitError {}
+  return {
+    RateLimitError,
+    ProviderCapError,
+    ProviderCooldownError,
+    tailorDocument: vi.fn(async (req: { document_type: 'cv' | 'cover_letter' }) => ({
+      content: `mocked ${req.document_type} content`,
+      document_id: req.document_type === 'cv' ? 10 : 11,
+      model_used: 'mock',
+    })),
+  }
+})
 vi.mock('./database', () => ({
   getJob: vi.fn((id: number) => ({ id, title: 't', company: 'c', description: 'd', score: 0.8 })),
   // The contract is one write per document, onto the row `tailorDocument`
@@ -245,5 +259,139 @@ describe('tailorJobDocsForJob', () => {
     const techLine = cvContent.split('\n').find((l) => l.startsWith('Technical:'))!
     const kept = techLine.replace('Technical:', '').split(',').map((s) => s.trim())
     expect(kept).toHaveLength(15)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A PROVIDER REFUSAL — the case `timed()` used to swallow.
+//
+// `ProviderCooldownError` (every eligible model is inside its cooldown
+// window) and `ProviderCapError` (the account's budget for this window is
+// spent) both mean the provider was never asked. `timed` returned them as
+// `{ result: null, error }` like any other failure, this function reported
+// success, and `aiQueue`'s `tailor_job_docs` case read that as "the work
+// was done": the row was deleted, nothing was chained, and a queue of
+// Quick Apply requests evaporated against a provider that had refused to
+// answer a single one of them. The generate, review and score_fit lanes
+// had already been fixed by letting these out with their TYPE intact.
+// ---------------------------------------------------------------------------
+
+describe('a provider refusal is not a failed document', () => {
+  it('a cooldown in BOTH lanes throws, and spends nothing on the job', async () => {
+    // What the queue needs: an exception it can recognise, so it parks
+    // the row on the provider's clock instead of retiring it. Before, this
+    // resolved normally with both ids 0.
+    mockedTailorDocument.mockRejectedValue(new ProviderCooldownError())
+
+    await expect(tailorJobDocsForJob(1)).rejects.toBeInstanceOf(ProviderCooldownError)
+
+    // Nothing was generated, so nothing is written: no document, and
+    // crucially no timing write. `writeTailorTimingFields` persists
+    // `generatedAt` verbatim, so the `generatedAt: null` this function
+    // writes on an ordinary failure would ERASE the "documents built at"
+    // stamp of a CV that is perfectly fine — the erasure `aiQueue`'s cap
+    // branch deliberately avoids for exactly this reason. A refusal spent
+    // nothing, measured nothing and broke nothing, and the row's own
+    // `lastError` is where "no provider available" belongs.
+    expect(mockedSetDocumentContent).not.toHaveBeenCalled()
+    expect(mockedWriteTailorTimingFields).not.toHaveBeenCalled()
+    // And it is not reported as a tailoring failure either: the pool said
+    // no, which is not a fact about the document.
+    expect(mockedTailorLog.error).not.toHaveBeenCalled()
+    expect(mockedTailorLog.warn).toHaveBeenCalledWith(
+      'lane_refused',
+      expect.objectContaining({ jobId: 1 })
+    )
+  })
+
+  it('a spent budget is refused exactly the same way', async () => {
+    // The other refusal, and the reason the fix names both: a cap is not a
+    // document that went wrong either, and the queue parks it for free
+    // because the budget frees on its own clock.
+    mockedTailorDocument.mockRejectedValue(new ProviderCapError('no budget left'))
+
+    await expect(tailorJobDocsForJob(1)).rejects.toBeInstanceOf(ProviderCapError)
+    expect(mockedSetDocumentContent).not.toHaveBeenCalled()
+    expect(mockedWriteTailorTimingFields).not.toHaveBeenCalled()
+  })
+
+  it('the refusal that reaches the queue is the one the lane threw', async () => {
+    // Recognised by TYPE, not by its message: `aiQueue` branches on
+    // `instanceof ProviderCooldownError` before it decides a row is a
+    // retry. A re-wrapped `new Error(err.message)` would be classified as
+    // an ordinary failure and charged an attempt for a lookup that cost
+    // nothing — which is the defect this repo already fixed once on the
+    // fit lane, where the same block arrived as a plain string.
+    const thrown = new ProviderCooldownError()
+    mockedTailorDocument.mockRejectedValue(thrown)
+
+    await expect(tailorJobDocsForJob(1)).rejects.toBe(thrown)
+  })
+
+  it('one lane refused, one built: the sibling is finished, not abandoned', async () => {
+    // The pair is the whole difficulty. Both lanes start together, and
+    // `Promise.all` rejects on the FIRST rejection — so a `timed` that
+    // threw would leave the sibling mid-flight: its `tailorDocument` call
+    // would go on to `createDocument` and PUSH a row holding raw,
+    // unsanitized provider prose, with nothing left to write the
+    // sanitized text onto it and nothing left to enqueue its review. One
+    // request billed, one orphaned document.
+    mockedTailorDocument.mockImplementation(async (req) => {
+      if (req.document_type === 'cv') throw new ProviderCooldownError()
+      return { content: 'mocked cover_letter content', document_id: 11, model_used: 'mock' }
+    })
+
+    const result = await tailorJobDocsForJob(1)
+
+    // It did NOT throw: this pair produced a document, and re-running the
+    // whole unit later would create a SECOND copy of the half that
+    // already landed — one request, two rows, the shape of Finding 2.
+    expect(result.refused).toBe('cv')
+    expect(result.clId).toBe(11)
+    expect(result.cvId).toBe(0)
+    // The sibling's row carries its SANITIZED content, written once, onto
+    // the row `tailorDocument` already created.
+    const stored = storedContent()
+    expect([...stored.keys()]).toEqual([11])
+    expect(stored.get(11)).toBe('mocked cover_letter content')
+    // The user is told what is missing, and the pair is recorded as
+    // incomplete rather than as built.
+    expect(mockedWriteTailorTimingFields).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: 1, generatedAt: null })
+    )
+    expect(result.ms_cl).toBeGreaterThanOrEqual(0)
+    expect(result.ms_cv).toBeGreaterThanOrEqual(0)
+  })
+
+  it('the mirror: a refused cover letter names the cover letter', async () => {
+    mockedTailorDocument.mockImplementation(async (req) => {
+      if (req.document_type === 'cover_letter') throw new ProviderCapError('capped')
+      return { content: 'mocked cv content', document_id: 10, model_used: 'mock' }
+    })
+
+    const result = await tailorJobDocsForJob(1)
+
+    expect(result.refused).toBe('cover_letter')
+    expect(result.cvId).toBe(10)
+    expect([...storedContent().keys()]).toEqual([10])
+  })
+
+  it('an ordinary failure is still swallowed, and names no lane as refused', async () => {
+    // The narrowness matters in both directions. A posting the model
+    // rejects is not owed a retry from this function — the row that owns
+    // it has its own bounded ladder — so widening the refusal to "any
+    // failure" would park every validation error on the provider's clock
+    // and wait for a provider that was never the problem.
+    mockedTailorDocument.mockRejectedValue(new Error('output failed validation'))
+
+    const result = await tailorJobDocsForJob(1)
+
+    expect(result.refused).toBeNull()
+    expect(result.cvId).toBe(0)
+    expect(result.clId).toBe(0)
+    expect(mockedTailorLog.error).toHaveBeenCalledWith('cv_failed', { jobId: 1 })
+    expect(mockedWriteTailorTimingFields).toHaveBeenCalledWith(
+      expect.objectContaining({ lastError: 'output failed validation' })
+    )
   })
 })

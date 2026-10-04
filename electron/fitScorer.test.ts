@@ -59,9 +59,9 @@ vi.mock('./logger', () => {
 import { getJob, getSettings, updateJob, listDocuments, getAIQueue, updateAIQueueItem } from './database'
 import { scoreJobFit } from './ai'
 import { enqueue } from './aiQueue'
-import { scoreOneJobInBackground, maybeAutoEnqueueDocs } from './fitScorer'
+import { scoreOneJobInBackground, maybeAutoEnqueueDocs, hasCurrentFitVerdict } from './fitScorer'
 import { AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX } from './types'
-import type { AIQueueItem } from './types'
+import type { AIQueueItem, Job } from './types'
 
 const mockedGetJob = vi.mocked(getJob)
 const mockedGetSettings = vi.mocked(getSettings)
@@ -541,5 +541,58 @@ describe('P1.7 maybeAutoEnqueueDocs (fit >= auto_doc_min_fit -> enqueue generati
     })
     await scoreOneJobInBackground(7)
     expect(mockedEnqueue).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// `hasCurrentFitVerdict` — the question the queue's `score_fit` case asks
+// before it retires a row.
+//
+// It is asked of THREE fields rather than of `score`, and every row of this
+// table is a state the store can be in. `score` alone is the bug: it is a
+// property of the JOB, so a job scored once carries it through every later
+// pass, including the ones that produced nothing.
+// ---------------------------------------------------------------------------
+
+describe('hasCurrentFitVerdict', () => {
+  // Typed rather than `as any`: every row below is a state the store can be in,
+  // and the shape of a Job is what makes that claim checkable.
+  const job = (over: Partial<Job>): Job => ({ ...fakeJob, ...over }) as Job
+
+  it('is true only for an LLM verdict computed against the CV in force', () => {
+    expect(
+      hasCurrentFitVerdict(job({ score: 0.82, fit_source: 'llm', fit_score_version: 4 }), 4)
+    ).toBe(true)
+  })
+
+  it('is false for a heuristic fallback, even when a score is already on the row', () => {
+    // THE CASE. `scoreJobFit` answers a genuine 429 with its heuristic
+    // fallback on purpose, and `scoreOneJobInBackground` records it as
+    // `fit_source: 'heuristic'`; the score left on the row belongs to an
+    // EARLIER pass. Reading the number instead of the source is what let
+    // the queue delete the row as though this pass had scored the job.
+    expect(
+      hasCurrentFitVerdict(job({ score: 0.82, fit_source: 'heuristic', fit_score_version: 4 }), 4)
+    ).toBe(false)
+  })
+
+  it('is false for a verdict earned against a CV the user has since replaced', () => {
+    expect(
+      hasCurrentFitVerdict(job({ score: 0.82, fit_source: 'llm', fit_score_version: 3 }), 4)
+    ).toBe(false)
+  })
+
+  it('is false with no score at all, whatever the source says', () => {
+    // Neither of the other two fields is trusted on its own: the no-base-CV
+    // path stamps a version without a number.
+    expect(hasCurrentFitVerdict(job({ score: null, fit_source: 'llm', fit_score_version: 4 }), 4)).toBe(
+      false
+    )
+  })
+
+  it('is false for a never-scored row', () => {
+    expect(hasCurrentFitVerdict(job({ score: null, fit_source: null, fit_score_version: null }), 4)).toBe(
+      false
+    )
   })
 })

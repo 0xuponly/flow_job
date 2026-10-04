@@ -170,6 +170,55 @@ export function emitJobScoreUpdatedModule(jobId: number): void {
 }
 
 /**
+ * Does this row carry a REAL fit score for the CURRENT base CV — i.e. is
+ * there a verdict on the job that a `score_fit` row does not still owe?
+ *
+ * The queue asks this to decide whether its row is finished. It used to
+ * ask `updated.score == null` instead, and that is the wrong question for
+ * a reason that is structural rather than incidental: `score` is a property
+ * of the JOB, not of the pass. A job that was scored once already carries
+ * one, so every later pass that produced nothing — a genuine 429, which
+ * `scoreJobFit` deliberately answers with its heuristic fallback — read
+ * back a non-null score, and `processItem` concluded the work was done and
+ * DELETED the row. The scoring was never redone and nothing said so. The
+ * same read also let a garbage response retire a row whose scoring had
+ * failed.
+ *
+ * So the question is asked of the three fields that together say "a real
+ * LLM verdict landed, and it landed against the CV in force now":
+ *
+ *   `fit_source === 'llm'`      written ONLY by a successful LLM scoring
+ *                               pass. The no-base-CV path and the heuristic
+ *                               fallback both write 'heuristic' — the
+ *                               repo's standing marker for "this is not a
+ *                               fit score" (jobSearch.ts refuses to persist
+ *                               one at all) — and the generic failure catch
+ *                               writes no source at all.
+ *   `fit_score_version`         the `cv_version` the verdict was computed
+ *                               against. A score earned against an older
+ *                               CV is a score the user asked to have redone
+ *                               (`bumpCvVersion`), so it does not discharge
+ *                               the row.
+ *   `score != null`             the number itself, which both of the above
+ *                               are supposed to imply and neither is trusted
+ *                               to on its own.
+ *
+ * Deliberately NOT "did THIS pass produce a score". That is the other
+ * honest question, and the scorer cannot answer it through a `Job | null`
+ * return without a signature every caller would have to learn; and the
+ * queue's actual question is the weaker one anyway — a row exists to leave
+ * the job with a current, real fit score, and it is satisfied by that score
+ * whoever wrote it.
+ */
+export function hasCurrentFitVerdict(job: Job, cvVersion: number): boolean {
+  return (
+    job.score != null &&
+    job.fit_source === 'llm' &&
+    job.fit_score_version === cvVersion
+  )
+}
+
+/**
  * Score a single job against the current base CV. Used by:
  *   - jobs:create / jobs:importFromUrl handlers in main.ts (fire-and-forget)
  *   - jobs:recomputeFit (returns the post-update row)
@@ -220,6 +269,17 @@ export async function scoreOneJobInBackground(
     }, undefined, opts)
     if (fit.source === 'heuristic') {
       // Don't pretend a heuristic fallback is a real fit score.
+      //
+      // `score` is deliberately NOT touched, and that is not an oversight:
+      // a job that already earned a real score keeps it (erasing it would
+      // take a number the user is looking at away over a rate limit), and
+      // `fit_source` moving to 'heuristic' is what records that THIS pass
+      // produced no verdict. The queue's `score_fit` case reads exactly
+      // that through `hasCurrentFitVerdict`, so a genuine 429 — which
+      // `scoreJobFit` answers here rather than by throwing, because a real
+      // verdict is still derivable — leaves the row in place on the bounded
+      // ladder instead of retiring it against a score this pass never
+      // touched.
       try {
         const updated = db.updateJob(jobId, {
           fit_last_error: fit.error || 'LLM scorer fell back to heuristic.',

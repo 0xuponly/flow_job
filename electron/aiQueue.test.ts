@@ -3,14 +3,23 @@ import type { AIQueueItem, Document, Job } from './types'
 
 // The score_fit case lazy-imports ./fitScorer, so mock it before importing
 // the module under test.
+//
+// `hasCurrentFitVerdict` is the case's own question ("did this row leave the
+// job with a real score for the CV in force?") and is re-implemented here
+// rather than imported, because importing the real module here would drag
+// its own database / queue imports into a file that stubs both. The copy is
+// the real predicate; it is unit-tested against the real function in
+// fitScorer.test.ts, so the two cannot drift without that test noticing.
 vi.mock('./fitScorer', () => ({
-  scoreOneJobInBackground: vi.fn()
+  scoreOneJobInBackground: vi.fn(),
+  hasCurrentFitVerdict: (job: Job, cvVersion: number): boolean =>
+    job.score != null && job.fit_source === 'llm' && job.fit_score_version === cvVersion
 }))
 // The tailor_job_docs case lazy-imports ./tailorJobDocs; mocked so the
 // priority-ordering tests can observe pick order without running the
 // real generation pipeline.
 vi.mock('./tailorJobDocs', () => ({
-  tailorJobDocsForJob: vi.fn(async () => ({ cvId: 1, clId: 2, ms_cv: 1, ms_cl: 1 })),
+  tailorJobDocsForJob: vi.fn(async () => ({ cvId: 1, clId: 2, ms_cv: 1, ms_cl: 1, refused: null })),
   // The per-unit generation case imports this from the same module to
   // sanitize the model output before storing it — the one implementation
   // `tailorJobDocsForJob` also uses. It is the real function rather than a
@@ -56,7 +65,13 @@ vi.mock('./database', () => ({
   // means "auto-queueing allowed", which is what the store's own default
   // is; the switches' own behaviour is covered against the real store
   // in aiQueue.autoQueue.test.ts.
+  //
+  // `cv_version` is here because the `score_fit` case asks whether the
+  // verdict on the job was computed against the CV in FORCE (`hasCurrentFit
+  // Verdict`), so a fixture that named a score without naming a CV version
+  // would answer a question it never asked. 3 matches `scoredJob`.
   getSettings: vi.fn(() => ({
+    cv_version: 3,
     auto_queue_fit: true,
     auto_queue_cv: true,
     auto_queue_cover_letter: true,
@@ -150,10 +165,22 @@ function docRow(id: number, jobId: number, type: 'cv' | 'cover_letter'): Documen
   }
 }
 
+/**
+ * A job the scorer has already given a real verdict on.
+ *
+ * The defaults are a VERDICT, not a bare number, because that is what the
+ * store holds: `scoreOneJobInBackground` writes `score`, `fit_source:
+ * 'llm'` and `fit_score_version` together on the one path that produces a
+ * real score, and the `score_fit` case decides whether its row is finished
+ * from all three (see `hasCurrentFitVerdict`). A fixture that set only
+ * `score` modelled a state the store cannot be in. Tests that mean "no
+ * verdict here" pass `fit_source: 'heuristic'` — which is also what the
+ * real fallback writes, so the fixture stays honest in that direction too.
+ */
 function scoredJob(overrides: Partial<Job>): Job {
   return {
-    id: 42, title: 'Engineer', company: 'Acme', status: 'sourced', score: null,
-    fit_breakdown: null, fit_score_version: null, fit_source: null,
+    id: 42, title: 'Engineer', company: 'Acme', status: 'sourced', score: 0.8,
+    fit_breakdown: null, fit_score_version: 3, fit_source: 'llm',
     fit_last_error: null, fit_error_toasted: null, notes: null, date_posted: null,
     application_deadline: null, last_updated: null, created_at: '',
     updated_at: '', match_grade: null, tailor_ms_cv: null, tailor_ms_cl: null,
@@ -204,6 +231,76 @@ describe('score_fit queue processing', () => {
     )
     expect(retryCall).toBeDefined()
     expect(retryCall![1].nextRetryAt).toBeGreaterThanOrEqual(Date.now())
+  })
+
+  it('a genuine 429 does NOT retire the row, even when the job already carries a score', async () => {
+    // THE LAUNDERING CHANNEL.
+    //
+    // `scoreJobFit` answers an ordinary 429 with its heuristic fallback on
+    // purpose — a real verdict is still derivable, so the job row records
+    // the reason, `fit_source` becomes 'heuristic', and the queue's bounded
+    // ladder is meant to retry it. That plan only works if the row SURVIVES
+    // the pass.
+    //
+    // It did not, whenever the job already had a score from an earlier
+    // pass: `score` is a property of the JOB, so the case read back a
+    // non-null number, concluded the work was done, and deleted the row.
+    // The scoring was never redone, the score on the job was left at
+    // whatever the earlier pass wrote, and the only trace was
+    // `fit_last_error`. The row here is exactly that job: a real score
+    // earned earlier, then a pass that produced no verdict at all.
+    mockedGetQueue.mockReturnValue([queueItem({})])
+    mockedScore.mockResolvedValue(
+      scoredJob({ score: 0.82, fit_source: 'heuristic', fit_last_error: 'All models rate limited (429)' })
+    )
+
+    await processQueue()
+
+    // The row is still queued work, and the retry is the bounded ladder's
+    // to own — NOT a silent success.
+    expect(mockedRemove).not.toHaveBeenCalled()
+    expect(mockedUpdate).toHaveBeenCalledWith(
+      'q1',
+      expect.objectContaining({ status: 'pending', attempts: 1 })
+    )
+    const retry = mockedUpdate.mock.calls.find((c) => c[1].status === 'pending')
+    expect(retry![1].nextRetryAt).toBeGreaterThanOrEqual(Date.now())
+  })
+
+  it('still retires the row when the score on it is real and current', async () => {
+    // The other direction, so the fix is not "keep everything": a job that
+    // ends the pass with an LLM verdict against the CV in force has its
+    // work done, and the row goes.
+    mockedGetQueue.mockReturnValue([queueItem({})])
+    mockedScore.mockResolvedValue(scoredJob({ score: 0.82, fit_source: 'llm', fit_score_version: 3 }))
+
+    await processQueue()
+
+    expect(mockedRemove).toHaveBeenCalledWith('q1')
+    expect(mockedUpdate).not.toHaveBeenCalledWith(
+      'q1',
+      expect.objectContaining({ status: 'pending' })
+    )
+  })
+
+  it('does NOT retire the row on a score earned against an older CV', async () => {
+    // The version half of the question. Editing the base CV is the user
+    // asking for every job to be scored again (`bumpCvVersion`), so a
+    // verdict from before the bump is not an answer to this row — retiring
+    // on it would leave the job holding a score computed from a CV the
+    // user no longer has, with nothing left to correct it.
+    mockedGetQueue.mockReturnValue([queueItem({})])
+    mockedScore.mockResolvedValue(
+      scoredJob({ score: 0.82, fit_source: 'llm', fit_score_version: 2 })
+    )
+
+    await processQueue()
+
+    expect(mockedRemove).not.toHaveBeenCalled()
+    expect(mockedUpdate).toHaveBeenCalledWith(
+      'q1',
+      expect.objectContaining({ status: 'pending', attempts: 1 })
+    )
   })
 
   it('retries non-rate-limit score_fit failures up to 5 attempts', async () => {
@@ -263,7 +360,7 @@ describe('P1.7 priority ordering (score_fit first, then fit DESC)', () => {
     const order: string[] = []
     mockedTailor.mockImplementation(async (jobId: number) => {
       order.push(`gen:${jobId}`)
-      return { cvId: 1, clId: 2, ms_cv: 0, ms_cl: 0 }
+      return { cvId: 1, clId: 2, ms_cv: 0, ms_cl: 0, refused: null }
     })
     mockedScore.mockImplementation(async (jobId: number) => {
       order.push(`fit:${jobId}`)
@@ -287,7 +384,7 @@ describe('P1.7 priority ordering (score_fit first, then fit DESC)', () => {
     const order: number[] = []
     mockedTailor.mockImplementation(async (jobId: number) => {
       order.push(jobId)
-      return { cvId: 1, clId: 2, ms_cv: 0, ms_cl: 0 }
+      return { cvId: 1, clId: 2, ms_cv: 0, ms_cl: 0, refused: null }
     })
     // Enqueued low-first so insertion order is the OPPOSITE of the
     // expected pick order — the sort must be driven by fit score, not
@@ -309,7 +406,7 @@ describe('P1.7 priority ordering (score_fit first, then fit DESC)', () => {
     const firstOrder: number[] = []
     mockedTailor.mockImplementation(async (jobId: number) => {
       firstOrder.push(jobId)
-      return { cvId: 1, clId: 2, ms_cv: 0, ms_cl: 0 }
+      return { cvId: 1, clId: 2, ms_cv: 0, ms_cl: 0, refused: null }
     })
     mockedGetJob.mockImplementation((id: number) => scoredJob({ id, score: id === 1 ? 0.60 : 0.50 }))
     mockedGetQueue.mockReturnValue([
@@ -325,7 +422,7 @@ describe('P1.7 priority ordering (score_fit first, then fit DESC)', () => {
     const secondOrder: number[] = []
     mockedTailor.mockImplementation(async (jobId: number) => {
       secondOrder.push(jobId)
-      return { cvId: 1, clId: 2, ms_cv: 0, ms_cl: 0 }
+      return { cvId: 1, clId: 2, ms_cv: 0, ms_cl: 0, refused: null }
     })
     mockedGetJob.mockImplementation((id: number) => scoredJob({ id, score: id === 1 ? 0.60 : 0.95 }))
     mockedGetQueue.mockReturnValue([
@@ -340,7 +437,7 @@ describe('P1.7 priority ordering (score_fit first, then fit DESC)', () => {
     const order: number[] = []
     mockedTailor.mockImplementation(async (jobId: number) => {
       order.push(jobId)
-      return { cvId: 1, clId: 2, ms_cv: 0, ms_cl: 0 }
+      return { cvId: 1, clId: 2, ms_cv: 0, ms_cl: 0, refused: null }
     })
     // All three jobs at the same fit score; the (numeric) queue id is
     // the tiebreaker so repeat runs pick in the same order. Real queue
@@ -359,7 +456,7 @@ describe('P1.7 priority ordering (score_fit first, then fit DESC)', () => {
     const order: string[] = []
     mockedTailor.mockImplementation(async (jobId: number) => {
       order.push(`j${jobId}`)
-      return { cvId: 1, clId: 2, ms_cv: 0, ms_cl: 0 }
+      return { cvId: 1, clId: 2, ms_cv: 0, ms_cl: 0, refused: null }
     })
     mockedGetJob.mockImplementation((id: number) =>
       id === 2 ? scoredJob({ id, score: null }) : scoredJob({ id, score: 0.4 })
@@ -388,7 +485,7 @@ describe('P1.7 sequential generation -> review per job', () => {
     const seen: string[] = []
     mockedTailor.mockImplementation(async (jobId: number) => {
       seen.push(`gen:${jobId}`)
-      return { cvId: 11, clId: 12, ms_cv: 0, ms_cl: 0 }
+      return { cvId: 11, clId: 12, ms_cv: 0, ms_cl: 0, refused: null }
     })
     // Only a generation item is queued. After it completes, the queue
     // processor must enqueue one verify per generated doc.
@@ -421,7 +518,7 @@ describe('P1.7 sequential generation -> review per job', () => {
     mockedTailor.mockImplementation(async () => {
       // What the queue holds while tailorJobDocsForJob is mid-flight.
       pendingDuringGeneration.push(...mockedAdd.mock.calls)
-      return { cvId: 11, clId: 12, ms_cv: 0, ms_cl: 0 }
+      return { cvId: 11, clId: 12, ms_cv: 0, ms_cl: 0, refused: null }
     })
     mockedGetQueue.mockReturnValue([
       queueItem({ id: 'g1', type: 'tailor_job_docs', jobId: 7 })
@@ -435,7 +532,7 @@ describe('P1.7 sequential generation -> review per job', () => {
   })
 
   it('does not enqueue a review when generation produced no documents', async () => {
-    mockedTailor.mockResolvedValue({ cvId: 0, clId: 0, ms_cv: 0, ms_cl: 0 })
+    mockedTailor.mockResolvedValue({ cvId: 0, clId: 0, ms_cv: 0, ms_cl: 0, refused: null })
     mockedGetQueue.mockReturnValue([
       queueItem({ id: 'g1', type: 'tailor_job_docs', jobId: 7 })
     ])
@@ -446,13 +543,84 @@ describe('P1.7 sequential generation -> review per job', () => {
     expect(mockedAdd).not.toHaveBeenCalled()
   })
 
+  it('hands a lane the provider REFUSED to the row that owns that one document', async () => {
+    // `tailor_job_docs` is the BOTH-documents unit and this row is about to
+    // be retired, so the half the provider refused needs an owner. Handing
+    // it to `generate_cv` is what `ai:tailor` already does with the same
+    // refusal from the renderer's Generate button, and the child's budget is
+    // its own.
+    //
+    // Without the handoff the document is stranded rather than merely late:
+    // the backlog sweep asks `autoDocQueueEligible` first, and a job whose
+    // ONE landed document goes on to pass its review is `shippable`, so the
+    // sweep never gets as far as asking about the document that is missing.
+    mockedTailor.mockResolvedValue({ cvId: 0, clId: 12, ms_cv: 0, ms_cl: 3, refused: 'cv' })
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 81, type: 'tailor_job_docs', jobId: 7, manualQueued: true })
+    ])
+    mockedListDocuments.mockReturnValue([docRow(12, 7, 'cover_letter')])
+
+    await processQueue()
+
+    // The landed half is still stored, reviewed and the pair row is gone...
+    expect(mockedRemove).toHaveBeenCalledWith(81)
+    expect(mockedAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'verify', jobId: 7, documentId: 12 })
+    )
+    // ...and the refused half has its own row, carrying this row's MANUAL
+    // origin. Inherited, not asserted: an automatic child would be dropped
+    // by `autoQueueAllows` the moment the user turned that document's
+    // toggle off, which is the manual lane losing work it promised.
+    expect(mockedAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'generate_cv', jobId: 7, manualQueued: true })
+    )
+  })
+
+  it('the handoff keeps an automatic parent row automatic', async () => {
+    // The other direction of the same rule. A row the app queued on its own
+    // must not acquire a person's restart rights on the way through, or
+    // turning a toggle off would stop suppressing exactly that work.
+    mockedTailor.mockResolvedValue({ cvId: 0, clId: 12, ms_cv: 0, ms_cl: 3, refused: 'cover_letter' })
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 82, type: 'tailor_job_docs', jobId: 7 })
+    ])
+    mockedListDocuments.mockReturnValue([docRow(11, 7, 'cv')])
+
+    await processQueue()
+
+    expect(mockedAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'generate_cover_letter', jobId: 7, manualQueued: false })
+    )
+  })
+
+  it('queues no handoff when nothing was refused', async () => {
+    // An ordinary failure is not owed anything here: the pair row's own
+    // ladder owns it, and re-queueing it would spend on a posting the model
+    // has already refused. So the narrowness is asserted in this direction
+    // too — `refused: null` and a half-built pair queue NOTHING.
+    mockedTailor.mockResolvedValue({ cvId: 0, clId: 12, ms_cv: 0, ms_cl: 3, refused: null })
+    mockedGetQueue.mockReturnValue([
+      queueItem({ id: 83, type: 'tailor_job_docs', jobId: 7, manualQueued: true })
+    ])
+    mockedListDocuments.mockReturnValue([docRow(12, 7, 'cover_letter')])
+
+    await processQueue()
+
+    expect(mockedAdd).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'generate_cv' })
+    )
+    expect(mockedAdd).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'generate_cover_letter' })
+    )
+  })
+
   it('reads the job-scoped document list, never the one that unions in the base CV', async () => {
     // The base CV is shown next to every job in the UI, which is why
     // `listDocuments(jobId)` includes it — and why the review fan-out
     // has to use the job-scoped variant. Getting this wrong uploaded
     // the user's master CV to the reviewer on every job's generation
     // pass.
-    mockedTailor.mockResolvedValue({ cvId: 11, clId: 12, ms_cv: 0, ms_cl: 0 })
+    mockedTailor.mockResolvedValue({ cvId: 11, clId: 12, ms_cv: 0, ms_cl: 0, refused: null })
     mockedGetQueue.mockReturnValue([
       queueItem({ id: 'g1', type: 'tailor_job_docs', jobId: 7 })
     ])
@@ -1186,8 +1354,12 @@ describe('lifecycle: quota outage then recovery, unattended', () => {
 
     // Quota resets. Keep the app running and the clock moving — no
     // force-reset — so the item can only finish via a scheduled
-    // revival actually coming due.
-    vi.mocked(scoreOneJobInBackground).mockResolvedValue({ score: 0.8 } as never)
+    // revival actually coming due. The three verdict fields travel
+    // together because the store only ever writes them together, and
+    // `score_fit` reads all three before retiring its row.
+    vi.mocked(scoreOneJobInBackground).mockResolvedValue({
+      score: 0.8, fit_source: 'llm', fit_score_version: 3
+    } as never)
     const recoveryPasses = Math.ceil(AUTO_REVIVE_COOLDOWN_MS / POLL_MS) + 100
     for (let i = 0; i < recoveryPasses && row; i++) { await processQueue(); advance() }
 
@@ -1613,7 +1785,7 @@ describe('queue items hold the AI operation slot', () => {
     mockedGetQueue.mockReturnValue([
       queueItem({ id: 1, type: 'score_fit', jobId: 42, status: 'pending' })
     ] as never)
-    mockedScore.mockResolvedValue({ score: 0.9 } as never)
+    mockedScore.mockResolvedValue({ score: 0.9, fit_source: 'llm', fit_score_version: 3 } as never)
     await processQueue()
     expect(mockedScore).toHaveBeenCalledWith(42, expect.any(Function), { manual: false })
     // id: 1 in the fixture above, so the row removed is 1.

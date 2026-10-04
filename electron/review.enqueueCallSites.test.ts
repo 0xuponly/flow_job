@@ -107,7 +107,20 @@ function callSites(): CallSite[] {
       out.push({
         where: relative(process.cwd(), file),
         line,
-        manual: /\{\s*manual\s*:\s*true\s*\}/.test(args),
+        // "Carries a manual flag", not "passes the literal `manual: true`".
+        //
+        // The flag can be DERIVED — a processor finishing a person's
+        // request passes the origin the row itself recorded
+        // (`manual: item.manualQueued === true`) — and a scanner that only
+        // recognized the literal would file that site as automatic, which
+        // is the one misclassification this file exists to prevent: the
+        // inventory would claim the child's restart rights are governed by
+        // an automatic producer's switch when in fact they follow the
+        // person's request. A `manual:` whose value is literally `false`
+        // or `undefined` is still automatic, and that is what the negative
+        // lookahead is for; a site with no `manual:` key at all does not
+        // match the pattern and is automatic too.
+        manual: /\{\s*manual\s*:\s*(?!false\b|undefined\b)/.test(args),
         types: [...args.matchAll(/type:\s*'([a-z_]+)'/g)].map((t) => t[1])
       })
     }
@@ -153,9 +166,27 @@ const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]
     { line: 760, manual: true, why: 'tailor:quickApply — Quick Apply' }
   ],
   'electron/aiQueue.ts': [
-    { line: 637, manual: false, why: 'processor: generation finished, chain the review' },
-    { line: 694, manual: false, why: 'processor: review failed, auto-regenerate the document' },
-    { line: 768, manual: false, why: 'processor: tailor_job_docs finished, review each new document' }
+    { line: 644, manual: false, why: 'processor: generation finished, chain the review' },
+    { line: 701, manual: false, why: 'processor: review failed, auto-regenerate the document' },
+    { line: 801, manual: false, why: 'processor: tailor_job_docs finished, review each new document' },
+    {
+      line: 825,
+      manual: true,
+      why:
+        "processor: a lane tailor_job_docs' provider REFUSED, so the missing " +
+        "document is owed. The flag is INHERITED from the parent row's own " +
+        '`manualQueued`, never invented: a Quick Apply is a person asking for ' +
+        'both documents, and finishing the half a cooldown interrupted must ' +
+        'keep the same ungated restart rights — an automatic child would be ' +
+        'dropped by `autoQueueAllows` the moment the user turned that ' +
+        "document's toggle off, which is the manual lane losing work it " +
+        'promised.'
+    },
+    {
+      line: 827,
+      manual: true,
+      why: 'the same handoff for the cover-letter half'
+    }
   ],
   'electron/fitScorer.ts': [
     { line: 136, manual: false, why: 'fit-landing trigger: a job cleared the fit threshold and is missing a document' }
@@ -202,13 +233,27 @@ describe('every enqueue() call site is classified', () => {
     }
   })
 
-  it('routes every manual call site through the rate-limit fallback in main.ts', () => {
-    // The four manual entry points are all "try the AI call, and only
-    // queue if the provider is throttling". If a future manual path
-    // enqueues unconditionally it still needs the flag, so this is a
-    // reminder of where the flag belongs, not a gate.
+  it('routes every manual call site through the rate-limit fallback in main.ts, or hands a person\'s row its own origin', () => {
+    // The manual entry points are "try the AI call, and only queue if the
+    // provider is throttling". If a future manual path enqueues
+    // unconditionally it still needs the flag, so this is a reminder of
+    // where the flag belongs, not a gate — with ONE exception, and the
+    // exception is checked rather than waved through: a call site inside
+    // the processor is only allowed to carry a manual flag by reading it
+    // off the row it is finishing (`manualQueued`), so it can never
+    // promote an automatic row into a manual one. A literal `manual: true`
+    // down there would be exactly that promotion.
     for (const site of sites.filter((s) => s.manual)) {
-      expect(site.where).toBe('electron/main.ts')
+      if (site.where === 'electron/main.ts') continue
+      // The flag may sit on a following line (a multi-line call), so read
+      // the call rather than the single line the scanner reported.
+      const lines = readFileSync(site.where, 'utf8').split('\n')
+      const call = lines.slice(site.line - 1, site.line + 4).join('\n')
+      expect(
+        call,
+        `${site.where}:${site.line} carries a manual flag but is not an entry point, so the flag ` +
+          'must come from the row it is finishing'
+      ).toMatch(/manualQueued/)
     }
   })
 
@@ -438,7 +483,7 @@ describe('the processor picking work up without going through enqueue()', () => 
     // finding 2.
     //
     // This is the lane `rg "enqueue\("` cannot see. `runPass`
-    // (electron/aiQueue.ts:794) revives any `failed` row that still has
+    // (electron/aiQueue.ts:801) revives any `failed` row that still has
     // revival budget, writes it back to `pending`, and hands it to
     // `processItem` — with no settings read anywhere on that path. So
     // with `auto_queue_cv` off, a generation row that failed (queued
@@ -619,9 +664,9 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
     // retired, so it is absent from the list and from the comment.
     const automatic = callSites().filter((c) => !c.manual)
     expect(automatic.map((c) => `${c.where}:${c.line}`).sort()).toEqual([
-'electron/aiQueue.ts:637',
-      'electron/aiQueue.ts:694',
-      'electron/aiQueue.ts:768',
+      'electron/aiQueue.ts:644',
+      'electron/aiQueue.ts:701',
+      'electron/aiQueue.ts:801',
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:136'
@@ -638,7 +683,7 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
       new RegExp(`There are ${WORDS[automatic.length]} automatic producers`)
     )
     // Every producer it names, including the fan-out this comment used
-    // to omit (aiQueue.ts:768 — a different producer from the
+    // to omit (aiQueue.ts:801 — a different producer from the
     // generation → review chaining at :637, which fires for a directly
     // queued generate_*). Both line numbers are the INVENTORY's, and the
     // two assertions above are what makes saying so here honest: a stale

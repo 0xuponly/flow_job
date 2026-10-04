@@ -96,10 +96,14 @@ import {
   createJob,
   getAIQueue,
   getJob,
+  listJobDocuments,
   removeAIQueueItem,
   saveApiModels,
   updateAIQueueItem,
-  updateSettings
+  updateSettings,
+  updateJob,
+  getSettings,
+  clearProviderSpend
 } from './database'
 import { ProviderCooldownError, providerAvailability, resetModelHealth } from './ai'
 import { PROVIDER_REPROBE_CAP_MS, aiQueueBlockedState, processQueue } from './aiQueue'
@@ -122,6 +126,54 @@ function stubProvider(status: number, body = 'provider says no'): void {
   vi.stubGlobal('fetch', vi.fn(async () => {
     fetchCalls++
     return { ok: false, status, headers: new Map<string, string>(), text: async () => body }
+  }))
+}
+
+/**
+ * The CV version the store is on, read the way the production call sites
+ * read it (`?? 0` on a field the store has carried for a long time and the
+ * `Settings` type never declared). The cast keeps that pre-existing gap
+ * from becoming a new type error here; it is `electron/fitAutoScore.ts:89`
+ * and `electron/fitScorer.ts:190` doing the same thing.
+ */
+function cvVersion(): number {
+  return (getSettings() as { cv_version?: number }).cv_version ?? 0
+}
+
+/**
+ * A provider that answers, with a CV body the tailoring validator accepts —
+ * `tailorDocument` throws on anything else BEFORE `createDocument`, so a
+ * stub returning prose would leave the job with no documents and this file
+ * would be measuring its own stub.
+ */
+const HEALTHY_CV = [
+  'JAMIE OKONKWO',
+  'jamie@example.com',
+  '',
+  'Experience',
+  'Globex\tRemote',
+  'Staff Engineer\tMar 2020 - Present',
+  '- Built the ingestion tier for 40M events a day',
+  '',
+  'Education',
+  'Rutgers\tNew Brunswick, NJ',
+  'B.S. Computer Science\tJun 2019'
+].join('\n')
+
+function stubHealthyProvider(): void {
+  vi.stubGlobal('fetch', vi.fn(async () => {
+    fetchCalls++
+    const body = JSON.stringify({ choices: [{ message: { content: HEALTHY_CV } }] })
+    return {
+      ok: true,
+      status: 200,
+      // A Map built from entries, not from an object literal: the object
+      // form is not a `Map` constructor overload and this file is the one
+      // place that pretends to be a `Response`.
+      headers: new Map([['content-type', 'application/json']]),
+      json: async () => JSON.parse(body),
+      text: async () => body
+    }
   }))
 }
 
@@ -486,5 +538,169 @@ describe('the app-wide blocked state the Queue panel renders', () => {
 
     resetModelHealth()
     expect(aiQueueBlockedState().blocked).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The two rows whose own lane swallowed the refusal, measured the same way:
+// through the REAL processor, against the REAL store, with only `fetch`
+// stubbed.
+//
+// A refusal is free, and the price of getting that wrong is invisible — the
+// row either vanishes (the work is gone and the user is told nothing) or it
+// burns its budget standing still. Both were measured here rather than
+// argued, because `attempts` is a number the queue increments about itself.
+// ---------------------------------------------------------------------------
+
+describe('a refusal costs a tailor_job_docs row nothing either', () => {
+  // The per-provider spend ledger is per WINDOW and shared by the whole
+  // file, and these cases walk more 429s than the rest of it does. Left
+  // alone, the ledger fills up mid-file and the next case is refused by the
+  // CAP instead of reaching the provider — a different refusal, with a
+  // different price, which would make everything after it measure the wrong
+  // thing. The cap has its own suite (providerSpendCap.test.ts).
+  beforeEach(() => {
+    clearProviderSpend()
+  })
+
+  afterEach(() => {
+    clearProviderSpend()
+  })
+
+  /**
+   * One `tailor_job_docs` row, claimed while the pool is FREE and refused
+   * once the pool is not.
+   *
+   * The ordering matters and is the whole mechanism: `runPass` reads
+   * `providerAvailability` ONCE, before it claims anything, so a pool that
+   * is already cold parks the whole pass without reaching a row at all —
+   * which would prove nothing about the lane. Putting a `verify` row ahead
+   * of it in the same pass reproduces the real race: the first row walks
+   * the rotation for real and heats every model, and the second is claimed
+   * on an availability snapshot that has since gone stale.
+   */
+  async function tailorRowBehindAHeatedPool(): Promise<{ rowId: number; jobId: number }> {
+    stubProvider(429)
+    seq++
+    const hot = createJob({ title: `Hot ${seq}`, company: `Acme ${seq}` }).job
+    updateJob(hot.id, { score: 0.9 })
+    const hotDoc = createDocument('cv', 'CV', 'content', hot.id)
+    addAIQueueItem({ type: 'verify', jobId: hot.id, documentId: hotDoc.id } as never)
+
+    seq++
+    const cold = createJob({ title: `Cold ${seq}`, company: `Acme ${seq}` }).job
+    updateJob(cold.id, { score: 0.1 })
+    const rowId = addAIQueueItem({ type: 'tailor_job_docs', jobId: cold.id } as never).id
+    return { rowId, jobId: cold.id }
+  }
+
+  it('parks the row on the provider clock, spending no attempt and no revival', async () => {
+    const { rowId, jobId } = await tailorRowBehindAHeatedPool()
+
+    await processQueue()
+
+    // The heat came from the `verify` row's own rotation, and from nowhere
+    // else: a refusal is not a request, so the tailor row's two lanes cost
+    // nothing on the wire either.
+    expect(fetchCalls).toBe(MODEL_COUNT)
+
+    const parked = row(rowId)
+    // STILL QUEUED. Before the fix this lane reported success, the case
+    // called `removeAIQueueItem`, and a user's Quick Apply disappeared
+    // against a provider that had refused to answer either document.
+    expect(parked.status).toBe('pending')
+    // ...with its budget and its place in the queue entirely intact. Not
+    // one attempt: the queue charged this same row ten of them while the
+    // outage ran, in the incident this whole file is about.
+    expect(parked.attempts).toBe(0)
+    expect(parked.autoRevives ?? 0).toBe(0)
+    expect(parked.blockedSince).toBeGreaterThan(0)
+    // ...and it says why, in the queue's own words rather than as a
+    // tailoring failure on the job.
+    expect(parked.lastError).toMatch(/cooling down|no AI provider/i)
+    // Nothing was written to the job: no document, and no erasure of the
+    // "documents built at" stamp a refusal must never touch.
+    expect(listJobDocuments(jobId)).toHaveLength(0)
+    expect(getJob(jobId)?.tailor_generated_at ?? null).toBeNull()
+    expect(getJob(jobId)?.tailor_last_error ?? null).toBeNull()
+  })
+
+  it('keeps parking it for as long as the outage lasts', async () => {
+    const { rowId } = await tailorRowBehindAHeatedPool()
+    await processQueue()
+    const callsAfterFirstPass = fetchCalls
+
+    for (let pass = 0; pass < 5; pass++) {
+      makeDue(rowId)
+      await processQueue()
+      expect(fetchCalls, `pass ${pass} made a request`).toBe(callsAfterFirstPass)
+      expect(row(rowId).attempts, `pass ${pass} spent an attempt`).toBe(0)
+      expect(row(rowId).autoRevives ?? 0, `pass ${pass} charged a revival`).toBe(0)
+      expect(row(rowId).status, `pass ${pass} retired the row`).toBe('pending')
+    }
+  })
+
+  it('finishes the job when the provider comes back, with no duplicate row', async () => {
+    const { rowId, jobId } = await tailorRowBehindAHeatedPool()
+    await processQueue()
+    expect(row(rowId).status).toBe('pending')
+
+    // Provider healthy again, and the row woken the way the queue's own
+    // park would wake it.
+    resetModelHealth()
+    clearProviderSpend()
+    stubHealthyProvider()
+    makeDue(rowId)
+
+    await processQueue()
+
+    // Both documents, one row each — the pair is regenerated as a pair, so
+    // the retry of a refused pair cannot double anything.
+    const docs = listJobDocuments(jobId)
+    expect(docs.filter((d) => d.type === 'cv')).toHaveLength(1)
+    expect(docs.filter((d) => d.type === 'cover_letter')).toHaveLength(1)
+    // And the row is retired, because this time the work was done.
+    expect(getAIQueue().some((q) => q.id === rowId)).toBe(false)
+  })
+})
+
+describe('a genuine 429 does not launder a score_fit row', () => {
+  beforeEach(() => {
+    clearProviderSpend()
+  })
+
+  it('leaves the row on its ladder when the pass produced no verdict', async () => {
+    // The other lane the same defect reached, one file over. `scoreJobFit`
+    // answers an ordinary 429 with its heuristic fallback — a real verdict
+    // is still derivable, so the job row records the reason and the
+    // queue's bounded ladder is meant to retry it — and the case decided
+    // "done" from `score`, a property of the JOB. On a job that had been
+    // scored before, the fallback pass read back a non-null score and the
+    // row was deleted: the scoring was never redone, and the score on the
+    // job was left at whatever the earlier pass wrote.
+    //
+    // So this job is scored, and then the provider answers 429.
+    stubProvider(429)
+    updateSettings({ base_cv: 'A CV with some words in it.' })
+    seq++
+    const { job } = createJob({ title: `Scored ${seq}`, company: `Acme ${seq}` })
+    updateJob(job.id, { score: 0.8, fit_source: 'llm', fit_score_version: cvVersion() })
+    const rowId = queueScoreFit(job.id)
+
+    await processQueue()
+
+    // A real rotation happened — these are 429s, not a block.
+    expect(fetchCalls).toBe(MODEL_COUNT)
+    // The row is still queued work, and the attempt is charged to the
+    // ordinary ladder, because a 429 IS a billed request.
+    const fit = row(rowId)
+    expect(fit.status).toBe('pending')
+    expect(fit.attempts).toBe(1)
+    // ...and no verdict was invented for it. The score on the job is the
+    // one it already had; this pass only recorded why it could not do
+    // better.
+    expect(getJob(job.id)?.score).toBe(0.8)
+    expect(getJob(job.id)?.fit_source).toBe('heuristic')
+    expect(getJob(job.id)?.fit_last_error).toMatch(/429|rate limit/i)
   })
 })
