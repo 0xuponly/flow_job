@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNotifications } from './NotificationsProvider'
-import { groupCountLabel, groupNotifications, type NotificationGroup } from './grouping'
+import { groupCountLabel, groupNotifications, rowOccurrences, totalOccurrences, type NotificationGroup } from './grouping'
 import QueuePanel from './QueuePanel'
 import { notify } from '../components/Notifications'
 import { api } from '../api'
@@ -22,6 +22,11 @@ function formatTime(ts: number): string {
  * rebuilds the very flood the grouping just prevented, which is a worse
  * surprise because the user opened it deliberately. Same shape as the
  * queue panel's window (`QueuePanel.tsx`), same reason.
+ *
+ * Paged by ROW, not by occurrence, because an entry renders one row's
+ * payload. A row that stands for four occurrences is four things that
+ * happened and one thing to read, and a page boundary that counted
+ * occurrences would render fewer entries than it says it is showing.
  */
 const OCCURRENCE_PAGE = 25
 
@@ -30,11 +35,23 @@ const OCCURRENCE_PAGE = 25
  * user needs both: how many distinct things went wrong, and how many
  * times. A center reading "1 notification" when twelve documents failed
  * would be technically true and practically a lie.
+ *
+ * The first number is occurrences rather than rows for the same reason —
+ * see `NotificationGroup.count`. Rows are an implementation detail of how
+ * the repeats were stored; the user is asking how many things went wrong.
+ *
+ * "in N groups" is said only when rows were actually collapsed into fewer
+ * lines than there are rows. Otherwise it would restate the first number
+ * and read like a second fact about the user's work.
  */
-function notificationsFooter(rowCount: number, groupCount: number): string {
-  if (rowCount === 0) return '0 notifications'
-  const total = `${rowCount} notification${rowCount === 1 ? '' : 's'}`
-  if (groupCount === rowCount) return total
+function notificationsFooter(
+  occurrenceCount: number,
+  groupCount: number,
+  rowCount: number
+): string {
+  if (occurrenceCount === 0) return '0 notifications'
+  const total = `${occurrenceCount} notification${occurrenceCount === 1 ? '' : 's'}`
+  if (groupCount >= rowCount) return total
   return `${total} in ${groupCount} group${groupCount === 1 ? '' : 's'}`
 }
 
@@ -58,6 +75,12 @@ const dismissButtonStyle: React.CSSProperties = {
  */
 function Occurrence({ row, onDismiss }: { row: NotificationRow; onDismiss: (id: number) => void }) {
   const job = row.job
+  // The count is the store's, not this component's: the main process folds
+  // a recognised repeat into the row instead of writing a second one, so a
+  // row here can stand for several occurrences. Rendering it as though it
+  // were one would under-report, and rendering the time alone would read as
+  // "this happened once" — which is the claim the count exists to qualify.
+  const times = rowOccurrences(row)
   return (
     <li
       className="notif-occurrence"
@@ -66,6 +89,7 @@ function Occurrence({ row, onDismiss }: { row: NotificationRow; onDismiss: (id: 
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
         <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
           <time dateTime={new Date(row.created_at).toISOString()}>{formatTime(row.created_at)}</time>
+          {times > 1 ? <span> · {times} occurrences</span> : null}
           {job?.job_title ? <span> · {job.job_title}</span> : null}
           {job?.job_company ? <span> · {job.job_company}</span> : null}
           {job?.job_location ? <span> · {job.job_location}</span> : null}
@@ -111,7 +135,7 @@ interface GroupProps {
 function GroupRow({ group, onDismiss, onDismissGroup }: GroupProps) {
   const [expanded, setExpanded] = useState(false)
   const [shown, setShown] = useState(OCCURRENCE_PAGE)
-  const count = group.occurrences.length
+  const count = group.count
   const countLabel = groupCountLabel(count)
   const visible = expanded ? group.occurrences.slice(0, shown) : []
 
@@ -197,7 +221,7 @@ type Panel = 'notifications' | 'queue'
 const QUEUE_POLL_MS = 10000
 
 export default function NotificationDrawer() {
-  const { list, isOpen, close, dismiss, dismissGroup, dismissAll, refresh } = useNotifications()
+  const { list, isOpen, close, dismiss, dismissGroup, dismissAll, refresh, loadError } = useNotifications()
   const [mounted, setMounted] = useState(false)
   const [panel, setPanel] = useState<Panel>('notifications')
   const [queue, setQueue] = useState<QueueItemView[]>([])
@@ -316,6 +340,42 @@ export default function NotificationDrawer() {
   if (!mounted || !isOpen) return null
 
   const groups = groupNotifications(list)
+  const occurrences = totalOccurrences(list)
+
+  // The list, or nothing at all when there is nothing to be honest about.
+  //
+  // The empty state is suppressed by `loadError` rather than sitting beside
+  // it, and that is the whole of MAJOR 3: rendering "No notifications." over
+  // a failed read is indistinguishable from the truth, and it is a lie
+  // exactly when the user most needs to be told — a crash record written by
+  // the main process is in the file, and a store that cannot be read is one
+  // way the user never finds out there was something there to find.
+  //
+  // Rows the last successful read DID produce stay on screen below the
+  // banner. Blanking them would replace one lie with another, this time on
+  // top of rows the user had already read, so the banner says they may be
+  // stale instead.
+  let body: React.ReactNode = null
+  if (list.length > 0) {
+    body = (
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        {groups.map((group) => (
+          <GroupRow
+            key={group.key}
+            group={group}
+            onDismiss={dismiss}
+            onDismissGroup={dismissGroup}
+          />
+        ))}
+      </ul>
+    )
+  } else if (!loadError) {
+    body = (
+      <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 32, fontSize: 14 }}>
+        No notifications.
+      </div>
+    )
+  }
 
   return createPortal(
     <>
@@ -416,22 +476,46 @@ export default function NotificationDrawer() {
         </header>
         <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
           {panel === 'notifications' ? (
-            list.length === 0 ? (
-              <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 32, fontSize: 14 }}>
-                No notifications.
-              </div>
-            ) : (
-              <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-                {groups.map((group) => (
-                  <GroupRow
-                    key={group.key}
-                    group={group}
-                    onDismiss={dismiss}
-                    onDismissGroup={dismissGroup}
-                  />
-                ))}
-              </ul>
-            )
+            <>
+              {loadError && (
+                <div
+                  data-testid="notif-load-error"
+                  role="alert"
+                  style={{
+                    border: '1px solid var(--danger)',
+                    borderRadius: 6,
+                    padding: 12,
+                    marginBottom: 12,
+                    fontSize: 13,
+                    color: 'var(--text)',
+                  }}
+                >
+                  <div>{loadError}</div>
+                  <div style={{ color: 'var(--text-muted)', marginTop: 4 }}>
+                    {list.length > 0
+                      ? 'What is shown below is the last list that could be read.'
+                      : 'Nothing could be shown.'}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { void refresh() }}
+                    style={{
+                      marginTop: 8,
+                      background: 'transparent',
+                      border: '1px solid var(--border)',
+                      borderRadius: 6,
+                      color: 'var(--text)',
+                      padding: '4px 10px',
+                      cursor: 'pointer',
+                      fontSize: 12,
+                    }}
+                  >
+                    Try again
+                  </button>
+                </div>
+              )}
+              {body}
+            </>
           ) : (
             <QueuePanel
               items={queue}
@@ -444,7 +528,7 @@ export default function NotificationDrawer() {
         </div>
         <footer style={{ padding: 12, borderTop: '1px solid var(--border)', color: 'var(--text-muted)', fontSize: 12, textAlign: 'center' }}>
           {panel === 'notifications'
-            ? notificationsFooter(list.length, groups.length)
+            ? notificationsFooter(occurrences, groups.length, list.length)
             : (queue.length === 0 ? '0 queued tasks' : `${queue.length} queued task${queue.length === 1 ? '' : 's'}`)}
         </footer>
       </aside>

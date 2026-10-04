@@ -354,14 +354,16 @@ export function loadStore(): Store {
       // document and setting rather than the notification list.
       store.notifications = []
     }
-    // Rows written before the notification center learned to group. They
-    // carry no `group_key`, and `group_key` is required on NotificationRow
-    // (see electron/types.ts), so without this a pre-existing store would
-    // hand the drawer rows it cannot collapse and every old notification
-    // would read as its own group of one. Backfilled here rather than
-    // defaulted at render time for the reason the field is required: the
-    // derivation must exist in exactly one place, and the renderer groups
-    // on the stored key verbatim.
+    // Rows written before the notification center learned to group, and
+    // before the record layer learned to fold a repeat into the row it
+    // already had. They carry neither `group_key` nor `occurrences`, and
+    // both are required on NotificationRow (see electron/types.ts), so
+    // without this a pre-existing store would hand the drawer rows it
+    // cannot collapse — every old notification reading as its own group of
+    // one — and a count it has nothing to add up. Backfilled here rather
+    // than defaulted at render time for the reason the fields are required:
+    // the derivation must exist in exactly one place, and the renderer
+    // reads both stored values verbatim.
     //
     // The per-row guard rather than a wholesale reset is the same shape as
     // the guarded defaults above it: an upgrade adds the missing field and
@@ -380,6 +382,17 @@ export function loadStore(): Store {
     for (const row of store.notifications) {
       if (typeof row.group_key !== 'string' || row.group_key === '') {
         row.group_key = notificationGroupKey(row.type, row.source, row.message)
+      }
+      // Same story, same loop: `occurrences` is required on NotificationRow
+      // and was not on disk before the record layer learned to fold a
+      // repeat into the row it already had. A pre-existing store has no
+      // repeats in it — every row there is its own occurrence — so 1 is
+      // the truthful value, not a default that hides a count. Anything
+      // that is not a finite number >= 1 is treated as 1 rather than
+      // trusted: `occurrences` feeds the badge the user reads, and a
+      // NaN or a 0 there is worse than an honest one.
+      if (!Number.isFinite(row.occurrences) || row.occurrences < 1) {
+        row.occurrences = 1
       }
     }
     if (typeof store.settings.auto_scan_enabled !== 'boolean') {

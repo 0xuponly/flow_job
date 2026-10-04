@@ -131,34 +131,359 @@ describe('a record outlives the app that wrote it', () => {
   })
 })
 
-describe('the grouping key collapses the flood and separates the rest', () => {
-  /**
-   * The shape the reported bug produced: one generate click, several
-   * documents, each its own rotation over the same 12-model pool, so the
-   * bucket counts differ while the failure is the same.
-   *
-   * Every mix here is one `toastErrorSummary` can actually emit — a
-   * non-zero count for each bucket it names, because it filters empty
-   * buckets out (src/aiErrorSummary.ts). A fixture with `0 rate limited`
-   * would key identically today and would quietly stop keying the moment
-   * that filter changed, which is a test that has stopped testing the
-   * thing it names.
-   */
-  function flood(count: number): void {
-    for (let i = 0; i < count; i++) {
-      const other = (i % 10) + 1
-      addNotification({
-        type: 'error',
-        source: 'ai',
-        message: `Content review failed: 12 errors: ${12 - other} rate limited, ${other} other.`,
-        full_message: `CV #${i}\nAll 12 configured AI models are rate limited:\nModel ${i}: HTTP 503`,
-        job: JOB
-      })
-    }
+/**
+ * Writes a store file by hand in the pre-grouping shape, then loads it.
+ * The point is to prove an EXISTING user's rows still load and still
+ * group, not just that new ones do.
+ *
+ * At module scope rather than inside a describe because two describes need
+ * it: the migration's own cases, and the de-duplication describe's cases
+ * that fold a repeat into a row written before `occurrences` existed.
+ */
+function writeLegacyStore(rows: unknown[]): void {
+  if (!existsSync(STORE_DIR)) mkdirSync(STORE_DIR, { recursive: true })
+  writeFileSync(
+    join(STORE_DIR, 'apply-assistant-data.json'),
+    JSON.stringify({
+      jobs: [], documents: [], applications: [], api_models: [],
+      nextId: 900, seen_urls: [], ai_queue: [], board_health: {},
+      board_scan_times: {}, provider_spend: {}, deleted_jobs: [],
+      blacklisted_companies: [], settings: {}, notifications: rows
+    })
+  )
+}
+
+/** A row in the shape a build from before grouping and counts wrote. */
+const legacyRow = {
+  id: 1,
+  type: 'error',
+  source: 'ai',
+  message: 'Content review failed: 12 errors: 11 rate limited, 1 other.',
+  full_message: 'the whole rotation',
+  created_at: 1_700_000_000_000,
+  dismissed_at: null
+}
+
+/**
+ * The shape the reported bug produced: one generate click, several
+ * documents, each its own rotation over the same 12-model pool, so the
+ * bucket counts differ while the failure is the same.
+ *
+ * Every mix here is one `toastErrorSummary` can actually emit — a non-zero
+ * count for each bucket it names, because it filters empty buckets out
+ * (src/aiErrorSummary.ts). A fixture with `0 rate limited` would key
+ * identically today and would quietly stop keying the moment that filter
+ * changed, which is a test that has stopped testing the thing it names.
+ *
+ * Each document also carries its OWN `full_message`, which is what makes
+ * ten of these ten different facts rather than one fact said ten times.
+ * See the de-duplication describe below for what that is protecting.
+ */
+function documentFlood(count: number): void {
+  for (let i = 0; i < count; i++) {
+    const other = (i % 10) + 1
+    addNotification({
+      type: 'error',
+      source: 'ai',
+      message: `Content review failed: 12 errors: ${12 - other} rate limited, ${other} other.`,
+      full_message: `CV #${i}\nAll 12 configured AI models are rate limited:\nModel ${i}: HTTP 503`,
+      job: JOB
+    })
   }
+}
+
+/**
+ * One failure, said `count` times, in the shape the renderers actually
+ * produce it: same summary, same raw error, same job. This is what a
+ * re-render, a StrictMode double-mount or a same-second retry looks like
+ * from inside the store, and it is the case the record layer must fold.
+ */
+function sameFactSaidNtimes(count: number, over: Record<string, unknown> = {}): void {
+  for (let i = 0; i < count; i++) {
+    addNotification({
+      type: 'error',
+      source: 'ai',
+      message: 'Content review failed: 12 errors: 11 rate limited, 1 other.',
+      full_message: 'CV #9\nAll 12 configured AI models are rate limited:\nModel 0: HTTP 503',
+      job: JOB,
+      ...over
+    })
+  }
+}
+
+/**
+ * Run `fn` with the clock moved forward by `ms`.
+ *
+ * The de-duplication window is a real number of milliseconds and the
+ * alternatives to measuring it are both worse: sleeping would make the
+ * suite slow and flaky, and asserting on a stored constant would pin the
+ * constant rather than the behaviour. `Date.now` is the only clock the
+ * store reads, so replacing it is the whole job.
+ */
+function withClockAt(now: number, fn: () => void): void {
+  const realNow = Date.now
+  try {
+    Date.now = () => now
+    fn()
+  } finally {
+    Date.now = realNow
+  }
+}
+
+describe('the record layer refuses to multiply a fact it has already recorded', () => {
+  /**
+   * The bug this closes, in one assertion. The toast overlay collapses
+   * identical text inside a TTL; the RECORD had no such guard, so the same
+   * double-emission that used to produce ten toasts produced ten permanent
+   * rows — and the `× 12` badge then reported a multiple of what happened.
+   */
+  it('the same failure emitted twelve times is ONE row counting twelve', () => {
+    sameFactSaidNtimes(12)
+
+    const { rows } = listActiveNotifications()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].occurrences).toBe(12)
+    // The count the drawer renders is the row's own, and it is the real
+    // number of occurrences rather than the number of writes that got
+    // through.
+    expect(rows[0].occurrences).toBe(12)
+  })
+
+  it('keeps the row it folded into, rather than restating it in the newer words', () => {
+    // Two sentences that share a group key — the digit normalisation
+    // exists precisely so these are one group — carrying the SAME payload.
+    // So they fold. The fold must not overwrite the message: "11 rate
+    // limited, 1 other" and "10 rate limited, 2 other" are different facts
+    // that the GROUP deliberately keeps apart, and a row that restated
+    // itself in whichever sentence arrived last would be claiming the last
+    // mix happened and not the first. The group's collapsed header takes
+    // the newest member's message; within one row there is only the first.
+    addNotification({
+      type: 'error', source: 'ai',
+      message: 'Content review failed: 12 errors: 11 rate limited, 1 other.',
+      full_message: 'CV #9\nrotation', job: JOB
+    })
+    addNotification({
+      type: 'error', source: 'ai',
+      message: 'Content review failed: 12 errors: 10 rate limited, 2 other.',
+      full_message: 'CV #9\nrotation', job: JOB
+    })
+
+    const { rows } = listActiveNotifications()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].occurrences).toBe(2)
+    expect(rows[0].message).toBe('Content review failed: 12 errors: 11 rate limited, 1 other.')
+    expect(rows[0].full_message).toBe('CV #9\nrotation')
+  })
+
+  it('returns the existing row id, so a caller can name the thing it recorded', () => {
+    const first = addNotification({
+      type: 'error', source: 'ai',
+      message: 'Content review failed: 12 errors: 11 rate limited, 1 other.',
+      full_message: 'CV #9\nrotation', job: JOB
+    })
+    const second = addNotification({
+      type: 'error', source: 'ai',
+      message: 'Content review failed: 12 errors: 11 rate limited, 1 other.',
+      full_message: 'CV #9\nrotation', job: JOB
+    })
+
+    expect(second.id).toBe(first.id)
+    expect(second.occurrences).toBe(2)
+    // ...and the store was not grown by the repeat.
+    expect(listActiveNotifications().rows).toHaveLength(1)
+  })
+
+  it('two DIFFERENT failures on two different jobs are not merged', () => {
+    // The boundary that matters. `notificationGroupKey` deliberately drops
+    // the job so twelve throttled jobs read as one thing to think about —
+    // which is safe for collapsing and catastrophic for erasing, because
+    // merging these would leave one row citing one job while its count
+    // claimed two.
+    const other = { job_id: 8, job_title: 'Staff Engineer', job_company: 'Globex', job_location: 'Remote' }
+    addNotification({
+      type: 'error', source: 'ai',
+      message: 'Content review failed: 12 errors: 11 rate limited, 1 other.',
+      full_message: 'CV #9\nrotation', job: JOB
+    })
+    addNotification({
+      type: 'error', source: 'ai',
+      message: 'Content review failed: 12 errors: 11 rate limited, 1 other.',
+      full_message: 'CV #9\nrotation', job: other
+    })
+
+    const rows = listActiveNotifications().rows
+    expect(rows).toHaveLength(2)
+    // One group for the drawer to collapse, two rows underneath it.
+    expect(new Set(rows.map((r) => r.group_key)).size).toBe(1)
+    expect(new Set(rows.map((r) => r.job?.job_id)).size).toBe(2)
+    expect(rows.every((r) => r.occurrences === 1)).toBe(true)
+  })
+
+  it('the same failure with no job at all is still folded', () => {
+    // The crash path: no job citation at all, so the key is the grouping
+    // key plus four empties, and the fold has to work without a job.
+    addNotification({
+      type: 'error', source: 'app',
+      message: 'Internal error: boom',
+      full_message: 'Error: boom\n    at tick (app.js:1:1)',
+      group_key: 'error|app|internal error: Error'
+    })
+    addNotification({
+      type: 'error', source: 'app',
+      message: 'Internal error: boom',
+      full_message: 'Error: boom\n    at tick (app.js:1:1)',
+      group_key: 'error|app|internal error: Error'
+    })
+
+    const { rows } = listActiveNotifications()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].occurrences).toBe(2)
+  })
+
+  it('six documents failing in one sweep stay six rows with six payloads', () => {
+    // The other boundary, and the reason `full_message` is in the key.
+    // Ten documents failing with the same one-line summary and ten
+    // different raw rotations is TEN facts; collapsing them into whichever
+    // was written first would destroy nine rotations, which is the whole
+    // reason the centre exists.
+    documentFlood(6)
+
+    const rows = listActiveNotifications().rows
+    expect(rows).toHaveLength(6)
+    expect(new Set(rows.map((r) => r.full_message)).size).toBe(6)
+    expect(rows.every((r) => r.occurrences === 1)).toBe(true)
+  })
+
+  it('the same failure at a different time is a separate row, not a bigger count', () => {
+    // The user's history. Two occurrences minutes apart are two things that
+    // happened, and only the second of them is news — the user wants to
+    // know the CV failed at 09:14 AND again at 11:02, because something
+    // changed in between.
+    const t0 = 1_700_000_000_000
+    withClockAt(t0, () => sameFactSaidNtimes(2))
+    withClockAt(t0 + 60_000, () => sameFactSaidNtimes(2))
+
+    const rows = listActiveNotifications().rows
+    expect(rows).toHaveLength(2)
+    expect(rows.every((r) => r.occurrences === 2)).toBe(true)
+    // Two rows the drawer collapses into one group of four.
+    expect(new Set(rows.map((r) => r.group_key)).size).toBe(1)
+    expect(rows.reduce((n, r) => n + r.occurrences, 0)).toBe(4)
+  })
+
+  it('a repeat lands on the most recent matching row, so the newest survives', () => {
+    // Two rows inside the window with the same key — which is what a repeat
+    // straddling the boundary of an earlier burst looks like. The count
+    // goes on the newest, so the row that is top of the list is the one
+    // that reports the latest number.
+    const t0 = 1_700_000_000_000
+    const payload = {
+      type: 'error', source: 'ai',
+      message: 'Content review failed: 12 errors: 11 rate limited, 1 other.',
+      full_message: 'CV #9\nrotation', job: JOB
+    }
+    withClockAt(t0, () => { addNotification(payload) })
+    withClockAt(t0 + 60_000, () => { addNotification(payload) })
+    withClockAt(t0 + 61_000, () => { addNotification(payload) })
+
+    const rows = listActiveNotifications().rows
+    expect(rows).toHaveLength(2)
+    expect(rows[0].occurrences).toBe(2)
+    expect(rows[1].occurrences).toBe(1)
+  })
+
+  it('a repeat does not revive a row the user dismissed', () => {
+    // The user removed that message on purpose. Putting it back — silently,
+    // because a fold looks identical to a write — would undo a decision
+    // they made, and they would have no way to tell it happened.
+    const { id } = addNotification({
+      type: 'error', source: 'ai',
+      message: 'Content review failed: 12 errors: 11 rate limited, 1 other.',
+      full_message: 'CV #9\nrotation', job: JOB
+    })
+    dismissNotification(id)
+
+    sameFactSaidNtimes(1)
+
+    const { rows } = listActiveNotifications()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].id).not.toBe(id)
+    expect(rows[0].occurrences).toBe(1)
+  })
+
+  it('survives a restart with the count intact', () => {
+    const t0 = 1_700_000_000_000
+    withClockAt(t0, () => sameFactSaidNtimes(5))
+
+    return restartApp().then(() => {
+      const { rows } = listActiveNotifications()
+      expect(rows).toHaveLength(1)
+      expect(rows[0].occurrences).toBe(5)
+    })
+  })
+
+  it('a row written before counts existed loads as one occurrence, not zero', async () => {
+    // `occurrences` is required on NotificationRow and was not on disk
+    // before this change, so the migration's value is the one number the
+    // badge can be wrong about in the most visible way. Zero would make a
+    // real failure read as having not happened.
+    writeLegacyStore([legacyRow, { ...legacyRow, id: 2, message: 'Generation failed.' }])
+    reloadStore()
+
+    const { rows } = listActiveNotifications()
+    expect(rows.map((r) => r.occurrences)).toEqual([1, 1])
+    await restartApp()
+    expect(listActiveNotifications().rows.every((r) => r.occurrences === 1)).toBe(true)
+  })
+
+  it('a nonsense occurrences value on disk is read as one, not trusted', () => {
+    writeLegacyStore([
+      { ...legacyRow, id: 1, occurrences: null },
+      { ...legacyRow, id: 2, occurrences: 0 },
+      { ...legacyRow, id: 3, occurrences: -4 },
+      { ...legacyRow, id: 4, occurrences: 'many' },
+      { ...legacyRow, id: 5, occurrences: 7 }
+    ])
+    expect(() => reloadStore()).not.toThrow()
+
+    // The one real value survives; everything unusable becomes 1, which
+    // under-reports rather than inventing a count the store never asserted.
+    const counts = new Map(listActiveNotifications().rows.map((r) => [r.id, r.occurrences]))
+    expect(counts.get(1)).toBe(1)
+    expect(counts.get(2)).toBe(1)
+    expect(counts.get(3)).toBe(1)
+    expect(counts.get(4)).toBe(1)
+    expect(counts.get(5)).toBe(7)
+  })
+
+  it('a repeat of a legacy row folds into it rather than reading NaN', async () => {
+    // The migration makes this unreachable, and the increment in
+    // `addNotification` is guarded anyway — a NaN there would be what the
+    // drawer renders as the count, permanently. The row is stamped now so
+    // it is inside the window at all; the point of the case is the missing
+    // field, not the age.
+    const now = Date.now()
+    writeLegacyStore([{ ...legacyRow, created_at: now }])
+    reloadStore()
+
+    addNotification({
+      type: 'error', source: 'ai',
+      message: legacyRow.message,
+      full_message: legacyRow.full_message
+    })
+
+    await restartApp()
+    const { rows } = listActiveNotifications()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].occurrences).toBe(2)
+  })
+})
+
+describe('the grouping key collapses the flood and separates the rest', () => {
 
   it('ten documents whose failure mixes differ share one key', () => {
-    flood(10)
+    documentFlood(10)
     const { rows } = listActiveNotifications()
     const keys = new Set(rows.map((r) => r.group_key))
     // This is the assertion the whole digit-normalisation exists for: with
@@ -177,7 +502,7 @@ describe('the grouping key collapses the flood and separates the rest', () => {
     // "some were throttled and some 503'd" call for different responses.
     // Merging them would buy one tidier row at the price of a row that
     // misstates what happened.
-    flood(2)
+    documentFlood(2)
     addNotification({
       type: 'error',
       source: 'ai',
@@ -281,35 +606,108 @@ describe('the grouping key collapses the flood and separates the rest', () => {
   })
 })
 
+/**
+ * The product rule, checked at the only place it can be: what the centre
+ * renders, and what it renders when the value is absent.
+ *
+ * Every field a drawer row shows has to be a real field of a real row, and
+ * "we did not have this" has to render as nothing — never as a placeholder,
+ * because a placeholder in a record is worse than a missing field: the row
+ * looks complete, so nothing prompts anyone to check it.
+ *
+ * This is a write-side audit rather than a render-side one, and deliberately
+ * so: `jobContext` and `cleanJobContext` in src/notifications/record.ts and
+ * electron/notifications.ts already own the "no placeholders" rule for job
+ * fields, and NotificationDrawer.tsx already owns "render a null as nothing".
+ * What is left to pin is that the STORE never manufactures a value on the
+ * way in, because a manufactured value would look like a sourced one from
+ * every reader downstream.
+ */
+describe('provenance: every field the centre renders, and what absent looks like', () => {
+  it('stores nothing at all for a job it knows no field of', () => {
+    // Not four nulls: "we knew nothing" and "we knew the job but it has no
+    // location" have to stay distinguishable in the row.
+    addNotification({ type: 'error', source: 'app', message: 'Backup failed.', full_message: 'raw', job: { job_id: null, job_title: null, job_company: null, job_location: null } })
+    expect(listActiveNotifications().rows[0].job).toBeUndefined()
+  })
+
+  it('nulls a job field the caller could not source, and keeps the rest', () => {
+    addNotification({
+      type: 'error', source: 'app', message: 'Backup failed.', full_message: 'raw',
+      job: { job_id: 3, job_title: '   ', job_company: 'Acme', job_location: '' }
+    })
+    // The title and the location were not there. The company was. What the
+    // row does NOT contain is 'Unknown', '—', or the company copied into a
+    // field the caller left blank.
+    expect(listActiveNotifications().rows[0].job).toEqual({
+      job_id: 3, job_title: null, job_company: 'Acme', job_location: null
+    })
+  })
+
+  it('keeps an unsourced job id null rather than borrowing one from elsewhere', () => {
+    // The follow-up queue holds an application id, not a job id. Putting a
+    // number in that column would resolve to nothing.
+    addNotification({
+      type: 'error', source: 'app', message: 'Follow-up failed.', full_message: 'raw',
+      job: { job_id: null, job_title: 'Recruiter', job_company: 'Acme', job_location: null }
+    })
+    expect(listActiveNotifications().rows[0].job?.job_id).toBeNull()
+  })
+
+  it('coerces an unrecognised type rather than storing a value nothing can render', () => {
+    // A renderer bug must not be able to write a row the drawer cannot draw.
+    // 'info' is the honest floor: the app is telling the user something
+    // happened, and asserting a severity it cannot justify would be worse.
+    addNotification({ type: 'catastrophe', source: 'app', message: 'm', full_message: 'm' })
+    expect(listActiveNotifications().rows[0].type).toBe('info')
+  })
+
+  it('stores a blank message as blank, and invents no summary for it', () => {
+    // No current caller can produce one, but the store is a file on disk
+    // that a build wrote, and the drawer's rule is "a field we could not
+    // source renders as nothing" — which for the summary means an empty
+    // header, not a fabricated one. The row is still identifiable by its
+    // type, source, timestamp and full payload.
+    addNotification({ type: 'error', source: 'app', message: '   ', full_message: 'the provider body' })
+    const [row] = listActiveNotifications().rows
+    expect(row.message).toBe('   ')
+    expect(row.full_message).toBe('the provider body')
+    expect(row.created_at).toBeGreaterThan(0)
+  })
+
+  it('gives a blank summary a key that is still a real key', () => {
+    // So it groups with other blank summaries rather than landing in a
+    // group of its own by accident.
+    addNotification({ type: 'error', source: 'app', message: '', full_message: 'a' })
+    addNotification({ type: 'error', source: 'app', message: '', full_message: 'b' })
+    addNotification({ type: 'info', source: 'app', message: '', full_message: 'c' })
+    const rows = listActiveNotifications().rows
+    expect(new Set(rows.map((r) => r.group_key)).size).toBe(2)
+    // A different type is still a different fact.
+    expect(rows.filter((r) => r.type === 'error')).toHaveLength(2)
+  })
+
+  it('bounds a provider error body instead of letting it become the whole store', () => {
+    // `electron/ai.ts` splices up to 200 chars of a provider's own body into
+    // a message; a body carrying request ids and timestamps must not be able
+    // to grow the store without limit.
+    const huge = 'x'.repeat(40_000)
+    addNotification({ type: 'error', source: 'ai', message: huge, full_message: huge })
+    const [row] = listActiveNotifications().rows
+    expect(row.message.length).toBeLessThanOrEqual(4096)
+    expect(row.full_message.length).toBeLessThanOrEqual(4096)
+    expect(row.group_key.length).toBeLessThanOrEqual(4096)
+  })
+
+  it('reports the occurrence count it actually recorded, not the writes it received', () => {
+    // The badge's number, and the one value in the row a reader cannot
+    // cross-check against anything else on screen.
+    addNotification({ type: 'error', source: 'app', message: 'm', full_message: 'm' })
+    expect(listActiveNotifications().rows[0].occurrences).toBe(1)
+  })
+})
+
 describe('the store migration', () => {
-  /**
-   * Writes a store file by hand in the pre-grouping shape, then loads it.
-   * The point is to prove an EXISTING user's rows still load and still
-   * group, not just that new ones do.
-   */
-  function writeLegacyStore(rows: unknown[]): void {
-    if (!existsSync(STORE_DIR)) mkdirSync(STORE_DIR, { recursive: true })
-    writeFileSync(
-      join(STORE_DIR, 'apply-assistant-data.json'),
-      JSON.stringify({
-        jobs: [], documents: [], applications: [], api_models: [],
-        nextId: 900, seen_urls: [], ai_queue: [], board_health: {},
-        board_scan_times: {}, provider_spend: {}, deleted_jobs: [],
-        blacklisted_companies: [], settings: {}, notifications: rows
-      })
-    )
-  }
-
-  const legacyRow = {
-    id: 1,
-    type: 'error',
-    source: 'ai',
-    message: 'Content review failed: 12 errors: 11 rate limited, 1 other.',
-    full_message: 'the whole rotation',
-    created_at: 1_700_000_000_000,
-    dismissed_at: null
-  }
-
   it('backfills group_key onto rows written before grouping existed', () => {
     writeLegacyStore([legacyRow])
     reloadStore()

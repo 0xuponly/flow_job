@@ -9,7 +9,7 @@
  * drawer must not depend on.
  */
 import { describe, it, expect } from 'vitest'
-import { groupCountLabel, groupNotifications } from './grouping'
+import { groupCountLabel, groupNotifications, rowOccurrences, totalOccurrences } from './grouping'
 import type { NotificationRow } from '../types'
 
 function row(over: Partial<NotificationRow> & { id: number; group_key: string }): NotificationRow {
@@ -104,6 +104,65 @@ describe('groupNotifications', () => {
 
   it('an empty list is no groups, not one empty group', () => {
     expect(groupNotifications([])).toEqual([])
+  })
+})
+
+/**
+ * A row is the record of one thing having happened, unless the main
+ * process folded a repeat into it. `count` is what the group badge reads,
+ * so a row count used here would report the double-emission the fold exists
+ * to remove — the number that made the badge a lie in the first place.
+ */
+describe('rowOccurrences', () => {
+  it('reads the row\'s own count', () => {
+    expect(rowOccurrences(row({ id: 1, group_key: A, occurrences: 7 }))).toBe(7)
+  })
+
+  it('reads a missing count as one, never as zero or NaN', () => {
+    // The field is optional on this side of the IPC boundary, so a row from
+    // a store file or a build older than the migration can lack it.
+    expect(rowOccurrences(row({ id: 1, group_key: A }))).toBe(1)
+  })
+
+  it('reads anything unusable as one rather than trusting it', () => {
+    for (const bad of [0, -3, NaN, Infinity]) {
+      expect(rowOccurrences(row({ id: 1, group_key: A, occurrences: bad }))).toBe(1)
+    }
+  })
+
+  it('truncates a fractional count, so a badge is never a decimal', () => {
+    expect(rowOccurrences(row({ id: 1, group_key: A, occurrences: 2.7 }))).toBe(2)
+  })
+})
+
+describe('groupNotifications().count', () => {
+  it('sums the rows\' own counts rather than counting the rows', () => {
+    const groups = groupNotifications([
+      row({ id: 1, group_key: A, occurrences: 6 }),
+      row({ id: 2, group_key: A, occurrences: 4 }),
+      row({ id: 3, group_key: A })
+    ])
+    // Three rows, eleven occurrences.
+    expect(groups[0].occurrences).toHaveLength(3)
+    expect(groups[0].count).toBe(11)
+  })
+
+  it('is the row count when nothing was ever folded', () => {
+    const groups = groupNotifications([row({ id: 1, group_key: A }), row({ id: 2, group_key: A })])
+    expect(groups[0].count).toBe(2)
+  })
+})
+
+describe('totalOccurrences', () => {
+  it('adds up every row regardless of grouping', () => {
+    expect(totalOccurrences([
+      row({ id: 1, group_key: A, occurrences: 6 }),
+      row({ id: 2, group_key: B, occurrences: 4 })
+    ])).toBe(10)
+  })
+
+  it('is zero for an empty list', () => {
+    expect(totalOccurrences([])).toBe(0)
   })
 })
 

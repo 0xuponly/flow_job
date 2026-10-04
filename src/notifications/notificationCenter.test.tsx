@@ -38,6 +38,7 @@ const mockApi = {
   notificationsDismissMany: vi.fn(),
   notificationsDismissAll: vi.fn(),
   notificationsPurgeOldDismissed: vi.fn(),
+  onNotificationsChanged: vi.fn((_cb: () => void) => () => undefined),
   listAIQueue: vi.fn(),
 }
 
@@ -67,6 +68,7 @@ function flood(count: number, over: Partial<NotificationRow> = {}): Notification
     created_at: 1_700_000_000_000 + i * 60_000,
     dismissed_at: null,
     group_key: 'error|ai|content review failed: # errors: # rate limited, # other.',
+    occurrences: 1,
     job: JOB,
     ...over
   }))
@@ -159,6 +161,79 @@ describe('R2 — similar messages collapse into one row with a count', () => {
     await screen.findAllByTestId('notif-group')
 
     expect(screen.getByText('12 notifications in 1 group')).toBeInTheDocument()
+  })
+})
+
+/**
+ * The count the badge shows must be the number of things that happened, not
+ * the number of writes that got through. The store folds a repeat it
+ * recognises — a re-render, a StrictMode double-mount, a same-second retry
+ * — into the row that already records it and increments `occurrences`, so a
+ * group can be two rows and a count of twelve. Rendering the row count
+ * would put the double-emission back on screen as a fact about the user's
+ * work, which is the exact number MAJOR 1 was raised about.
+ */
+describe('the count is occurrences, not rows', () => {
+  it('sums each row\'s own count into the group badge', async () => {
+    const rows = flood(3)
+    rows[0].occurrences = 6
+    rows[1].occurrences = 4
+    await openDrawer(rows)
+
+    await screen.findAllByTestId('notif-group')
+    // 6 + 4 + 1, from three rows.
+    expect(screen.getByTestId('notif-group-count')).toHaveTextContent('× 11')
+    expect(screen.getByText('11 notifications in 1 group')).toBeInTheDocument()
+  })
+
+  it('names the repeat on the entry rather than letting it read as one event', async () => {
+    // `flood` numbers rows oldest-first, and a group renders newest first,
+    // so index 1 is the entry at the top.
+    const rows = flood(2)
+    rows[1].occurrences = 6
+    await openDrawer(rows)
+    expandGroup('Content review failed: 12 errors: 11 rate limited, 1 other.')
+    await screen.findByTestId('notif-group-occurrences')
+
+    // Two entries, and only the folded one says it stands for more than
+    // one. Rendering it as a single occurrence would under-report the same
+    // number the group header just reported.
+    expect(occurrences()).toHaveLength(2)
+    expect(citationOf(occurrences()[0])).toContain('6 occurrences')
+    expect(citationOf(occurrences()[1])).not.toContain('occurrences')
+  })
+
+  it('reads a row with no occurrences field as one, never as NaN', async () => {
+    // The field is optional on the renderer's side of the IPC boundary (see
+    // src/types.ts) — a store file or a build older than the migration can
+    // produce a row without it. A NaN here would be the badge, permanently.
+    const rows = flood(2)
+    delete rows[0].occurrences
+    rows[1].occurrences = 3
+    await openDrawer(rows)
+
+    await screen.findAllByTestId('notif-group')
+    expect(screen.getByTestId('notif-group-count')).toHaveTextContent('× 4')
+    expect(screen.getByText('4 notifications in 1 group')).toBeInTheDocument()
+  })
+
+  it('a single row folded five times is × 5 and still one entry', async () => {
+    // The end-to-end shape of the reported bug after the fix: what used to
+    // be five identical toasts and five permanent rows is one row the user
+    // can see, counted honestly.
+    await openDrawer([{ ...flood(1)[0], occurrences: 5 }])
+
+    await screen.findAllByTestId('notif-group')
+    expect(screen.getAllByTestId('notif-group')).toHaveLength(1)
+    expect(screen.getByTestId('notif-group-count')).toHaveTextContent('× 5')
+    // One row and one group, so "in 1 group" would restate the count and
+    // read like a second fact. The occurrence is already on the header.
+    expect(screen.getByText('5 notifications')).toBeInTheDocument()
+
+    expandGroup('Content review failed: 12 errors: 11 rate limited, 1 other.')
+    await screen.findByTestId('notif-group-occurrences')
+    expect(occurrences()).toHaveLength(1)
+    expect(citationOf(occurrences()[0])).toContain('5 occurrences')
   })
 })
 
@@ -469,20 +544,98 @@ describe('R1 — the drawer reflects a record as soon as it is written', () => {
     }
   })
 
-  it('ignores a malformed list rather than rendering undefined rows', async () => {
+  it('reports a list it could not read, rather than rendering it as empty', async () => {
     // Same convention the queue panel follows: this codebase returns an
     // error envelope from handlers that can fail, and destructuring `{rows}`
     // off one is what crashed the drawer on render before.
+    //
+    // What it must NOT do is treat the failure as "nothing is in there".
+    // That is the whole of the MAJOR-3 hole: an `uncaughtException` is
+    // recorded in the store by the main process, and if the store cannot
+    // then be read the drawer answers "No notifications." — a confident,
+    // specific, wrong statement about records that are on disk. So the
+    // failure is surfaced, and the empty wording is gone entirely.
     await openDrawer([])
     // Set AFTER the helper, which installs its own `notificationsList` mock.
     mockApi.notificationsList.mockResolvedValue({ error: 'INTERNAL' })
     fireEvent.keyDown(document, { key: 'Escape' })
     fireEvent.click(screen.getByText('open'))
     await new Promise((r) => setTimeout(r, 120))
-    // Still mounted, still showing the empty state rather than a crash on
-    // `list.length`.
+
     expect(screen.getByTestId('notif-backdrop')).toBeInTheDocument()
-    expect(screen.getByText(/no notifications/i)).toBeInTheDocument()
+    expect(await screen.findByTestId('notif-load-error')).toBeInTheDocument()
+    expect(screen.queryByText(/no notifications/i)).not.toBeInTheDocument()
+  })
+
+  it('keeps the rows it could read when a later read fails', async () => {
+    // The failure must not blank the list. Blanking it would replace one
+    // lie — "there is nothing" — with another, "there is nothing you can
+    // currently see", on a screen holding rows the user had already read.
+    await openDrawer(flood(2))
+    await screen.findAllByTestId('notif-group')
+
+    mockApi.notificationsList.mockResolvedValue({ error: 'INTERNAL' })
+    fireEvent.keyDown(document, { key: 'Escape' })
+    fireEvent.click(screen.getByText('open'))
+    await screen.findByTestId('notif-load-error')
+
+    // The rows are still there, and the banner says they may be stale.
+    expect(screen.getAllByTestId('notif-group')).toHaveLength(1)
+    expect(screen.getByText(/last list that could be read/i)).toBeInTheDocument()
+  })
+
+  it('says so when the store cannot be reached at all, and recovers on retry', async () => {
+    // `ipcRenderer.invoke` rejects rather than answering when the channel
+    // itself is gone — the main-process restart under `npm run dev`. Same
+    // requirement, different transport: not an empty center.
+    await openDrawer([])
+    mockApi.notificationsList.mockRejectedValue(new Error('ipc channel closed'))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    fireEvent.click(screen.getByText('open'))
+    expect(await screen.findByTestId('notif-load-error')).toBeInTheDocument()
+    expect(screen.queryByText(/no notifications/i)).not.toBeInTheDocument()
+
+    mockApi.notificationsList.mockResolvedValue({ rows: flood(1) })
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }))
+
+    await waitFor(() => expect(screen.queryByTestId('notif-load-error')).not.toBeInTheDocument())
+    expect(screen.getAllByTestId('notif-group')).toHaveLength(1)
+  })
+
+  it('re-reads on the main process saying the store changed', async () => {
+    // The crash is recorded from the main process, where there is no
+    // renderer to fire the window event record.ts uses — so this channel
+    // is the only thing that makes the badge and the drawer learn about it
+    // without the user opening the center and looking. Everything else in
+    // this file goes through `app:notification-recorded`; this is the
+    // main-process half of the same arrangement.
+    const seen: (() => void)[] = []
+    mockApi.onNotificationsChanged.mockImplementation((cb: () => void) => {
+      seen.push(cb)
+      return () => undefined
+    })
+    await openDrawer([])
+    await screen.findByText(/no notifications/i)
+    expect(seen).toHaveLength(1)
+
+    mockApi.notificationsList.mockResolvedValue({ rows: flood(1) })
+    seen[0]()
+    expect(await screen.findByTestId('notif-group')).toBeInTheDocument()
+  })
+
+  it('stops listening to the main process when the provider unmounts', async () => {
+    const unsubscribe = vi.fn()
+    mockApi.onNotificationsChanged.mockImplementation(() => unsubscribe)
+    const view = render(
+      <NotificationsProvider>
+        <OpenButton />
+        <NotificationDrawer />
+      </NotificationsProvider>
+    )
+    await waitFor(() => expect(mockApi.onNotificationsChanged).toHaveBeenCalled())
+
+    view.unmount()
+    expect(unsubscribe).toHaveBeenCalled()
   })
 
   it('re-reads the store every time the drawer is opened', async () => {

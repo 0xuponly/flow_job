@@ -4,13 +4,49 @@ import type {
   NotificationSource,
   NotificationJobContext
 } from './types'
-import { notificationGroupKey } from './notificationGroup'
+import { notificationDedupeKey, notificationGroupKey } from './notificationGroup'
 import { loadStore, saveStore } from './database'
 
 const MAX_FIELD_BYTES = 4096
 const ACTIVE_CAP = 500
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
 const PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000
+
+/**
+ * How long a repeat of the same fact is folded into the row that already
+ * records it, rather than written as a second row.
+ *
+ * The reported bug was ten toasts from one click, and the toast funnel
+ * fixed it by refusing to stack the same sentence on itself for the length
+ * of a toast's TTL. The RECORD had no such guard, so the same
+ * double-emission that used to produce ten toasts produced ten permanent
+ * rows — and the `× 12` grouping badge then reported a multiple of what
+ * happened rather than the number of things that went wrong.
+ *
+ * Two seconds, and the number is a judgement with a stated reason rather
+ * than a default:
+ *
+ *   - Long enough to cover every duplicate this app actually produces.
+ *     Every one of them is either same-tick — a re-render, and the
+ *     StrictMode double-mount that `src/main.tsx` causes on every mount in
+ *     `npm run dev`, which is exactly where the reported ten came from —
+ *     or the immediate retry after it. A second attempt at the same
+ *     document with the same error is the same fact again.
+ *
+ *   - Short enough that it cannot eat the user's history. Two occurrences
+ *     of one failure minutes apart are two things that happened, and only
+ *     the second of them is news: the user wants to know their CV failed
+ *     at 09:14 AND again at 11:02, because something changed in between.
+ *     Any window long enough to swallow that would be inventing an
+ *     "it keeps failing" that the store cannot actually support.
+ *
+ * It is deliberately NOT the toast's TTL. A toast TTL is how long a
+ * sentence stays on screen; this is how long a repeat counts as a repeat.
+ * Making them the same number would inherit the toast's own reasoning —
+ * that a user who watched the first copy expire is seeing new information
+ * — which is about visibility, not about how many times a thing happened.
+ */
+const DEDUPE_WINDOW_MS = 2000
 
 const VALID_TYPES: readonly NotificationType[] = ['info', 'success', 'error', 'warning']
 
@@ -52,6 +88,37 @@ function cleanJobContext(job: NotificationJobContext | undefined): NotificationJ
   return { job_id: jobId, job_title: title, job_company: company, job_location: location }
 }
 
+/**
+ * The newest active row this write is a repeat of, or null.
+ *
+ * Scanned backwards and time-filtered before the key is derived, so the
+ * cost is one integer comparison for every row outside the window — which
+ * is all of them but the last couple of seconds' worth, since `created_at`
+ * is the insert clock and rows are appended in insert order.
+ *
+ * `dismissed_at === null` is part of the match and not an optimisation.
+ * A user who dismissed a failure and then hit the same failure again is
+ * seeing something new: reviving the dismissed row would put back a
+ * message they chose to remove, and would do it silently.
+ */
+function findRepeatable(
+  rows: NotificationRow[],
+  dedupeKey: string,
+  now: number
+): NotificationRow | null {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i]
+    if (row.dismissed_at !== null) continue
+    const age = now - row.created_at
+    // `age < 0` is a clock that went backwards (or a row written by a
+    // machine ahead of this one). Treated as inside the window: the
+    // conservative direction is to collapse, never to lose a payload.
+    if (age > DEDUPE_WINDOW_MS || age < 0) continue
+    if (notificationDedupeKey(row.group_key, row.job, row.full_message) === dedupeKey) return row
+  }
+  return null
+}
+
 export function addNotification(input: {
   type: string
   source?: NotificationSource
@@ -64,26 +131,48 @@ export function addNotification(input: {
    *  with a blank key and then silently rewritten on the next load. */
   group_key?: string
   job?: NotificationJobContext
-}): { id: number } {
+}): { id: number; occurrences: number } {
   const store = loadStore()
-  const id = store.nextId++
   const type = coerceType(input.type)
   const source = input.source ?? 'app'
+  const message = clampBytes(input.message)
+  const fullMessage = clampBytes(input.full_message)
+  const groupKey = clampBytes(input.group_key || notificationGroupKey(type, source, message))
+  const job = cleanJobContext(input.job)
+  const now = Date.now()
+
+  const repeat = findRepeatable(
+    store.notifications,
+    notificationDedupeKey(groupKey, job, fullMessage),
+    now
+  )
+  if (repeat) {
+    // `> 0` rather than `|| 1`: a row whose `occurrences` never got
+    // backfilled would otherwise go NaN on the first repeat, and NaN is
+    // what the drawer would then render as a count. The store migration
+    // makes this unreachable; the guard costs nothing and the alternative
+    // is a permanently broken badge nobody can explain.
+    repeat.occurrences = (repeat.occurrences > 0 ? repeat.occurrences : 1) + 1
+    saveStore(store)
+    return { id: repeat.id, occurrences: repeat.occurrences }
+  }
+
+  const id = store.nextId++
   const row: NotificationRow = {
     id,
     type,
     source,
-    message: clampBytes(input.message),
-    full_message: clampBytes(input.full_message),
-    created_at: Date.now(),
+    message,
+    full_message: fullMessage,
+    created_at: now,
     dismissed_at: null,
-    group_key: clampBytes(input.group_key || notificationGroupKey(type, source, input.message)),
+    group_key: groupKey,
+    occurrences: 1
   }
-  const job = cleanJobContext(input.job)
   if (job) row.job = job
   store.notifications.push(row)
   saveStore(store)
-  return { id }
+  return { id, occurrences: 1 }
 }
 
 export function listActiveNotifications(): { rows: NotificationRow[] } {
