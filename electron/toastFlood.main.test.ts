@@ -31,7 +31,7 @@ import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
  */
 
 const { STORE_DIR, handlers, windows } = vi.hoisted(() => ({
-  STORE_DIR: '/tmp/flow_job-test-toastflood-main',
+  STORE_DIR: `/tmp/flow_job-test-toastflood-main-${process.env.FLOW_JOB_TEST_RUN_ID ?? `pid${process.pid}`}`,
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
   windows: [] as {
     name: string

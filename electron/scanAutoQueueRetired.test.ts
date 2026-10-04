@@ -26,7 +26,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // The REAL database and the REAL queue are used. A mocked store could
 // satisfy "no row was written" by never having anywhere to write one.
 
-const { STORE_DIR } = vi.hoisted(() => ({ STORE_DIR: '/tmp/flow_job-test-scan-autoqueue-retired' }))
+const { STORE_DIR } = vi.hoisted(() => ({ STORE_DIR: `/tmp/flow_job-test-scan-autoqueue-retired-${process.env.FLOW_JOB_TEST_RUN_ID ?? `pid${process.pid}`}` }))
 
 vi.mock('electron', () => ({
   app: {

@@ -37,7 +37,7 @@ import { join } from 'node:path'
 // This file drives both halves, so the finding is not "I read the code
 // and the two halves do not meet".
 
-const { STORE_DIR } = vi.hoisted(() => ({ STORE_DIR: '/tmp/flow_job-test-review2-stranded' }))
+const { STORE_DIR } = vi.hoisted(() => ({ STORE_DIR: `/tmp/flow_job-test-review2-stranded-${process.env.FLOW_JOB_TEST_RUN_ID ?? `pid${process.pid}`}` }))
 
 vi.mock('electron', () => ({
   app: {
