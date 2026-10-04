@@ -21,7 +21,7 @@ import { join } from 'node:path'
 // direction. Everything in the "reverse bug" section hunts that.
 
 const { STORE_DIR, handlers } = vi.hoisted(() => ({
-  STORE_DIR: '/tmp/flow_job-test-review2-origin',
+  STORE_DIR: `/tmp/flow_job-test-review2-origin-${process.env.FLOW_JOB_TEST_RUN_ID ?? `pid${process.pid}`}`,
   handlers: new Map<string, (...args: unknown[]) => unknown>()
 }))
 

@@ -17,7 +17,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // site that lost (or never had) `{ manual: true }` fails here.
 
 const { STORE_DIR, handlers } = vi.hoisted(() => ({
-  STORE_DIR: '/tmp/flow_job-test-review-manualipc',
+  STORE_DIR: `/tmp/flow_job-test-review-manualipc-${process.env.FLOW_JOB_TEST_RUN_ID ?? `pid${process.pid}`}`,
   handlers: new Map<string, (...args: unknown[]) => unknown>()
 }))
 
