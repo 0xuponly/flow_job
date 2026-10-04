@@ -1016,12 +1016,27 @@ describe('determinism', () => {
  *
  * The raw CPU figure moves 2.9x across those conditions, so no fixed
  * millisecond budget can be a trip point on it. At the 1500ms of headroom
- * this branch settled on, a 3x-slowdown mutation is caught when the box is
- * quiet (3.6x trip point) and missed when it is busy (1.2x trip point), and
- * the busiest condition measured is 1226ms of *clean* scorer -- 1.2x of margin
- * on correct code, one background GC spike from failing on nothing. Dividing by
- * a reference workload fixes the first problem and creates the margin for the
- * second: the normalised figure moves 1.42x, not 2.9x.
+ * this branch settled on, a 3x-slowdown mutation *passed* when the box was
+ * quiet -- 3.6x of trip point against a 3x regression -- and *failed* when it
+ * was busy, where the same mutation measured 1723ms against the 1500ms budget.
+ * The old guard was simultaneously too loose on a quiet box and prone to false
+ * failure on a busy one, and the busiest condition measured is 1226ms of
+ * *clean* scorer -- 1.2x of margin on correct code, one background GC spike
+ * from failing on nothing. Dividing by a reference workload fixes the first
+ * problem and creates the margin for the second: the normalised figure moves
+ * 1.42x, not 2.9x.
+ *
+ * That direction is worth stating outright because the tempting next move at
+ * the next flake is to add a retry, and this file did not have one to remove.
+ * `REPEATS = 5` was five *measurements* whose minimum was taken, which is
+ * fail-closed under load rather than fail-open: taking the best sample can
+ * only understate the cost, never retry it into passing. There is no `retry`
+ * anywhere in this repo's vitest config, and a probe test added to this tree to
+ * check rather than assume recorded exactly one attempt for a failing
+ * assertion. So the old guard's flakiness was never masking; it was a budget
+ * with nowhere to sit between 411ms of clean work and 1500ms. Adding a vitest
+ * `retry` would introduce masking that has never existed here, and vitest's
+ * does genuinely retry an assertion into passing.
  *
  * It takes two halves of a reference, not one, and that is the other measured
  * result. A busy box inflates process CPU time because V8's background threads
@@ -1099,6 +1114,79 @@ const SCAN_MEASUREMENT_CPU_TRIPWIRE = 150
 const SCAN_INTERFERENCE_FACTOR_BUDGET = 45
 
 /**
+ * The band the measured clean factor has to stay inside, asserted in the same
+ * test, because SCAN_INTERFERENCE_FACTOR_BUDGET is absolute and everything this
+ * guard can detect follows from the ratio it measured rather than from the
+ * budget: the slowdown that trips the guard is `45 / cleanFactor`, so a clean
+ * factor of 15.0 is exactly where a 3x regression stops being caught.
+ *
+ * Measured on an 8-core darwin-arm64 box, node v26.8.1, vitest 4.1.10, this
+ * file alone, clean code at the merged 4_500_000, 23 runs:
+ *
+ *     condition                            n   clean factor   scan CPU     wall
+ *     quiet, nothing else on the box      18   15.76-17.72    428-486     415-456
+ *     first run after a burst of runs      1   14.33          570          537
+ *     24 CPU spinners (3x oversubscribed)  5   17.54-19.60    650-732    2292-3159
+ *     48 CPU spinners (6x oversubscribed)  3   18.24-19.87    704-844    5060-5996
+ *     other vitest suites on the box       6   17.87-20.19    905-1109     913-2375
+ *
+ * 14.33-20.19 overall (the 16.2-23.1 in the table above is the same measurement
+ * taken in an earlier session on a box of the same shape; quiet-to-busy the two
+ * agree to within 15%). The raw scan CPU moves 2.6x across that table and the
+ * normalised factor 1.41x, which is the claim the redesign rests on. Break-even
+ * for a 3x regression is 15.0 and the lowest quiet measurement is 15.76, so at
+ * the merged constant this guard catches 3x with 5% of margin over its own
+ * noise -- and nothing in the suite asserted any of it.
+ *
+ * Both reference halves are editable constants (`REFERENCE_COMPUTE_PASSES`,
+ * `REFERENCE_ALLOC_PASSES`), the budget is a third, and a Node/V8 change moves
+ * the ratio without touching the scorer, so the decay is silent by construction.
+ * Measured by walking REFERENCE_COMPUTE_PASSES with a mutation in
+ * `scoreCompatibilityStructured` -- N calls to `compatibilitySignals` per call,
+ * identical return value, pure CPU cost, measured effective multiplier 2.8-3.1x
+ * at N=3 -- and changing nothing else. Clean factor quiet, mutated factor under
+ * whatever load the box happened to have (contention compresses the ratio, so
+ * the mutated column is the pessimistic one):
+ *
+ *     REFERENCE_COMPUTE_PASSES  drift   clean    3x measures   budget alone   both bounds
+ *     4_500_000 (as merged)       --     15.97   48.5 / 52.7   FAIL           FAIL
+ *     5_000_000                  +11%    15.43   38.7-47.2     coin flip      FAIL
+ *     5_500_000                  +22%    14.83   42.6          PASS - missed  FAIL
+ *     6_000_000                  +33%    14.15   41.3          PASS - missed  FAIL
+ *     7_000_000                  +56%    13.43   37.4-38.0     PASS - missed  FAIL
+ *     8_000_000                  +78%    12.36   35.8          PASS - missed  FAIL
+ *     9_000_000                 +100%    11.44   33.6          PASS - missed  FAIL, and clean fails too
+ *     11_000_000                +144%    10.64   29.5          PASS - missed  clean fails the floor
+ *
+ * Clean code passes at every one of those settings, which is why nothing noticed.
+ * Read down the last column: with both bounds asserted, every drift measured here
+ * is red -- the budget catches 3x up to +11%, the ceiling catches it from +22% to
+ * +100% on its own (a 2.85x mutation measures 30 the moment the clean factor falls
+ * below ~10.5), and past +100% the floor fails on correct code. There is no
+ * setting measured in which the suite is green with a live 3x regression in the
+ * scorer, which is the property the guard never had.
+ *
+ * The bounds have room on both sides, and the room is deliberate. 12 is 16% below
+ * the lowest clean factor measured here and 30 is 49% above the highest. A tighter
+ * floor would catch more drift and would also fail this guard on correct code: a
+ * 14.33 was measured on clean code, the memory pressure that produced it is the
+ * mode this file's own docs describe, and an unmeasured machine -- a 2-core CI box
+ * is the config's stated target -- is exactly where a bound reverse-engineered from
+ * one box's noise bites. Never false-failing is the right way round for a guard
+ * whose documented failure mode was false failures.
+ *
+ * What the floor alone does *not* do, stated rather than hidden: it tolerates drift
+ * of up to ~90% on the compute half before complaining about clean code, and the
+ * drift that takes the guard past 3x break-even is only ~+25%. So the floor is not
+ * what catches that, and could not be -- 15.0 sits inside the measured noise band
+ * of 14.33-20.19, so any floor above it false-fails this guard on correct code. The
+ * ceiling is what closes the gap, by being a second trip point at a third of the
+ * budget rather than a bound on the clean measurement.
+ */
+const SCAN_CLEAN_FACTOR_FLOOR = 12
+const SCAN_CLEAN_FACTOR_CEILING = 30
+
+/**
  * Vitest's own timeout for the same test, which is a ceiling and nothing more.
  * Node cannot preempt a synchronous body, so vitest's timer is only evaluated
  * once the body returns: a body that busy-loops for 7094ms under a 3000ms
@@ -1138,11 +1226,36 @@ const POSTING_MEASUREMENT_CEILING_MS = 30_000
 /**
  * Budget for scoring one 12k-word posting, as a normalised factor.
  *
- * ~34ms of CPU idle and ~46ms loaded against a reference of 26-55ms, so the
- * clean factor is 1.4-2.3 and the old 2000ms bound was 28-43x of headroom. 65
- * keeps that headroom, now measured against this machine rather than assumed.
+ * This was 65, carried over from the old 2000ms bound to keep its headroom, and
+ * it guarded nothing: measured clean factor 1.25-2.20 over 24 runs (below), so
+ * posting scoring would have had to become ~30x slower to trip it. A budget that
+ * cannot fail reads as coverage and is not.
+ *
+ * 8 is 3.6x above the worst clean factor measured here and 5.2x above the quiet
+ * one, which is more headroom than the scan guard's own ceiling keeps over its
+ * worst measured clean factor (30 against 20.19), and it is reachable: a posting
+ * scorer 3.6x slower on 12k words fails. The regression class this buys is the
+ * one the scan guard cannot see - it scores 1000 ~60-word postings, so anything
+ * superlinear in posting length barely moves it while it dominates here.
+ *
+ * What it still does not catch is stated rather than implied: a 2x slowdown on
+ * this posting passes, as it did under the old budget, and the old 2000ms bound
+ * was 28-43x of headroom against a clean cost of 1.4-2.3.
+ *
+ * Clean factor measured on this box (8-core darwin-arm64, node v26.8.1, vitest
+ * 4.1.10, this file alone), 24 runs of this test:
+ *
+ *     condition                             n   clean factor   wall clock
+ *     quiet                                  12   1.36-1.55      0.41-0.64s
+ *     24 CPU spinners (3x oversubscribed)     5   1.25-2.20      2.1s
+ *     48 CPU spinners (6x oversubscribed)     3   1.57-1.90      -
+ *     other vitest suites on the box          4   1.38-1.55      -
+ *
+ * The wall clock is dominated by the reference measured beside the posting, not
+ * by the posting: 34-80ms of CPU for the posting itself against a 27-67ms
+ * reference, three repeats.
  */
-const POSTING_INTERFERENCE_FACTOR_BUDGET = 65
+const POSTING_INTERFERENCE_FACTOR_BUDGET = 8
 
 describe('performance guard', () => {
   const filler =
@@ -1210,7 +1323,10 @@ describe('performance guard', () => {
     allocAcc += hits
   }
 
-  /** Proof, asserted below, that the reference work actually ran. */
+  /**
+   * The reference work's own output, read back so neither half can be optimised
+   * away -- a performance reference the optimiser deletes is worse than none.
+   */
   function referenceAcc(): number {
     return computeAcc + allocAcc
   }
@@ -1306,6 +1422,20 @@ describe('performance guard', () => {
     computeReferenceWork()
     allocReferenceWork()
     let referenceSoFar = Math.sqrt(timed(computeReferenceWork).cpu * timed(allocReferenceWork).cpu)
+
+    // If either half ever measures 0 then every factor below is Infinity and this
+    // guard fails on clean code with "a factor of Infinity" -- a correct message
+    // about an impossible measurement. Whether a 22-31ms busy loop can report 0ms
+    // of CPU is not established either way; this is here so that if it ever does,
+    // the failure says which number was zero instead of what it divided into.
+    expect(referenceSoFar, `the reference workload measured ${referenceSoFar.toFixed(2)}ms of CPU`).toBeGreaterThan(0)
+
+    // Taken after the warm-up and asserted against at the end, so this proves the
+    // reference ran inside the measured rounds rather than merely somewhere
+    // earlier in the file: computeAcc/allocAcc are describe-scoped, so an
+    // assertion on the bare accumulator is satisfied by the 12k-word test above.
+    const referenceAccAtStart = referenceAcc()
+
     for (let i = 0; i < LISTINGS; i++) {
       scoreCompatibility('Financial Analyst, Reporting', `${posting} warmup ${i}`, CV_FINANCE)
     }
@@ -1335,6 +1465,7 @@ describe('performance guard', () => {
               const measured = finished ? ` (${finished} in the repeats that finished)` : ''
               throw new Error(
                 `the 1000-listing measurement reached an interference factor of ${factorSoFar.toFixed(0)}` +
+                  ` against a reference of ${referenceSoFar.toFixed(1)}ms` +
                   ` (tripwire ${SCAN_MEASUREMENT_CPU_TRIPWIRE}, budget ${SCAN_INTERFERENCE_FACTOR_BUDGET})` +
                   ` after ${repeat} completed repeats and ${listingsScored + i} listings, using` +
                   ` ${scanCpu.toFixed(0)}ms of CPU over ${(performance.now() - wallStart).toFixed(0)}ms of wall clock` +
@@ -1370,14 +1501,51 @@ describe('performance guard', () => {
         ` over ${median(wall).toFixed(0)}ms of wall clock (${wall.map((w) => w.toFixed(0)).join(', ')}ms)` +
         ` over ${listingsScored} listings`
     ).toBeLessThan(SCAN_INTERFERENCE_FACTOR_BUDGET)
-    expect(referenceAcc()).toBeGreaterThan(0)
+
+    // And the ratio itself, two-sided, because the assertion above is only as
+    // good as the denominator: pass a 3x regression by editing either reference
+    // constant and the budget still says "under budget", forever, with clean code
+    // green at every step. The message states the trip point rather than the
+    // factor, because the trip point is the consequence.
+    const tripPoint = SCAN_INTERFERENCE_FACTOR_BUDGET / factor
+    const drift = ` A trip point of ${tripPoint.toFixed(2)}x means a ${tripPoint.toFixed(1)}x regression ` +
+      `${tripPoint >= 3 ? 'still fails' : 'passes'} this guard. The usual cause is a change to ` +
+      `REFERENCE_COMPUTE_PASSES (${REFERENCE_COMPUTE_PASSES}) or REFERENCE_ALLOC_PASSES (${REFERENCE_ALLOC_PASSES}); ` +
+      `clean code measured 14.33-20.19 over 23 runs from quiet to 6x oversubscribed.`
+    expect(
+      factor,
+      `1000 clean scorings used ${median(cpu).toFixed(0)}ms of CPU at the median of ${cpu.length} of ${REPEATS} repeats` +
+        ` against a reference of ${reference.toFixed(1)}ms, an interference factor of ${factor.toFixed(1)},` +
+        ` below the ${SCAN_CLEAN_FACTOR_FLOOR} this guard needs to keep detecting a 3x regression.${drift}`
+    ).toBeGreaterThan(SCAN_CLEAN_FACTOR_FLOOR)
+    expect(
+      factor,
+      `1000 clean scorings used ${median(cpu).toFixed(0)}ms of CPU at the median of ${cpu.length} of ${REPEATS} repeats` +
+        ` against a reference of ${reference.toFixed(1)}ms, an interference factor of ${factor.toFixed(1)},` +
+        ` above the ${SCAN_CLEAN_FACTOR_CEILING} this guard is calibrated for.${drift}`
+    ).toBeLessThan(SCAN_CLEAN_FACTOR_CEILING)
+
+    // The reference work is only a reference if it ran. Asserted as growth across
+    // this test's own rounds, which the previous bare `> 0` could not distinguish
+    // from the 12k-word test's contribution.
+    expect(
+      referenceAcc(),
+      `the reference workload's output did not grow across this test's ${cpu.length} measured rounds`
+    ).toBeGreaterThan(referenceAccAtStart)
   }, SCAN_MEASUREMENT_CEILING_MS)
 
-  it('gives a slowdown the same verdict idle and under load', () => {
-    // The defect this guard had: the verdict depended on the machine, so the
-    // same 3x regression passed on an idle box and failed on a busy one. These
-    // are two recorded conditions -- quietest and busiest measured with this
-    // guard, 1.31x of factor apart -- replayed at several slowdown factors.
+  it('brackets the trip point between the two recorded conditions', () => {
+    // What this pins is the *budget* against two recorded measurements, not
+    // load-independence as a live property. It is arithmetic over the quietest
+    // and busiest conditions measured with this guard, 1.31x of factor apart,
+    // replayed at several slowdown factors.
+    //
+    // The old title here was "gives a slowdown the same verdict idle and under
+    // load", which overstated it: nothing in this body measures anything, and it
+    // stayed green through a 10x-wrong CPU figure in `timed()`. The live claim
+    // is asserted by the clean-factor band in the scan test above, on a factor
+    // this run actually measured; this test only says the recorded numbers sit
+    // where the budget's comment says they sit.
     const QUIET_BOX = { scanCpu: 430, reference: 26.4 }
     const BUSY_BOX = { scanCpu: 1020, reference: 47.9 }
 

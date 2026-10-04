@@ -1455,21 +1455,75 @@ describe('performance guard (10k+ word postings)', () => {
   // ~12k-word synthetic posting. Varied filler keeps the bigram
   // population realistic; the repeated skill block is what extraction
   // must find quickly. The pipeline is O(n): tokenize + single-pass
-  // unigram/bigram counts + map lookups. The timing bound is generous
-  // (2s) so the guard stays stable on loaded CI machines while still
-  // catching a quadratic regression, which took multiple seconds.
-  it('extracts a 12k-word description well under the 2s bound', () => {
-    const filler =
-      'We partner with commercial teams across the organization and support internal stakeholders through planning cycles, governance reviews, and quarterly planning exercises with measurable outcomes. '
-    const skills = 'Requirements include python and kafka and postgres and kubernetes and terraform and spark and airflow and redis and golang. '
-    const jd = ['Staff Platform Engineer', ''].join('\n') +
-      (filler + skills).repeat(320) // ≈ 11k words
+  // unigram/bigram counts + map lookups.
+  //
+  // These two guards used to assert raw wall clock against 2000ms, which is the
+  // pattern the fitHeuristic guards were rebuilt to stop using: a statement
+  // about the machine rather than about the extractor. This posting costs 26ms
+  // of wall clock for the first call as measured below, so 2000ms is 74x of it --
+  // close enough to catch a quadratic blowup, far enough to read like a
+  // performance guard while being a hang ceiling.
+  //
+  // The wall clock is also the wrong quantity, and measurably so. At 4x this size
+  // the wall clock moves 50ms idle to 219ms under 24 CPU spinners -- a 4.4x swing
+  // that is almost entirely descheduling -- while the CPU figure for the same
+  // work moves 50ms to 67ms. A millisecond budget cannot tell those two apart.
+  //
+  // So the trip points are now ratios of two CPU measurements taken in the same
+  // test body, on the same box, in the same process, and the wall-clock bounds
+  // stay as the hang ceilings they actually are. Measured on an 8-core
+  // darwin-arm64 box, node v26.8.1, vitest 4.1.10, this file alone, 3 runs quiet
+  // and 3 under 24 spinners, as the assertions below measured them:
+  //
+  //   4x the words costs 2.0-3.3x the CPU          -> bound 8
+  //   50 small extractions cost 0.33-1.42x one 12k  -> bound 4
+  //
+  // Linear is ~4x and quadratic ~16x, so 8 catches superlinear cost with room to
+  // spare, and a per-call overhead of X shows up as 50X in the batch and X in the
+  // single call, so 4 catches overhead creep. Each bound is >2x the worst
+  // measurement above.
+  const SMALL_JD = [
+    'Backend Engineer',
+    '',
+    'Requirements',
+    '- 5+ years of python and postgres',
+    '- kafka and redis in production'
+  ].join('\n')
+
+  const filler =
+    'We partner with commercial teams across the organization and support internal stakeholders through planning cycles, governance reviews, and quarterly planning exercises with measurable outcomes. '
+  const skills = 'Requirements include python and kafka and postgres and kubernetes and terraform and spark and airflow and redis and golang. '
+  const bigJd = (repeats: number) => ['Staff Platform Engineer', ''].join('\n') + (filler + skills).repeat(repeats)
+
+  /** CPU ms for one extraction, after a warm-up call that is not measured. */
+  function extractionCpuMs(jd: string): number {
+    extractJobKeywordsStructured(jd)
+    const before = process.cpuUsage()
+    extractJobKeywordsStructured(jd)
+    const used = process.cpuUsage(before)
+    return (used.user + used.system) / 1000
+  }
+
+  /** 4x the words. Linear costs ~4x, quadratic ~16x; the bound is 8. */
+  const SCALING_BOUND = 8
+
+  /**
+   * Fixed-overhead creep, as a ratio rather than a millisecond budget: a per-call
+   * cost of X makes 50 small calls cost 50X while one 12k-word call costs X plus
+   * its own work, so the ratio is what grows. Measured 0.33-1.42; the bound is 4.
+   */
+  const OVERHEAD_BOUND = 4
+
+  it('scales linearly with posting length rather than quadratically', () => {
+    const jd = bigJd(320)
     expect(jd.split(/\s+/).length).toBeGreaterThan(10000)
 
     const started = performance.now()
     const result = extractJobKeywordsStructured(jd)
     const elapsedMs = performance.now() - started
 
+    // Hang ceiling, not a trip point: the work is 13-18ms measured, so 2000ms is
+    // there to stop a runaway rather than to measure the extractor.
     expect(elapsedMs, `extraction took ${elapsedMs.toFixed(0)}ms`).toBeLessThan(2000)
     expect(result.keywords.length).toBeLessThanOrEqual(30)
     const phrases = result.keywords.map((k) => k.phrase)
@@ -1482,20 +1536,40 @@ describe('performance guard (10k+ word postings)', () => {
         `${skill} signal must survive large-posting extraction`
       ).toBe(true)
     }
+
+    const small = extractionCpuMs(jd)
+    const quad = extractionCpuMs(bigJd(1280))
+    expect(
+      quad / small,
+      `4x the words cost ${quad.toFixed(1)}ms of CPU against ${small.toFixed(1)}ms for the 12k posting` +
+        ` (${(quad / small).toFixed(2)}x, bound ${SCALING_BOUND}); linear is ~4x, quadratic ~16x`
+    ).toBeLessThan(SCALING_BOUND)
   })
 
-  it('small postings remain fast (guard against fixed overhead creep)', () => {
-    const jd = [
-      'Backend Engineer',
-      '',
-      'Requirements',
-      '- 5+ years of python and postgres',
-      '- kafka and redis in production'
-    ].join('\n')
+  it('small postings do not accumulate per-call overhead', () => {
+    // Warm-up, unmeasured, for the same reason the guards above: the first call
+    // through the extractor pays V8's ramp and that is not what this is about.
+    extractJobKeywordsStructured(SMALL_JD)
+    const before = process.cpuUsage()
+    for (let i = 0; i < 50; i++) extractJobKeywordsStructured(SMALL_JD)
+    const used = process.cpuUsage(before)
+    const cpuMs = (used.user + used.system) / 1000
     const started = performance.now()
-    for (let i = 0; i < 50; i++) extractJobKeywordsStructured(jd)
+    for (let i = 0; i < 50; i++) extractJobKeywordsStructured(SMALL_JD)
     const elapsedMs = performance.now() - started
+
+    // Hang ceiling, as above: 6ms idle and 39ms under 24 spinners, measured.
     expect(elapsedMs, `50 extractions took ${elapsedMs.toFixed(0)}ms`).toBeLessThan(2000)
+
+    // The trip point: what 50 small calls cost against one 12k-word call on this
+    // same box, in this same test. Fixed overhead of X shows up as 50X here and
+    // as X there, so the ratio is the quantity that moves when X does.
+    const oneBig = extractionCpuMs(bigJd(320))
+    expect(
+      cpuMs / oneBig,
+      `50 small extractions cost ${cpuMs.toFixed(1)}ms of CPU against ${oneBig.toFixed(1)}ms for one 12k-word` +
+        ` extraction (${(cpuMs / oneBig).toFixed(2)}x, bound ${OVERHEAD_BOUND}); measured 0.33-1.42 here`
+    ).toBeLessThan(OVERHEAD_BOUND)
   })
 })
 
