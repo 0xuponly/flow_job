@@ -26,6 +26,7 @@ import { extractJobKeywordsStructured, extractJobKeywords, mergeKeywordResults }
 import { loadKeywordAllowlists } from '../src/keywordAllowlists'
 import { fingerprintKey, hostOf, redactBody } from './aiDebug'
 import { looksLikeProviderNotice, describeProviderNotice } from './providerNotice'
+import { PROVIDERS_COOLING_DOWN_MESSAGE } from './cooldownBlock'
 
 export class KeywordExtractionError extends Error {
   constructor(message: string) {
@@ -76,6 +77,37 @@ export class ProviderCapError extends RateLimitError {
   constructor(message: string) {
     super(message)
     this.name = 'ProviderCapError'
+  }
+}
+
+/**
+ * Every eligible model is inside its cooldown / circuit-break window, so
+ * this call CANNOT reach the provider. No HTTP request was made and no
+ * provider budget was spent.
+ *
+ * A subclass of `RateLimitError` on purpose: every existing
+ * `instanceof RateLimitError` branch in the app is still correct about
+ * it (it IS a rate-limit condition, and it still propagates), and the
+ * places that must not charge an attempt for it can now say so by type
+ * instead of by matching prose. The subclass IS the mechanism — nothing
+ * reads its message.
+ *
+ * Why this distinction is worth a type rather than a cheaper special
+ * case: the two paths cost wildly different amounts. A genuine rotation
+ * is N real requests (measured: a 45s model times out, or a 429 storm
+ * costs a round trip each), while this throw is a local map lookup that
+ * fails in tens of milliseconds. Charging both the same attempt budget is
+ * what drained a queue of 265 tasks to zero successes overnight
+ * (2026-10-02): 4,122 of 4,143 logged failures were this throw, and rows
+ * burned all 10 attempts on it before the provider had ever recovered.
+ */
+export class ProviderCooldownError extends RateLimitError {
+  /** Stable machine-readable discriminator, for callers that must branch. */
+  readonly code = 'providers_cooling_down' as const
+
+  constructor(message: string = PROVIDERS_COOLING_DOWN_MESSAGE) {
+    super(message)
+    this.name = 'ProviderCooldownError'
   }
 }
 
@@ -722,6 +754,64 @@ function availableModels(): ApiModelConfig[] {
   return eligibleModels().filter(isModelAvailable)
 }
 
+/**
+ * When one model becomes callable again, from its health entry alone.
+ *
+ * Both clocks are honoured because either can be the binding one. A
+ * circuit break sets both (`nextAvailableAt = circuitOpenUntil`), but a
+ * later transient failure re-writes `nextAvailableAt` with a much
+ * shorter cooldown while the circuit is still open — reading only
+ * `nextAvailableAt` would then say the model is nearly callable again
+ * when it is silenced for the rest of the hour.
+ */
+function modelFreeAt(model: ApiModelConfig): number {
+  const health = getHealth(model)
+  return Math.max(health.nextAvailableAt, health.circuitOpenUntil)
+}
+
+/**
+ * Is any model callable right now, and if not, when does the first one
+ * free up?
+ *
+ * The single answer to "can this app spend a request?", derived from
+ * the same `modelHealth` map `availableModels()` reads, so it can never
+ * disagree with the rotation. Two consumers, one query:
+ *
+ *   - the queue, which parks itself on `nextAvailableAt` instead of
+ *     waking on its own ladder to re-probe a provider that said no
+ *   - the UI, which has to be able to say "no provider is available"
+ *     without reading a log
+ *
+ * `blocked` is deliberately false when nothing is eligible at all
+ * (every model disabled, or the pool is all rerank/embeddings models).
+ * "No models configured" is a settings problem with its own copy
+ * ("Add one in Settings"), not a rate-limit outage, and reporting it as
+ * blocked would point the user at the wrong screen.
+ *
+ * `nextAvailableAt` is null whenever nothing is blocked. A blocked answer
+ * is always accompanied by a real time, so a caller never has to invent a
+ * fallback wake-up.
+ */
+export interface ProviderAvailability {
+  blocked: boolean
+  /** Epoch ms the first eligible model frees up, or null when not blocked. */
+  nextAvailableAt: number | null
+  /** How many models are eligible at all — 0 is the "no models configured" case. */
+  eligibleCount: number
+}
+
+export function providerAvailability(now: number = Date.now()): ProviderAvailability {
+  const models = eligibleModels()
+  if (models.length === 0) return { blocked: false, nextAvailableAt: null, eligibleCount: 0 }
+  let earliest = Number.POSITIVE_INFINITY
+  for (const model of models) {
+    const freeAt = modelFreeAt(model)
+    if (freeAt <= now) return { blocked: false, nextAvailableAt: null, eligibleCount: models.length }
+    if (freeAt < earliest) earliest = freeAt
+  }
+  return { blocked: true, nextAvailableAt: earliest, eligibleCount: models.length }
+}
+
 function recordModelSuccess(model: ApiModelConfig): void {
   modelHealth.delete(modelKey(model))
 }
@@ -1208,8 +1298,17 @@ export async function callAI(
   }
 
   if (available.length === 0) {
-    // Every eligible model is on cooldown or circuit-broken.
-    throw new RateLimitError('All configured AI models are cooling down after rate limits or persistent errors — try again shortly.')
+    // Every eligible model is on cooldown or circuit-broken, so this call
+    // cannot reach the provider. Typed as its own subclass because that
+    // is the whole difference: a caller charging this an attempt is
+    // charging a ~70ms local map lookup the price of a 45s request. See
+    // ProviderCooldownError.
+    //
+    // `availableModels()` filters on cooldown/circuit-break ONLY — the
+    // spend cap is applied below, when `models` is built. So an empty
+    // `available` really is "everything is cooling down", and cap
+    // exhaustion still reports itself as ProviderCapError further down.
+    throw new ProviderCooldownError()
   }
 
   // The spend cap, as a pre-filter. This is the "cooldown" a capped provider
@@ -1550,6 +1649,10 @@ ${request.document_type === 'cover_letter' ? 'Write a tailored cover letter.' : 
     modelUsed = result.modelUsed
   } catch (err) {
     if (err instanceof RateLimitError) throw err
+    // ProviderCooldownError included: it is a RateLimitError, and the
+    // queue is what turns it into a wait rather than a spent attempt. It
+    // must reach processItem's catch as itself — a heuristic CV written
+    // here instead would look like a finished job.
     // P1.4: validation failure (every model in the rotation returned
     // content the validator rejected — typically reasoning-channel /
     // planning-meta text) is a real tailoring failure, not a network
@@ -1806,6 +1909,9 @@ Evaluate how well this document is tailored for this specific job.`
       // Rate-limit / no-config / network: surface as skip immediately.
       // The retry budget is for parse failures, not transport
       // failures — those are already handled by callAI's own rotation.
+      // ProviderCooldownError included (it is a RateLimitError): the
+      // queue must see the real type so a provider block costs no
+      // attempt.
       if (err instanceof RateLimitError) throw err
       return {
         kind: 'skip',
@@ -2124,16 +2230,29 @@ Return the JSON object now.`
         undefined, exclude, opts
       )
     } catch (err) {
-      // A SPENT BUDGET is not the scorer being broken, and folding it into the
-      // heuristic fallback makes it indistinguishable from one. The fallback
-      // is the honest answer to "the model answered and the answer was
-      // unusable" and to an ordinary failure — a 429 storm included, which is
-      // the scorer being temporarily unavailable while a real verdict is still
-      // derivable: the job row records the reason and `fit_source` says
-      // `heuristic`, and the queue's bounded score_fit ladder retries it.
+      // Two refusals get out, and neither is a verdict that could have been
+      // produced: nothing was requested, so there is nothing to fall back
+      // from. Together they are the whole of "this call could not have
+      // answered". Everything else still falls through to the heuristic
+      // fallback, which is the honest answer to "the model answered and the
+      // answer was unusable" and to an ordinary failure — a 429 storm
+      // included, which is the scorer being temporarily unavailable while a
+      // real verdict is still derivable: the job row records the reason and
+      // `fit_source` says `heuristic`, and the queue's bounded score_fit
+      // ladder retries it.
       //
-      // A cap is different in kind. It is not an error to recover from, it is
-      // a decision the app already made — stop spending on this account for
+      // EVERY MODEL COOLING DOWN is the cheaper refusal of the two:
+      // `callAI` never reached a provider, so stamping a heuristic fit score
+      // for it would tell the user their fit was computed when no model was
+      // ever asked. Propagate instead: the queue parks the row on the
+      // provider's clock without spending an attempt, and the manual
+      // Recompute path reports "no provider available" instead of a number it
+      // invented.
+      //
+      // A SPENT BUDGET is not the scorer being broken, and folding it into the
+      // heuristic fallback makes it indistinguishable from one. A cap is
+      // different in kind: it is not an error to recover from, it is a
+      // decision the app already made — stop spending on this account for
       // the rest of this window — and there is no verdict to fall back to
       // *now*: the spend happens again in an hour, when the budget is back, so
       // anything stamped in the meantime is a guess the user would have to
@@ -2146,6 +2265,7 @@ Return the JSON object now.`
       // the generation lanes use, which doubles the worst-case spend on a 429
       // storm (moneyleaks.store.test.ts measures exactly that bound). A cap
       // spends nothing at all, so it needs no ladder.
+      if (err instanceof ProviderCooldownError) throw err
       if (err instanceof ProviderCapError) throw err
       const msg = err instanceof Error ? err.message : 'Unknown error'
       return fallbackWithError(msg)

@@ -145,15 +145,15 @@ const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]
   // `manual` column below is unchanged, which is the claim this table
   // exists to make.
   'electron/main.ts': [
-    { line: 495, manual: true, why: 'documents:verify — the Verify button' },
-    { line: 509, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
-    { line: 693, manual: true, why: 'ai:tailor — Tailor / Generate' },
-    { line: 709, manual: true, why: 'tailor:quickApply — Quick Apply' }
+    { line: 506, manual: true, why: 'documents:verify — the Verify button' },
+    { line: 523, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
+    { line: 710, manual: true, why: 'ai:tailor — Tailor / Generate' },
+    { line: 726, manual: true, why: 'tailor:quickApply — Quick Apply' }
   ],
   'electron/aiQueue.ts': [
-    { line: 476, manual: false, why: 'processor: generation finished, chain the review' },
-    { line: 533, manual: false, why: 'processor: review failed, auto-regenerate the document' },
-    { line: 607, manual: false, why: 'processor: tailor_job_docs finished, review each new document' }
+    { line: 637, manual: false, why: 'processor: generation finished, chain the review' },
+    { line: 694, manual: false, why: 'processor: review failed, auto-regenerate the document' },
+    { line: 768, manual: false, why: 'processor: tailor_job_docs finished, review each new document' }
   ],
   'electron/fitScorer.ts': [
     { line: 136, manual: false, why: 'fit-landing trigger: a job cleared the fit threshold and is missing a document' }
@@ -617,9 +617,9 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
     // retired, so it is absent from the list and from the comment.
     const automatic = callSites().filter((c) => !c.manual)
     expect(automatic.map((c) => `${c.where}:${c.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:476',
-      'electron/aiQueue.ts:533',
-      'electron/aiQueue.ts:607',
+'electron/aiQueue.ts:637',
+      'electron/aiQueue.ts:694',
+      'electron/aiQueue.ts:768',
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:136'
@@ -636,8 +636,8 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
       new RegExp(`There are ${WORDS[automatic.length]} automatic producers`)
     )
     // Every producer it names, including the fan-out this comment used
-    // to omit (aiQueue.ts:607 — a different producer from the
-    // generation → review chaining at :407, which fires for a directly
+    // to omit (aiQueue.ts:768 — a different producer from the
+    // generation → review chaining at :637, which fires for a directly
     // queued generate_*). Both line numbers are the INVENTORY's, and the
     // two assertions above are what makes saying so here honest: a stale
     // number in this comment would be the same rot the case exists to

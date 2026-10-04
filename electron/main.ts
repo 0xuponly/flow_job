@@ -53,7 +53,8 @@ function stripHmac(manifest: Record<string, unknown>): Record<string, unknown> {
   return manifest
 }
 import { formatLocation } from './utils'
-import { startQueueProcessor, stopQueueProcessor, enqueue, listQueueInPickOrder, retryQueueItem, removeQueueItem, clearQueue } from './aiQueue'
+import { startQueueProcessor, stopQueueProcessor, enqueue, listQueueInPickOrder, retryQueueItem, removeQueueItem, clearQueue, aiQueueBlockedState } from './aiQueue'
+import type { AIQueueBlockedState } from './aiQueue'
 import { scheduleNextAutoScan, cancelAutoScan, markScanStarted, markScanCompleted, restartAutoScanTimer } from './autoScan'
 import { scheduleNextFitAutoScore, restartFitAutoScoreTimer, enqueueScoreFitBacklog } from './fitAutoScore'
 import { scheduleNextDocsAutoQueue, restartDocsAutoQueueTimer, enqueueDocsBacklog } from './docsAutoQueue'
@@ -481,6 +482,19 @@ function registerIpc(): void {
     db.deleteDocument(id)
     if (target?.job_id) db.recomputeJobStatusFromDocs(target.job_id)
   })
+  // The rate-limit branch below is also where a ProviderCooldownError
+  // lands, deliberately: both mean "the provider is throttling", and the
+  // queue is where throttled work belongs. A cooldown block cost no
+  // attempt and no request, so the row enqueued here parks itself on the
+  // provider's clock with its budget intact and resumes on its own
+  // (aiQueue.runPass + parkBlockedRow) rather than being charged a retry
+  // for something that never happened. What the user sees instead of
+  // this silent deferral is the Queue panel's "no provider available"
+  // state, computed from the same health query the queue parks on.
+  //
+  // `manual`: the user pressed Verify, so if this review is already
+  // queued it is revived (if it had failed) and moved to the top of its
+  // tier rather than being refused or duplicated.
   ipcMain.handle('documents:verify', async (_e, jobId: number, documentId: number, docType: 'cv' | 'cover_letter'): Promise<VerificationResult | { queued: true }> => {
     try {
       // `manual`: the user pressed Verify — see `MANUAL` above.
@@ -489,9 +503,6 @@ function registerIpc(): void {
       return result
     } catch (err) {
       if (err instanceof RateLimitError) {
-        // `manual`: the user pressed Verify, so if this review is already
-        // queued it is revived (if it had failed) and moved to the top of
-        // its tier rather than being refused or duplicated.
         enqueue({ type: 'verify', jobId, documentId }, { manual: true })
         return { queued: true }
       }
@@ -503,9 +514,12 @@ function registerIpc(): void {
       // `manual`: the user pressed Regenerate — see `MANUAL` above.
       return await withAiOperation(() => regenerateSection(documentId, sectionName, jobId, extraContext, undefined, MANUAL))
     } catch (err) {
+      // ProviderCooldownError included, deliberately — see the note above
+      // documents:verify. Nothing was spent, so this is a deferral of the
+      // user's own request, not a second attempt.
+      // `manual`: an already-queued regeneration for this section is
+      // revived and promoted, not queued twice.
       if (err instanceof RateLimitError) {
-        // `manual`: same rule — an already-queued regeneration for this
-        // section is revived and promoted, not queued twice.
         enqueue({ type: 'regenerate_section', jobId, documentId, sectionName, extraContext }, { manual: true })
         return { queued: true }
       }
@@ -678,6 +692,12 @@ function registerIpc(): void {
     return saved
   })
 
+  // `manual`: the user asked for this document, so a generation item that
+  // is already queued for it is revived and promoted to the top of its
+  // tier instead of being duplicated. A ProviderCooldownError takes this
+  // branch too (see the note above documents:verify): the document was not
+  // generated and nothing was spent, so the item enqueued here carries a
+  // full budget and waits on the provider's clock rather than the queue's.
   ipcMain.handle('ai:tailor', async (_e, request: TailorRequest) => {
     try {
       // Sanitizes before storing and before answering — see
@@ -687,9 +707,6 @@ function registerIpc(): void {
       return await tailorAndSanitize(request, MANUAL)
     } catch (err) {
       if (err instanceof RateLimitError) {
-        // `manual`: the user asked for this document, so a generation
-        // item that is already queued for it is revived and promoted to the
-        // top of its tier instead of being duplicated.
         enqueue({ type: request.document_type === 'cv' ? 'generate_cv' : 'generate_cover_letter', jobId: request.job_id }, { manual: true })
         return { queued: true }
       }
@@ -1181,6 +1198,14 @@ function registerIpc(): void {
   // the order the processor will actually use.
   ipcMain.handle('aiQueue:list', (): QueueItemView[] => listQueueInPickOrder())
 
+  // "Is the app able to spend a request at all?", as one app-wide state.
+  // Not per-row: "no provider is available" is a property of the model
+  // pool and every queued task waits on the same door. Same
+  // `providerAvailability()` query the processor parks itself on, so the
+  // panel cannot say "waiting" while the queue is running. Carries no
+  // model names, statuses or health internals — see QueuePanel's copy.
+  ipcMain.handle('aiQueue:blocked', (): AIQueueBlockedState => aiQueueBlockedState())
+
   ipcMain.handle('boards:list', () => {
     // Per-board enabled flag, sourced from settings.disabled_boards.
     // The Settings > Boards tab maintains that list; the scan page
@@ -1322,6 +1347,32 @@ function runDeferredStoreWork(): void {
   } catch (err) {
     log.startup.warn(
       'AI queue dedupe failed:',
+      err instanceof Error ? err.message : String(err)
+    )
+  }
+
+  // One-shot: give back the retry budget that a provider outage spent
+  // for free. Rows written by the old build are `failed` (or parked on a
+  // 4h cooldown) with an exhausted budget and a `lastError` recording the
+  // no-request cooldown throw rather than anything that cost a request.
+  // Runs BEFORE the processor so those rows are picked up on the first
+  // pass instead of waiting out the rest of their cooldown.
+  try {
+    const unpoisoned = db.unpoisonCooldownFailedAIQueueItems()
+    if (!unpoisoned.alreadyMigrated && unpoisoned.reset + unpoisoned.unstuck > 0) {
+      log.startup.info(
+        `Restored the retry budget for ${unpoisoned.reset} task(s) that failed while no AI provider was ` +
+        `available, and unstuck ${unpoisoned.unstuck} parked task(s).`
+      )
+    }
+    if (unpoisoned.clearedWorkSkipped > 0) {
+      log.startup.info(
+        `Left ${unpoisoned.clearedWorkSkipped} cleared task(s) alone — they belong to a queue the user cancelled.`
+      )
+    }
+  } catch (err) {
+    log.startup.warn(
+      'AI queue cooldown repair failed:',
       err instanceof Error ? err.message : String(err)
     )
   }

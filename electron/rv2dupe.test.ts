@@ -1213,15 +1213,15 @@ describe('5. the five previously-fixed defects are still fixed', () => {
     // channel is a user action; six automatic sites, none of them — the
     // scan-time auto-tailor that was the seventh is retired.
     expect(rows.filter((r) => r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
-      'electron/main.ts:495',
-      'electron/main.ts:509',
-      'electron/main.ts:693',
-      'electron/main.ts:709'
+      'electron/main.ts:506',
+      'electron/main.ts:523',
+      'electron/main.ts:710',
+      'electron/main.ts:726'
     ])
     expect(rows.filter((r) => !r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:476',
-      'electron/aiQueue.ts:533',
-      'electron/aiQueue.ts:607',
+'electron/aiQueue.ts:637',
+      'electron/aiQueue.ts:694',
+      'electron/aiQueue.ts:768',
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:136'
@@ -1279,6 +1279,8 @@ interface DayCounters {
  */
 interface DayCounters {
   jobId: number
+  /** Every job the run covered, `jobId` first. One entry unless asked for more. */
+  jobIds: number[]
   /** TAILORING ATTEMPTS consumed, per simulated day. */
   perDay: number[]
   attempts: number
@@ -1300,19 +1302,24 @@ interface DayCounters {
  * health reset before every processor pass and before every provider
  * request — is the prior review's worst-case-for-spend configuration.
  *
- * Two counts, deliberately:
+ * `attempts` is measured at the WIRE, not off the queue's own counter,
+ * and that is the whole reason this file can measure the trigger lane at
+ * all. The counter cannot see it: a `tailor_job_docs` row whose two
+ * documents both fail is removed by `processItem` as a success
+ * (`tailorJobDocsForJob` records the failure and returns), so it never
+ * increments `attempts` and the queue keeps no record of the spend. The
+ * counter also over-reports the other way — it used to charge one attempt
+ * to any row that merely sat still, which is how a no-request provider
+ * block (which costs nothing and is now not charged) came to be counted
+ * as an attempt. Both errors are in the same direction as "the queue
+ * thinks it spent more or less than it did", and the fix for the
+ * 2026-10-02 bug was to stop confusing the two.
  *
- *   `attempts` — how many times a TAILORING was asked for, read off the
- *     queue's own `attempts` counter as it moves. This is the ceiling the
- *     revive budget bounds, and it is the number the prior review
- *     published.
- *
- *   `cv + cl` — how many of those actually reached the provider. It is
- *     LOWER, and always lower, than `attempts`: a 429 puts the model on a
- *     15s cooldown, so the second document unit processed in the same pass
- *     throws before it reaches the wire. A real provider would suppress
- *     more, never less, so `attempts` is the upper bound and `cv + cl` is
- *     what this particular configuration costs.
+ * So `attempts` here is `cv + cl`: provider requests that actually left
+ * the app, which is the number the user pays for. The provider stub
+ * clears model health before every request, so one wire call is one
+ * attempt and the two agree for the sweep lane; a real provider would
+ * suppress more of them, never fewer.
  */
 /**
  * These two drive 720 simulated hours through the REAL processor and the
@@ -1323,16 +1330,17 @@ interface DayCounters {
  */
 const SIMULATION_TIMEOUT = 30_000
 
-async function thirtyDays(withTrigger: boolean): Promise<DayCounters> {
+async function thirtyDays(withTrigger: boolean, jobCount = 1): Promise<DayCounters> {
   vi.useRealTimers()
   const calls = provider({ kill: ['cv', 'cl'] })
-  const job = eligibleJob()
+  const jobs = Array.from({ length: jobCount }, () => eligibleJob())
+  const job = jobs[0]
   const start = Date.now()
 
-  const attemptsOf = (): Map<number, number> =>
-    new Map(getAIQueue().map((q) => [q.id, q.attempts]))
+  // Spend, read at the wire: the queue's own counter cannot see the
+  // trigger lane (see the doc comment above).
+  const spent = (): number => calls.cv + calls.cl
 
-  let attempts = 0
   let attemptsMark = 0
   const perDay: number[] = []
   for (let hour = 0; hour < 30 * 24; hour++) {
@@ -1341,14 +1349,15 @@ async function thirtyDays(withTrigger: boolean): Promise<DayCounters> {
       const { reclaimInterruptedItems } = await import('./aiQueue')
       reclaimInterruptedItems()
       enqueueDocsBacklog()
-      if (withTrigger) maybeAutoEnqueueDocs(job.id)
+      if (withTrigger) for (const j of jobs) maybeAutoEnqueueDocs(j.id)
     }
     if (hour % 2 === 0) enqueueDocsBacklog()
     runDocsAutoQueueBacklog()
 
     // One processor pass at a time, so the `attempts` delta is exact: the
-    // counter only ever goes UP by one per attempt, or resets to 0 the
-    // moment the tenth attempt parks the row on the revive cooldown.
+    // counter goes UP by one per attempt that reached the provider, and
+    // resets to 0 the moment the tenth parks the row on the revive
+    // cooldown (which the autoRevives bump catches, see below).
     for (let step = 0; step < 200; step++) {
       const { processQueue } = await import('./aiQueue')
       const { resetModelHealth, resetProviderSpend } = await import('./ai')
@@ -1358,35 +1367,30 @@ async function thirtyDays(withTrigger: boolean): Promise<DayCounters> {
         (q) => q.status === 'pending' || (q.status === 'failed' && (q.autoRevives ?? 0) < AUTO_REVIVE_MAX)
       )
       if (runnable.length === 0) break
-      const before = attemptsOf()
       const next = Math.min(...runnable.map((q) => q.nextRetryAt))
       if (next > Date.now()) {
         if (Date.now() + (next - Date.now()) > start + (hour + 1) * HOUR) break
         vi.setSystemTime(next)
       }
       await processQueue()
-      for (const row of getAIQueue()) {
-        const prev = before.get(row.id) ?? 0
-        if (row.attempts > prev) attempts += row.attempts - prev
-        else if (prev > 0) attempts += 1
-        else attempts += row.attempts
-      }
     }
 
     if ((hour + 1) % 24 === 0) {
-      perDay.push(attempts - attemptsMark)
-      attemptsMark = attempts
+      perDay.push(spent() - attemptsMark)
+      attemptsMark = spent()
     }
   }
-  return { jobId: job.id, perDay, attempts, cv: calls.cv, cl: calls.cl, review: calls.review, keywords: calls.keywords }
+  return { jobId: job.id, jobIds: jobs.map((j) => j.id), perDay, attempts: spent(), cv: calls.cv, cl: calls.cl, review: calls.review, keywords: calls.keywords }
 }
 
 describe('the revival-rate bound: the SWEEP lane, 30 simulated days', () => {
-  it('is 80 attempts for the whole 30 days, every one of them inside day one', SIMULATION_TIMEOUT, async () => {
+  it('is 80 attempts for the whole 30 days, every one of them inside day one', async () => {
     // The number the prior review published and the one the brief asked me
     // to re-measure: the sweep's two document units, each living 4 cycles
     // (1 initial + AUTO_REVIVE_MAX) of 10 rate-limited attempts, for the
-    // life of the row.
+    // life of the row. Unchanged by the provider-block fix, and it should
+    // be: a real 429 storm still costs a real request per attempt, so the
+    // bound this lane is about is untouched by making free failures free.
     const r = await thirtyDays(false)
     console.log(
       `[rv2dupe] sweep lane: ATTEMPTS=${r.attempts} (cv=${r.cv} cl=${r.cl} on the wire) ` +
@@ -1401,11 +1405,16 @@ describe('the revival-rate bound: the SWEEP lane, 30 simulated days', () => {
     // Nothing succeeded, so nothing exists and the whole 80 is waste.
     expect(docsOf(r.jobId, 'cv')).toHaveLength(0)
     expect(docsOf(r.jobId, 'cover_letter')).toHaveLength(0)
-    // And the wire-level cost in this configuration is strictly below the
-    // ceiling, because the provider's own 429 cooldown absorbs the second
-    // unit's attempts.
-    expect(r.cv + r.cl).toBeLessThanOrEqual(r.attempts)
-  })
+    // `attempts` IS the wire-level cost (see thirtyDays), so this is the
+    // shape check: the spend is CV and cover letter in equal measure.
+    expect(r.cv).toBe(r.attempts / 2)
+    expect(r.cl).toBe(r.attempts / 2)
+    // Timeout LAST, not second. Vitest 4 types the collector as
+    // `(name, fn, timeout)`, so `it(name, TIMEOUT, fn)` silently discards
+    // the number and falls back to the global 5s — verified, not assumed:
+    // with the number in second position this 30-day simulation runs on the
+    // default budget and times out under parallel load.
+  }, SIMULATION_TIMEOUT)
 
   it('and a job that DOES succeed spends nothing at all afterwards', async () => {
     // The 80 is the worst case for a job that can never succeed. The
@@ -1484,6 +1493,9 @@ describe('the revival-rate bound: the FIT-TRIGGER lane', () => {
     expect(docsOf(r.jobId, 'cover_letter')).toHaveLength(0)
     // And it is no longer strictly worse than the sweep lane on the wire.
     expect(r.cv + r.cl).toBeLessThanOrEqual(10 * (AUTO_REVIVE_MAX + 1) * 2)
+    // And it is the whole of `attempts`, which is the point of measuring
+    // at the wire: every one of these went to the provider.
+    expect(r.attempts).toBe(r.cv + r.cl)
   })
 
   it('a job that DOES succeed spends nothing on later landings', async () => {
@@ -1566,49 +1578,56 @@ describe('the revival-rate bound: the FIT-TRIGGER lane', () => {
   })
 
   it('the budget is PER JOB: two jobs each get the whole 80', async () => {
-    // Per job, not global: the counter is on the row, and the rows are per
-    // job. A shared budget would starve every job after the first.
-    vi.useRealTimers()
-    const a = eligibleJob()
-    const b = eligibleJob()
-    const start = Date.now()
-    const attemptsOf = (): Map<number, number> =>
-      new Map(getAIQueue().map((q) => [q.id, q.attempts]))
+    // Per job, not global: the budget is on the row and the rows are per
+    // job, so a shared budget would starve every job after the first.
+    //
+    // Measured with `thirtyDays`, the harness the two cases above use and
+    // the only one in this file that measures at the WIRE. This case used to
+    // carry its own copy of the loop, and that copy was measuring the wrong
+    // thing in two ways at once:
+    //
+    //   - it tallied `attempts` off the queue's own counter with an
+    //     `else if (prev > 0) attempts += 1` branch that charges one attempt
+    //     to any row that merely sat still. That is the counter-versus-wire
+    //     confusion the `thirtyDays` doc comment above names, and it is
+    //     exactly what a no-request provider block looks like to a counter.
+    //
+    //   - it ran with NO provider stub, so every request failed at the
+    //     network layer with no status code. That marked the model cooling
+    //     for 15s, which made the rest of that row's own AI calls block, and
+    //     a block costs nothing by design. With a cap refusal also free, no
+    //     row could ever spend an attempt, so none of them ever reached
+    //     `failed` and the queue re-probed for the full 30 days without
+    //     terminating — 60,000 passes for 1 real request each. Not a hang and
+    //     not a leak, but a harness that cannot see the thing it is
+    //     measuring.
+    //
+    // `thirtyDays` stubs the provider, resets health and the spend ledger
+    // each step, and reads the total off the wire, so one billed 429 is one
+    // attempt. That is the same arithmetic this case is about.
+    const r = await thirtyDays(true, 2)
+    console.log(
+      `[rv2dupe] fit-trigger lane, TWO jobs: ATTEMPTS=${r.attempts} ` +
+        `(cv=${r.cv} cl=${r.cl} on the wire) per-day=[${r.perDay.join(',')}]`
+    )
 
-    let attempts = 0
-    for (let hour = 0; hour < 30 * 24; hour++) {
-      vi.setSystemTime(start + hour * HOUR)
-      for (const job of [a, b]) maybeAutoEnqueueDocs(job.id)
-      for (let step = 0; step < 200; step++) {
-        const { processQueue } = await import('./aiQueue')
-        const { resetModelHealth } = await import('./ai')
-        resetModelHealth()
-        const runnable = getAIQueue().filter(
-          (q) => q.status === 'pending' || (q.status === 'failed' && (q.autoRevives ?? 0) < AUTO_REVIVE_MAX)
-        )
-        if (runnable.length === 0) break
-        const next = Math.min(...runnable.map((q) => q.nextRetryAt))
-        if (next > Date.now()) {
-          if (next > start + (hour + 1) * HOUR) break
-          vi.setSystemTime(next)
-        }
-        const before = attemptsOf()
-        await processQueue()
-        for (const row of getAIQueue()) {
-          const prev = before.get(row.id) ?? 0
-          if (row.attempts > prev) attempts += row.attempts - prev
-          else if (prev > 0) attempts += 1
-          else attempts += row.attempts
-        }
+    // Exactly two jobs' budgets, not one shared between them.
+    expect(r.attempts).toBe(2 * 10 * (AUTO_REVIVE_MAX + 1) * 2)
+    expect(r.attempts).toBe(160)
+    // Every one of them reached the provider.
+    expect(r.cv + r.cl).toBe(r.attempts)
+    // And each job independently used its WHOLE budget: two rows apiece,
+    // both bottomed out on the revive ceiling. A shared or truncated budget
+    // would leave the second job short of it, which is the whole failure
+    // this case exists to catch.
+    expect(r.jobIds).toHaveLength(2)
+    for (const id of r.jobIds) {
+      expect(rowsOf(id), `job ${id}`).toHaveLength(2)
+      for (const row of rowsOf(id)) {
+        expect(row.autoRevives, `job ${id} ${row.type}`).toBe(AUTO_REVIVE_MAX)
+        expect(row.attempts, `job ${id} ${row.type}`).toBe(10)
       }
     }
-
-    // 80 each, not 80 between them.
-    expect(attempts).toBe(2 * 10 * (AUTO_REVIVE_MAX + 1) * 2)
-    expect(attempts).toBe(160)
-    expect(rowsOf(a.id)).toHaveLength(2)
-    expect(rowsOf(b.id)).toHaveLength(2)
-    for (const row of rowsOf(a.id)) expect(row.autoRevives).toBe(AUTO_REVIVE_MAX)
-    for (const row of rowsOf(b.id)) expect(row.autoRevives).toBe(AUTO_REVIVE_MAX)
-  })
+    // Timeout LAST — see the note on the sweep-lane simulation above.
+  }, SIMULATION_TIMEOUT)
 })

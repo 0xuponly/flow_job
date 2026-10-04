@@ -20,6 +20,10 @@ const store = vi.hoisted(() => ({
 }))
 
 vi.mock('./database', () => ({
+  // The processor's provider-health gate reads this before it claims a
+  // row; an empty pool answers "not blocked" so these cases exercise the
+  // pass itself. See queueCooldown.test.ts for the blocked half.
+  listApiModels: () => [],
   // The auto-queue gate in enqueue() reads these; all true = every
   // automatic enqueue allowed, which is the shipped default. The
   // switches themselves are covered against the real store in
@@ -86,8 +90,14 @@ vi.mock('./ai', () => {
   // Declared inside the factory, not as sibling properties of the returned
   // object: a hoisted mock factory cannot close over module-level bindings,
   // and a property key is not a binding either.
+  //
+  // The hierarchy is the real one, because `processItem` branches on it:
+  // both refusals extend `RateLimitError`, so a stub that made them
+  // unrelated would let a row fall into the ten-attempt ladder for a
+  // condition that is supposed to cost nothing.
   class RateLimitError extends Error {}
   class ProviderCapError extends RateLimitError {}
+  class ProviderCooldownError extends RateLimitError {}
   return {
     withAiOperation: (fn: () => unknown) => fn(),
     verifyDocumentContent: vi.fn(async () => ({ kind: 'review', score: 90, passed: true, feedback: '', rules: [] })),
@@ -98,7 +108,13 @@ vi.mock('./ai', () => {
     // rather than a retry, and asks the ledger when the budget frees; a full
     // `./ai` mock has to carry both or the pass throws on an undefined export.
     ProviderCapError,
-    nextProviderCapFreeAt: vi.fn(() => null)
+    nextProviderCapFreeAt: vi.fn(() => null),
+    // The block lane, same obligation: the class the processor checks FIRST,
+    // and the pre-flight gate it consults before claiming a row. "Not
+    // blocked" here so these cases exercise the pass itself; the blocked half
+    // needs a real health map and is in queueCooldown.test.ts.
+    ProviderCooldownError,
+    providerAvailability: () => ({ blocked: false, nextAvailableAt: null, eligibleCount: 1 })
   }
 })
 

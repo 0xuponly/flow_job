@@ -1,0 +1,182 @@
+/**
+ * What the Queue panel says when the app cannot reach a provider.
+ *
+ * Two claims are under test. First, that the panel says it at all: for 20
+ * hours on 2026-10-02 a queue of 265 tasks rendered as ordinary backlog
+ * while the app could not run a single one of them, and the only trace was
+ * a per-row error string. Second, that it says it in the app's own terms —
+ * an outcome the user can act on, with no model names, HTTP statuses or
+ * cooldown plumbing leaking into the UI. The second claim is the one with
+ * teeth: it is asserted negatively, because leaking `cooling down after
+ * rate limits` into a user-facing banner is the failure mode.
+ */
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen } from '@testing-library/react'
+import QueuePanel from './QueuePanel'
+import type { QueueItemView } from '../types'
+import type { AIQueueBlockedState } from '../queueBlocked'
+import { BLOCKED_ROW_STATUS, blockedBannerLines, queueRowStatusText } from '../queueBlocked'
+
+function item(overrides: Partial<QueueItemView> = {}): QueueItemView {
+  return {
+    id: 1,
+    type: 'verify',
+    jobId: 1,
+    jobTitle: 'Engineer',
+    jobCompany: 'Acme',
+    status: 'pending',
+    attempts: 0,
+    createdAt: 0,
+    nextRetryAt: 0,
+    ...overrides
+  }
+}
+
+function blocked(overrides: Partial<AIQueueBlockedState> = {}): AIQueueBlockedState {
+  return {
+    blocked: true,
+    providerFreeAt: Date.now() + 600_000,
+    retryAt: Date.now() + 600_000,
+    waitingRows: 1,
+    blockedRowIds: [1],
+    ...overrides
+  }
+}
+
+function renderPanel(rows: QueueItemView[], state: AIQueueBlockedState | null = null) {
+  return render(
+    <QueuePanel items={rows} busyId={null} blocked={state} onRetry={vi.fn()} onRemove={vi.fn()} />
+  )
+}
+
+/**
+ * Every word the panel is allowed to show about a block.
+ *
+ * Deliberately not a snapshot: the point is that the panel is a place
+ * where internal diagnostics do not go. The terms below are the ones that
+ * were on screen before this feature existed (`cooling down after rate
+ * limits or persistent errors`, the per-model error dump), plus the
+ * provider and status vocabulary a reader could infer a key or an
+ * endpoint from.
+ */
+const INTERNAL_TERMS = [
+  'cool',
+  'rate limit',
+  '429',
+  '402',
+  'circuit',
+  'openrouter',
+  'api/v1',
+  'http',
+  'retry',
+  'backoff'
+]
+
+describe('the blocked banner', () => {
+  it('says plainly that no provider is available and the queue is waiting', () => {
+    const now = 1_700_000_000_000
+    const lines = blockedBannerLines(
+      blocked({ providerFreeAt: now + 600_000, retryAt: now + 600_000 }),
+      265,
+      now
+    )
+    expect(lines).not.toBeNull()
+    expect(lines!.headline).toBe('No AI provider is available right now, so the queue is waiting.')
+    expect(lines!.detail).toBe('265 queued tasks are waiting. Checking again in 10m (best effort).')
+  })
+
+  it('counts the queue it was given, and says so when there is nothing queued', () => {
+    const now = 1_700_000_000_000
+    // 90s reads as 2m: the wait is rounded up, never down, so the time
+    // shown is never earlier than the time promised.
+    expect(blockedBannerLines(blocked({ retryAt: now + 90_000 }), 1, now)!.detail)
+      .toBe('1 queued task is waiting. Checking again in 2m (best effort).')
+    expect(blockedBannerLines(blocked({ retryAt: now + 45_000 }), 0, now)!.detail)
+      .toBe('Tasks will run once a provider is available. Checking again in 45s (best effort).')
+  })
+
+  it('omits the schedule when the wake time is already due', () => {
+    // Better no promise than a wrong one: the queue's own wake time can
+    // pass between the fetch and the render.
+    const now = 1_700_000_000_000
+    expect(blockedBannerLines(blocked({ retryAt: now - 1 }), 3, now)!.detail)
+      .toBe('3 queued tasks are waiting.')
+  })
+
+  it('has nothing to say when the app is not blocked', () => {
+    expect(blockedBannerLines(null, 265)).toBeNull()
+    expect(blockedBannerLines(blocked({ blocked: false }), 265)).toBeNull()
+  })
+})
+
+describe('a blocked row reads differently from a queued one', () => {
+  it('marks only the rows parked on the provider clock', () => {
+    const state = blocked({ blockedRowIds: [2] })
+    expect(queueRowStatusText({ id: 2 }, state, () => 'Pending')).toBe(BLOCKED_ROW_STATUS)
+    // A row merely queued behind other work keeps its own wording: the
+    // distinction is the whole point, so it cannot be blurred by marking
+    // everything.
+    expect(queueRowStatusText({ id: 1 }, state, () => 'Pending')).toBe('Pending')
+  })
+
+  it('marks nothing when the app is not blocked', () => {
+    expect(queueRowStatusText({ id: 2 }, null, () => 'Pending')).toBe('Pending')
+    expect(queueRowStatusText({ id: 2 }, blocked({ blocked: false }), () => 'Pending')).toBe('Pending')
+  })
+})
+
+describe('QueuePanel with a blocked app', () => {
+  it('renders the notice above the rows, and marks only the parked row', () => {
+    const now = Date.now()
+    renderPanel(
+      [item({ id: 1 }), item({ id: 2 })],
+      blocked({ providerFreeAt: now + 600_000, retryAt: now + 600_000, waitingRows: 1, blockedRowIds: [2] })
+    )
+
+    const notice = screen.getByTestId('queue-provider-blocked')
+    expect(notice).toHaveTextContent('No AI provider is available right now, so the queue is waiting.')
+    // One row is waiting on a provider, one is waiting its turn.
+    const statuses = screen.getAllByTestId('queue-task-status').map((el) => el.textContent)
+    expect(statuses).toEqual(['Pending', BLOCKED_ROW_STATUS])
+  })
+
+  it('keeps the block\'s own plumbing out of the panel', () => {
+    const now = Date.now()
+    renderPanel(
+      // A row parked by a block carries the provider plumbing in its
+      // stored `lastError` — that string is the row's record of why, and
+      // the log has the detail. It is not shown: `lastError` is rendered
+      // for failed rows only, so a row that is merely WAITING does not
+      // display it.
+      [
+        item({ id: 1, status: 'pending', attempts: 0, nextRetryAt: now + 600_000, lastError: 'All configured AI models are cooling down after rate limits or persistent errors — try again shortly.' })
+      ],
+      blocked({ providerFreeAt: now + 600_000, retryAt: now + 600_000, blockedRowIds: [1] })
+    )
+
+    // Nothing on screen is the raw error, and nothing is plumbing of any
+    // other kind either.
+    expect(screen.getByTestId('queue-task')).not.toHaveTextContent(/cooling down/i)
+    const notice = screen.getByTestId('queue-provider-blocked')
+    for (const term of INTERNAL_TERMS) {
+      expect(notice.textContent?.toLowerCase(), `banner must not say "${term}"`).not.toContain(term)
+    }
+    expect(screen.getByTestId('queue-task-status')).toHaveTextContent(BLOCKED_ROW_STATUS)
+  })
+
+  it('still says so when nothing is queued', () => {
+    // The state is about the provider, not about the queue, and the user
+    // about to press Generate is exactly who needs to hear it.
+    const now = Date.now()
+    renderPanel([], blocked({ providerFreeAt: now + 600_000, retryAt: now + 600_000, waitingRows: 0, blockedRowIds: [] }))
+
+    expect(screen.getByTestId('queue-provider-blocked')).toHaveTextContent('No AI provider is available right now')
+    expect(screen.getByText('No queued tasks.')).toBeInTheDocument()
+  })
+
+  it('renders nothing extra when the app is not blocked', () => {
+    renderPanel([item({ id: 1 })], null)
+    expect(screen.queryByTestId('queue-provider-blocked')).toBeNull()
+    expect(screen.getByTestId('queue-task-status')).toHaveTextContent('Pending')
+  })
+})

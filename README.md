@@ -164,6 +164,24 @@ fall through. Rate-limited calls enqueue an AI-queue item with exponential
 backoff (30s → 30m cap, up to 10 attempts) and surface a "queued" result
 to the UI.
 
+Two rate-limit outcomes are handled differently, because they cost
+different things. A rotation that actually reached the provider is a
+real failure and spends one of the ten attempts. A call that could not
+start — every model is inside its own cooldown, so `callAI` throws
+`ProviderCooldownError` before any request is made — costs nothing at
+all: the queue item keeps its attempt budget, is marked as waiting on a
+provider, and is rescheduled on the **provider's** clock (the earliest
+time any model frees up) rather than on its own backoff ladder. That wait
+is floored at one poll interval, escalates per block so a moving health
+map cannot keep a task on the shortest wake-up, and is capped at 10
+minutes so a one-hour circuit break cannot leave the queue silent. While
+no provider is available the Queue tab says so once, app-wide, and marks
+the tasks that are waiting rather than leaving them to look like ordinary
+backlog. A one-shot migration (`queue_cooldown_reset_v1`) gives the
+retry budget back to tasks an older build burned on those free failures;
+it never revives tasks the user cleared, and it leaves tasks that failed
+for a real reason alone.
+
 When every model fails the scorer returns a heuristic fallback
 (`source: 'heuristic'`) and persists the error to the job's
 `fit_last_error` column — the numeric score is **not** overwritten. The
