@@ -1,3 +1,4 @@
+import type { AIQueueBlockedState } from './queueBlocked'
 import type {
   ApiModelConfig,
   Application,
@@ -100,6 +101,10 @@ export interface Api {
   // blanked the title on all the OTHER rows. Typing the returns as the
   // view makes that shape a compile error instead.
   listAIQueue: () => Promise<QueueItemView[]>
+  // One app-wide answer to "can this app spend a request at all?", not a
+  // per-row flag: no provider being available is a property of the model
+  // pool. See src/queueBlocked.ts for what it may and may not display.
+  aiQueueBlocked: () => Promise<AIQueueBlockedState>
   listBoards: () => Promise<{ name: string; useBrowser: boolean; enabled: boolean }[]>
   getBoardHealth: () => Promise<Record<string, number[]>>
   retryAIQueueItem: (id: number) => Promise<QueueItemView[]>

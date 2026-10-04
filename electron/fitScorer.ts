@@ -17,7 +17,7 @@
 import { BrowserWindow } from 'electron'
 import { log } from './logger'
 import * as db from './database'
-import { scoreJobFit, ProviderCapError, type AiCallOptions } from './ai'
+import { scoreJobFit, ProviderCapError, ProviderCooldownError, type AiCallOptions } from './ai'
 import { enqueue } from './aiQueue'
 import {
   autoDocQueueEligible,
@@ -269,33 +269,10 @@ export async function scoreOneJobInBackground(
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error'
     log.fit.warn(`job ${jobId} (${job.company} — ${job.title}): ${msg}`)
+    let updated: Job | null
     try {
-      const updated = db.updateJob(jobId, { fit_last_error: msg })
+      updated = db.updateJob(jobId, { fit_last_error: msg })
       emitJobScoreUpdatedModule(jobId)
-      // A SPENT BUDGET is recorded and then re-thrown; every other failure —
-      // including a 429 storm, which has a real heuristic fallback waiting at
-      // `scoreJobFit` — is recorded and swallowed, exactly as before.
-      //
-      // Swallowing is load-bearing. A provider that answers with garbage, a
-      // scorer that throws on one malformed posting, a no-config read: all of
-      // them end up here, and the function's contract with its other two
-      // callers (jobs:create, jobs:recomputeFit, both fire-and-forget from the
-      // renderer) is "the job row carries the reason and the app carries on".
-      // Turning that into a rethrow would reject a promise nobody awaits.
-      //
-      // A ProviderCapError is a different thing. It says the app already decided
-      // to stop spending on this account for the rest of this window — not that
-      // anything went wrong — and there is no verdict on the job to record: the
-      // spend happens again in an hour, when the budget is back, so any fit
-      // stamped now would be a guess. It also has an owner: `aiQueue.processItem`
-      // knows how to park a row for a provider that will not answer, how long to
-      // wait, and how to resume when the budget returns. Returning the job here
-      // meant that owner never heard about it: `score_fit` saw a job that
-      // already carried a score, concluded the work had been done, and DELETED
-      // the row — the cap silently threw away the scoring, and `fit_last_error`
-      // was the only trace it had ever happened.
-      if (err instanceof ProviderCapError) throw err
-      return updated
     } catch (writeErr) {
       if (writeErr instanceof Error && writeErr.message === 'Job not found') {
         log.fit.warn(`scoreOneJobInBackground: job ${jobId} was deleted mid-run, skipping`)
@@ -303,5 +280,51 @@ export async function scoreOneJobInBackground(
       }
       throw writeErr
     }
+    // Two refusals are recorded on the job (above) and then re-thrown;
+    // every other failure — including a 429 storm, which has a real
+    // heuristic fallback waiting at `scoreJobFit` — is recorded and
+    // swallowed, exactly as before.
+    //
+    // Swallowing is load-bearing. A provider that answers with garbage, a
+    // scorer that throws on one malformed posting, a no-config read: all of
+    // them end up here, and the function's contract with its other two
+    // callers (jobs:create, jobs:recomputeFit, both fire-and-forget from the
+    // renderer) is "the job row carries the reason and the app carries on".
+    // Turning that into a rethrow would reject a promise nobody awaits.
+    //
+    // This function is the boundary between the scorer and the queue: the
+    // `score_fit` case in aiQueue turns a null `score` back into an
+    // exception, so swallowing here is what let a no-request cooldown
+    // block reach the queue as `new Error(msg)` and be charged one of
+    // the five score_fit attempts — the same bug as in the generate /
+    // review lanes, one file over, reached through a string instead of
+    // through a type (2026-10-02).
+    //
+    // A PROVIDER BLOCK is not a fit failure at all: `callAI` never reached
+    // the provider, so there is no verdict to stamp and no reason to invent
+    // one. Both callers want the type preserved — aiQueue parks the row on
+    // the provider's clock for free, and `jobs:recomputeFit` surfaces "no
+    // provider available" rather than a fit score nobody computed.
+    if (err instanceof ProviderCooldownError) throw err
+    //
+    // A SPENT BUDGET is not a fit failure either. It says the app already
+    // decided to stop spending on this account for the rest of this window —
+    // not that anything went wrong — and there is no verdict on the job to
+    // record: the spend happens again in an hour, when the budget is back, so
+    // any fit stamped now would be a guess. It also has an owner:
+    // `aiQueue.processItem` knows how to park a row for a provider that will
+    // not answer, how long to wait, and how to resume when the budget
+    // returns. Returning the job here meant that owner never heard about it:
+    // `score_fit` saw a job that already carried a score, concluded the work
+    // had been done, and DELETED the row — the cap silently threw away the
+    // scoring, and `fit_last_error` was the only trace it had ever happened.
+    //
+    // Narrower than `RateLimitError` on purpose: widening it to every rate
+    // limit moves `score_fit` off its own 5-attempt ladder onto the
+    // 10-attempt one the generation lanes use, which doubles the worst-case
+    // spend on a 429 storm. A cap spends nothing at all, so it needs no
+    // ladder.
+    if (err instanceof ProviderCapError) throw err
+    return updated
   }
 }

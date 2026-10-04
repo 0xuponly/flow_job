@@ -5,6 +5,8 @@ import QueuePanel from './QueuePanel'
 import { notify } from '../components/Notifications'
 import { api } from '../api'
 import type { NotificationRow, QueueItemView } from '../types'
+import { NOT_BLOCKED } from '../queueBlocked'
+import type { AIQueueBlockedState } from '../queueBlocked'
 
 function formatTime(ts: number): string {
   const d = new Date(ts)
@@ -66,6 +68,12 @@ export default function NotificationDrawer() {
   const [mounted, setMounted] = useState(false)
   const [panel, setPanel] = useState<Panel>('notifications')
   const [queue, setQueue] = useState<QueueItemView[]>([])
+  // App-wide provider availability, fetched with the queue it describes so
+  // the banner and the rows it marks cannot come from different moments.
+  // Starts as "nothing is blocked" so the first render before the first
+  // fetch is the old behaviour rather than a banner about a state nobody
+  // has asked about yet.
+  const [blocked, setBlocked] = useState<AIQueueBlockedState>(NOT_BLOCKED)
   const [busyId, setBusyId] = useState<number | null>(null)
   const [clearing, setClearing] = useState(false)
 
@@ -83,6 +91,14 @@ export default function NotificationDrawer() {
   const loadQueue = useCallback(async () => {
     const items = await api.listAIQueue()
     setQueue(items)
+    // Both calls are independent and neither may fail the panel: the
+    // previous rows (and the previous blocked state) stay put on error,
+    // exactly as runQueueAction below keeps the list on a failed write.
+    try {
+      setBlocked(await api.aiQueueBlocked())
+    } catch {
+      /* keep the last known state */
+    }
   }, [])
 
   // Poll only while the Queue tab is actually on screen. Fetching on
@@ -267,6 +283,7 @@ export default function NotificationDrawer() {
             <QueuePanel
               items={queue}
               busyId={busyId}
+              blocked={blocked}
               onRetry={(item) => { void runQueueAction(api.retryAIQueueItem, item.id) }}
               onRemove={(item) => { void runQueueAction(api.removeAIQueueItem, item.id) }}
             />

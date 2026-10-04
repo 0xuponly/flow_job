@@ -80,6 +80,22 @@ import type { AIQueueItem, CreateJobInput, Document } from './types'
 const HOUR = 3600_000
 const COOLDOWN = AUTO_REVIVE_COOLDOWN_MS
 
+/**
+ * Timeout for the 30-day simulations, passed LAST so vitest actually reads
+ * it. `it(name, TIMEOUT, fn)` is silently accepted by the types and throws
+ * the number away, falling back to the global 5s — verified, not assumed.
+ *
+ * Needed here for a real reason rather than a slow machine: parking a
+ * provider refusal for free keeps a row on its own re-probe ladder instead
+ * of ending it, so `thirtyDays` walks a much longer simulated wall-clock
+ * for the same 80 requests. Measured 12.5s for the two-job case under
+ * parallel load (was under 5s before either mechanism was free), so the
+ * budget is 30s: enough headroom on a loaded box, and still nowhere near
+ * loose enough to hide a hang. Matches `SIMULATION_TIMEOUT` in
+ * rv2dupe.test.ts, which simulates the same 720 hours.
+ */
+const SIMULATION_TIMEOUT = 30_000
+
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------
@@ -529,23 +545,24 @@ describe('FINDING 2: tailor_job_docs writes each document ONCE', () => {
 // ---------------------------------------------------------------------------
 
 describe('FINDING 3: the fit-landing trigger is bounded', () => {
-  it('30 days of repeated fit landings spend a BOUNDED number: 80, all on day one', async () => {
+  it('30 days of repeated fit landings spend exactly the bounded number, then stop', async () => {
     // BEFORE: 428 attempts (80 from the sweep + 12 a day from the trigger),
     // per-day [80, 12 x 29], unbounded in the number of landings and silent
     // — no row survived, no error touched the job, and the trigger returned
     // true every time so every caller believed it had scheduled something.
     //
-    // AFTER, the arithmetic is the sweep's own:
+    // AFTER, every row is bounded by the same two per-row budgets:
     //
     //   per document unit, per life:
     //       attempts ladder   aiQueue.ts   `isRateLimit && attempts < 10`
     //                                      -> 10 attempts, then park
     //       lifetime budget   aiQueue.ts   `autoRevives < AUTO_REVIVE_MAX`
     //                                      -> AUTO_REVIVE_MAX parks it
-    //       => (1 + AUTO_REVIVE_MAX) cycles x 10 attempts = 40 per unit
-    //   a job has 2 units  => 80 attempts per job, EVER
+    //       => 10 attempts and AUTO_REVIVE_MAX revivals per unit, per job,
+    //          for the life of the row
+    //   a job has 2 units  => both units reach that cap, and no third row
     //
-    // and the trigger cannot move that number, because:
+    // and the trigger cannot move those numbers, because:
     //   - it only ADDS a row when the unit has no row at all in any status,
     //     so the first landing is the only one that can create one;
     //   - a row it revives spends `autoRevives` and parks on the 4h
@@ -554,22 +571,44 @@ describe('FINDING 3: the fit-landing trigger is bounded', () => {
     //   - a landing that finds a row `pending` / `processing` spends
     //     nothing at all (`jobDocWorkInFlight`).
     //
-    // The TOTAL is unchanged at 80 — that is the bound this case exists to
-    // hold, and the ladder still holds it. What the per-provider call cap
-    // changed is WHEN the money goes out: 80 429s are 80 billed requests
-    // against one credential, so the cap refuses the 51st, the refusals
-    // charge no attempt (that is the whole point of parking a cap refusal),
-    // and the rest of the ladder runs on day two once the window has slid.
-    // Before the cap, all 80 came out of day one.
+    // The TOTAL is unchanged at 80, and it is asserted exactly rather than
+    // as a loose bound. That is only meaningful because BOTH free-to-fail
+    // mechanisms are off the counter: the tally above charges a row whose
+    // counter moved or was cleared and nothing else, so a row parked on a
+    // spent provider budget AND a row parked on a total provider block are
+    // both invisible to it. With either one leaking into the tally the
+    // figure would stop being spend at all — which is how the tally read
+    // 153 for these same 80 real requests before the counter was narrowed.
+    //
+    // WHAT CHANGED IS WHEN THE MONEY GOES OUT, and the per-day shape is not
+    // asserted exactly because it is not a property of this bound. It has
+    // moved three times with the bound unmoved — [80, 0 x 29], then
+    // [52, 28, ...] once the per-provider cap began refusing mid-ladder, now
+    // [26, 25, 25, 4, ...] — each time because a different free-to-fail
+    // mechanism changed the wall-clock the ladder walks without changing one
+    // of the 80 requests. A fourth exact array would be a number that only
+    // passes today.
     const job = eligibleJob()
     const r = await thirtyDays([job], true)
 
+    // The bound: 10 attempts x (1 + AUTO_REVIVE_MAX) cycles x 2 document
+    // units, per job, for the life of the row. Stated twice so the
+    // arithmetic and the number have to agree.
     expect(r.attempts).toBe(10 * (AUTO_REVIVE_MAX + 1) * 2)
     expect(r.attempts).toBe(80)
-    // It was [80, 0 x 29] before the cap and [80, 12 x 29] before the
-    // trigger's bound. Bounded either way; bounded EARLIER now, which is
-    // what the cap is for.
-    expect(r.perDay).toEqual([52, 28, ...new Array(28).fill(0)])
+    // Every one of them reached the provider, so the tally is not quietly
+    // counting anything twice either.
+    expect(r.cv + r.cl).toBe(r.attempts)
+    // Bounded in DAYS as well as in attempts: the spend is a prefix of the
+    // 30 days and it stops short of the horizon. Measured, the last
+    // spending day is the 4th and the other 26 are zero. The day count is
+    // derived from the data rather than typed in, because a typed one is
+    // exactly the magic constant that would need re-deriving every time a
+    // mechanism changes the clock.
+    const spentDay = r.perDay.reduce((last, n, i) => (n > 0 ? i : last), -1)
+    expect(spentDay).toBeGreaterThanOrEqual(0)
+    expect(r.perDay.slice(spentDay + 1).every((n) => n === 0)).toBe(true)
+    expect(spentDay).toBeLessThan(r.perDay.length - 1)
     // Nothing succeeded, so nothing exists and the whole 80 is waste.
     expect(docsOf(job.id, 'cv')).toHaveLength(0)
     expect(docsOf(job.id, 'cover_letter')).toHaveLength(0)
@@ -584,7 +623,7 @@ describe('FINDING 3: the fit-landing trigger is bounded', () => {
     expect(r.cv + r.cl).toBeLessThanOrEqual(r.attempts)
   })
 
-  it('the bound is PER JOB, not global: two jobs each get the whole 80', async () => {
+  it('the bound is PER JOB, not global: two jobs each get the whole budget', async () => {
     // A shared budget would starve every job after the first, which is the
     // failure mode the cross-producer predicate's per-job scoping exists to
     // avoid.
@@ -592,20 +631,38 @@ describe('FINDING 3: the fit-landing trigger is bounded', () => {
     const b = eligibleJob()
     const r = await thirtyDays([a, b], true)
 
+    // Exactly two jobs' worth of budget, and NOT a shared one: a shared
+    // budget would have starved the second job, so the total is the
+    // per-job figure doubled. Asserted exactly, for the reason given in the
+    // case above — the tally is honest now, so a bound on it is a real
+    // bound rather than a magic constant.
     expect(r.attempts).toBe(2 * 10 * (AUTO_REVIVE_MAX + 1) * 2)
     expect(r.attempts).toBe(160)
-    // 80 each, measured per job rather than on the total alone.
+    // And it stops: the same prefix property, measured at the 7th day here.
+    const spentDay = r.perDay.reduce((last, n, i) => (n > 0 ? i : last), -1)
+    expect(spentDay).toBeGreaterThanOrEqual(0)
+    expect(r.perDay.slice(spentDay + 1).every((n) => n === 0)).toBe(true)
+    expect(spentDay).toBeLessThan(r.perDay.length - 1)
+    // What proves the budget is per job is that BOTH jobs independently
+    // reach the full cap on their own two rows — a shared or truncated
+    // budget would leave the second job short of it.
     for (const job of [a, b]) {
       expect(rowsOf(job.id), `job ${job.id}`).toHaveLength(2)
       for (const row of rowsOf(job.id)) {
-        expect(row.autoRevives, `job ${job.id} ${row.type}`).toBe(AUTO_REVIVE_MAX)
+        // Exactly the cap, for both jobs. A provider block does NOT spend
+        // `autoRevives` — that is the point of parking — but it does not
+        // dodge it either: measured 3 on all four rows here, which is
+        // AUTO_REVIVE_MAX. Asserting only "at most" would let a shared or
+        // truncated budget pass this test, which is the failure it exists for.
+        expect(row.autoRevives ?? 0, `job ${job.id} ${row.type}`).toBe(AUTO_REVIVE_MAX)
+        expect(row.attempts, `job ${job.id} ${row.type}`).toBe(10)
       }
     }
-  })
+  }, SIMULATION_TIMEOUT)
 
   it('a job that SUCCEEDS spends nothing on later landings', async () => {
     // The bound's other half, and the one that decides whether this is a
-    // leak: the 80 above is the worst case for a job that can never be
+    // leak: the bounded worst case above is what a job that can never be
     // generated. The ordinary case is zero.
     vi.useRealTimers()
     const calls = provider()

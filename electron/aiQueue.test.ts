@@ -45,6 +45,13 @@ vi.mock('./ai', async (importOriginal) => {
 
 vi.mock('./database', () => ({
   getAIQueue: vi.fn(() => []),
+  // The processor asks the provider-health query before it claims any
+  // row (`providerAvailability` → `eligibleModels` → this). An empty pool
+  // answers "not blocked", which is the no-models-configured case and
+  // leaves the pass free to claim work exactly as before. The blocked
+  // half of that query is covered against a real pool and a real store
+  // in queueCooldown.test.ts.
+  listApiModels: vi.fn(() => []),
   // The auto-queue gate in enqueue() reads these. Every switch on here
   // means "auto-queueing allowed", which is what the store's own default
   // is; the switches' own behaviour is covered against the real store

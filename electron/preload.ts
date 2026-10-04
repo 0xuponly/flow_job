@@ -219,6 +219,7 @@ const api: Api = {
   clearAllData: () => ipcRenderer.invoke('db:clearAllData'),
   retrofitLocations: () => ipcRenderer.invoke('db:retrofitLocations'),
   listAIQueue: () => ipcRenderer.invoke('aiQueue:list'),
+  aiQueueBlocked: () => ipcRenderer.invoke('aiQueue:blocked'),
   listBoards: () => ipcRenderer.invoke('boards:list'),
   getBoardHealth: () => ipcRenderer.invoke('boards:health'),
   retryAIQueueItem: (id) => ipcRenderer.invoke('aiQueue:retry', id),

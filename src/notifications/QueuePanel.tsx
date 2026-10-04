@@ -1,6 +1,8 @@
 import { memo, useEffect, useRef, useState } from 'react'
 import type { QueueItemView } from '../types'
 import { queueItemLabel, queueItemStatusText } from '../fitQueue'
+import { blockedBannerLines, queueRowStatusText } from '../queueBlocked'
+import type { AIQueueBlockedState } from '../queueBlocked'
 
 /**
  * How many rows are mounted at once.
@@ -25,6 +27,14 @@ interface QueuePanelProps {
   items: QueueItemView[]
   /** A queue call is in flight; suppress per-row actions to avoid double submits. */
   busyId: number | null
+  /**
+   * App-wide: can the app reach a provider at all right now?
+   *
+   * Optional so a caller that has not fetched it renders exactly what it
+   * rendered before. See src/queueBlocked.ts for the shape and for the
+   * rule that keeps model names and health internals out of the panel.
+   */
+  blocked?: AIQueueBlockedState | null
   onRetry: (item: QueueItemView) => void
   onRemove: (item: QueueItemView) => void
 }
@@ -160,6 +170,40 @@ const QueueRow = memo(function QueueRow({
 })
 
 /**
+ * "The queue is waiting on a provider", stated once, above the rows.
+ *
+ * Before this the only trace of a total provider outage was a per-row
+ * error string, so 265 tasks rendered as an ordinary backlog for 20
+ * hours (2026-10-02) and nothing told the user the app could not run any
+ * of them. This is the one place that says so.
+ *
+ * Copy comes from src/queueBlocked.ts rather than being written here, so
+ * the wording can be asserted on its own and stays clear of model names,
+ * HTTP statuses and cooldown plumbing.
+ *
+ * A warning style rather than `danger`: nothing has failed and nothing is
+ * lost — the queue is healthy and idle because its provider is not.
+ */
+function ProviderBlockedNotice({ lines }: { lines: { headline: string; detail: string } }) {
+  return (
+    <div
+      role="status"
+      data-testid="queue-provider-blocked"
+      style={{
+        border: '1px solid var(--warning, #eab308)',
+        background: 'var(--bg-elevated)',
+        borderRadius: 6,
+        padding: 12,
+        marginBottom: 12,
+      }}
+    >
+      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{lines.headline}</div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{lines.detail}</div>
+    </div>
+  )
+}
+
+/**
  * The Queue tab of the notification center: every AI task the app has
  * queued, in the order the main process says it will be picked.
  *
@@ -175,7 +219,7 @@ const QueueRow = memo(function QueueRow({
  * leave a user who paged into a long queue with no way back to the
  * default view short of closing and reopening the panel.
  */
-export default function QueuePanel({ items, busyId, onRetry, onRemove }: QueuePanelProps) {
+export default function QueuePanel({ items, busyId, blocked, onRetry, onRemove }: QueuePanelProps) {
   const [visible, setVisible] = useState(PAGE_SIZE)
   const previousCount = useRef(items.length)
 
@@ -194,11 +238,20 @@ export default function QueuePanel({ items, busyId, onRetry, onRemove }: QueuePa
     previousCount.current = items.length
   }, [items.length])
 
+  // One notice for the whole panel, above the rows and above the empty
+  // state: "the app cannot reach a provider" is true whether or not
+  // anything happens to be queued, and a user about to press Generate is
+  // exactly who needs to be told.
+  const blockedLines = blockedBannerLines(blocked, items.length)
+
   if (items.length === 0) {
     return (
-      <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 32, fontSize: 14 }}>
-        No queued tasks.
-      </div>
+      <>
+        {blockedLines && <ProviderBlockedNotice lines={blockedLines} />}
+        <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 32, fontSize: 14 }}>
+          No queued tasks.
+        </div>
+      </>
     )
   }
 
@@ -211,18 +264,27 @@ export default function QueuePanel({ items, busyId, onRetry, onRemove }: QueuePa
 
   return (
     <>
+      {blockedLines && <ProviderBlockedNotice lines={blockedLines} />}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
         {shown.map((item, index) => (
           <QueueRow
             key={item.id}
             item={item}
             position={index + 1}
-            statusText={queueItemStatusText(item)}
+            // A row parked on the provider clock reads differently from
+            // one queued behind other work, so "waiting its turn" and
+            // "cannot run at all" stop looking identical.
+            statusText={queueRowStatusText(item, blocked, () => queueItemStatusText(item))}
             // A parked-on-the-cap row carries the provider's own message —
             // which provider, how much of its budget is gone, when it frees —
             // and that is the only place the user is told why their work is
             // not moving. `failed` alone hid it, which is what made the cap
             // look like a queue that had simply forgotten the task.
+            //
+            // A provider BLOCK is deliberately not in this condition: it
+            // speaks through `statusText` and the banner above the rows
+            // instead, so one outage is stated once rather than repeated on
+            // each of the rows it happens to be holding.
             error={
               (item.status === 'failed' || item.parkedReason === 'provider_cap') &&
               item.lastError
