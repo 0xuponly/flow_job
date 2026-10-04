@@ -733,8 +733,8 @@ describe('F2: exactly one sanitization per generation, on every lane', () => {
     // And the renderer's two calls go through the `ai:tailor` channel, so
     // they are covered by the handler rather than being a fourth store path.
     expect(grep('api\\.tailorDocument\\(', 'src').map((l) => l.split(':').slice(0, 2).join(':'))).toEqual([
-      'src/pages/JobDetail.tsx:319',
-      'src/pages/JobDetail.tsx:359'
+      'src/pages/JobDetail.tsx:461',
+      'src/pages/JobDetail.tsx:505'
     ])
     const { readFileSync } = await import('node:fs')
     expect(readFileSync('src/api.ts', 'utf8')).toMatch(

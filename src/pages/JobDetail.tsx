@@ -7,11 +7,12 @@ import { KeywordUnknownList } from '../components/KeywordUnknownList'
 import RuleCheckList from '../components/RuleCheckList'
 import { extractJobKeywords, extractRulesFromFeedback } from '../documentRules'
 import { notify } from '../components/Notifications'
-import type { Application, Document, Job, JobStatus, KeywordCategory, KeywordResult } from '../types'
+import type { Application, Document, Job, JobStatus, KeywordCategory, KeywordResult, NotificationJobContext } from '../types'
 import { STATUS_COLORS, STATUS_LABELS } from '../types'
 import { EMPLOYMENT_TYPES, EMPLOYMENT_TYPE_LABELS, WORK_MODES, formatEmploymentType } from '../employmentType'
 import { enqueueFitRecompute, isJobInFitQueue } from '../fitQueue'
 import { toastErrorSummary, errorText } from '../aiErrorSummary'
+import { jobContext, openNotificationCenter, recordNotification, reportFailure } from '../notifications/record'
 import { formatJobDate } from '../utils'
 
 interface Props {
@@ -35,6 +36,26 @@ const CATEGORY_LABELS: Record<KeywordCategory, string> = {
   soft: 'Soft Skills',
   cert: 'Certifications',
   seniority: 'Seniority Cues'
+}
+
+// The one sentence a content-review failure is reported with. Two call
+// sites used to build it inline (the document sweep and the Review
+// button) and were free to drift; more to the point it is now the toast
+// AND the notification-center `message`, and if those two strings ever
+// differ the center will show the user one error while the toast
+// apologises for another.
+function contentReviewFailed(error: unknown): string {
+  return `Content review failed: ${toastErrorSummary(errorText(error))}`
+}
+
+/**
+ * Which document an occurrence belongs to. The type alone is not enough:
+ * two failures on the same type (the sweep regenerates into a new row and
+ * retries) would otherwise render as two indistinguishable entries in the
+ * expanded group.
+ */
+function docLabel(doc: Document): string {
+  return `${doc.type === 'cv' ? 'CV' : 'Cover letter'} #${doc.id}`
 }
 
 export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJobIds, onNavigateSibling }: Props) {
@@ -119,8 +140,26 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
   // Sidebar refresh button: re-run load() to pick up latest job,
   // application, and documents from the store. Same pattern as
   // JobsPage's app:refresh handler.
+  //
+  // Through a ref, because `load` closes over `job.id` and `currentJob`
+  // and this component is not remounted when the user navigates to a
+  // sibling job — JobsPage swaps `selectedJob` in place. A listener
+  // registered with `[]` therefore captured the FIRST job opened, and a
+  // refresh re-ran the whole verification sweep for a job the user was no
+  // longer looking at. Harmless while the sweep only produced toasts;
+  // now that it writes durable records citing a job, it would attribute
+  // one job's failures to another — which is a fabricated field, the one
+  // thing this app does not do.
+  const loadRef = useRef(load)
+  // Assigned during render rather than in an effect, which is a full
+  // render behind. No current dispatch site lands in that window — the
+  // Sidebar's refresh is its own click, so the next task has already
+  // flushed — but the assignment is idempotent and reads only its own
+  // argument, so StrictMode's double render is harmless and there is no
+  // reason to leave a known-stale read in place.
+  loadRef.current = load
   useEffect(() => {
-    const onRefresh = () => { load() }
+    const onRefresh = () => { void loadRef.current() }
     window.addEventListener('app:refresh', onRefresh)
     return () => window.removeEventListener('app:refresh', onRefresh)
   }, [])
@@ -183,7 +222,12 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
       // Non-fatal: the page still renders without the chip block +
       // gaps panel. Surface as a toast so the user knows the UI is
       // missing one of its affordances rather than failing silently.
-      notify(`Keyword extraction failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+      reportFailure({
+        source: 'ai',
+        message: `Keyword extraction failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        fullMessage: errorText(err),
+        job: jobContext(currentJob),
+      })
     })
     return () => { cancelled = true }
   }, [job.id, currentJob.description])
@@ -217,7 +261,13 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
       // ":" stripped so the toast ends with a sentence terminator.
       // The full text is still in currentJob.fit_last_error if you
       // need to inspect it (e.g. via a future "details" affordance).
-      notify(`Fit score unavailable: ${toastErrorSummary(err)}`, 'error', 12000)
+      reportFailure({
+        source: 'ai',
+        message: `Fit score unavailable: ${toastErrorSummary(err)}`,
+        fullMessage: err,
+        job: jobContext(currentJob),
+        ttl: 12000,
+      })
       fitErrorToasted.current = true
     }
   }, [job.id, job.fit_last_error, job.score])
@@ -252,7 +302,12 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
         notify(`${currentJob.company} blacklisted — future scans will skip them.`, 'info')
       }
     } catch (err) {
-      notify(`Blacklist update failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+      reportFailure({
+        source: 'app',
+        message: `Blacklist update failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        fullMessage: errorText(err),
+        job: jobContext(currentJob),
+      })
     } finally {
       setBlacklistBusy(false)
     }
@@ -268,20 +323,36 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
     setDocuments(docs)
 
     // Step 1: verify any documents still missing a verification score (retry on low score)
-    for (const doc of docs) {
-      if (doc.verification_score == null) {
-        try {
-          const newDoc = await ensureDocVerified(doc)
-          if (newDoc) {
-            docs = docs.map((d) => (d.type === doc.type ? newDoc : d))
-            setDocuments(docs)
-          }
-        } catch (err) {
-          notify(`Content review failed: ${toastErrorSummary(errorText(err))}`, 'error')
+    //
+    // The sweep speaks ONCE. It used to call `notify` per document, from
+    // one tick, on mount and again after every Generate — so one generate
+    // click produced one toast per unreviewed document, and the toast
+    // funnel's byte-equality dedupe could not save it because each
+    // document's error text differs (`12 errors: 11 rate limited, 1 other.`
+    // vs `... 10 rate limited, 2 other.`): each document is a separate
+    // rotation over independent providers, so the bucket counts move. Ten
+    // toasts, ten different sentences, nothing to collapse.
+    //
+    // So the per-document detail goes to the notification center, where it
+    // is grouped, expandable and dismissable, and the toast names the count
+    // and points there. The sweep is still how the user learns a review
+    // failed — that is not what changed.
+    const swept = docs.filter((d) => d.verification_score == null)
+    const failures: { doc: Document; error: unknown }[] = []
+    let queued = 0
+    for (const doc of swept) {
+      try {
+        const outcome = await ensureDocVerified(doc)
+        const verified = outcome.doc
+        if (verified) {
+          docs = docs.map((d) => (d.type === doc.type ? verified : d))
+          setDocuments(docs)
         }
+        if (outcome.queued) queued++
+      } catch (err) {
+        failures.push({ doc, error: err })
       }
     }
-
     // Note: status transitions off document changes are owned by the backend
     // (recomputeJobStatusFromDocs in electron/database.ts). The frontend
     // re-fetches the job below to pick up the new status.
@@ -290,23 +361,94 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
       setCurrentJob(refreshed)
       onUpdate(refreshed)
     }
+
+    // Announced after the re-fetch, and citing what it returned rather than
+    // `currentJob`. This `load` closure was captured when the component
+    // rendered, so on ordinary sibling navigation — JobsPage swaps
+    // `selectedJob` without remounting, and this very effect is the one
+    // reacting to it — `currentJob` still held the PREVIOUS job for the
+    // whole sweep. The record would have cited job 1 while its payload
+    // described job 2's document: a fabricated field, in a row that is
+    // meant to be the durable answer. `refreshed ?? job` because the job
+    // may have been deleted mid-sweep, and the id we swept under is still
+    // the truthful citation.
+    announceSweep(swept.length, failures, queued, jobContext(refreshed ?? job))
   }
 
-  async function ensureDocVerified(doc: Document): Promise<Document | null> {
+  /**
+   * One sweep, one toast. See `load()` for what this replaced.
+   *
+   * Records go through `recordNotification` and NOT `reportFailure`, and
+   * that is the whole mechanism: `reportFailure` toasts as well as
+   * records, so calling it per failure would put N toasts back on screen
+   * and only the toast funnel's byte-equality dedupe would be standing
+   * between the sweep and the original bug. Here the N records are
+   * written first and independently, then a single toast names the count.
+   * Nothing about the record depends on a toast surviving.
+   *
+   * Failures win over queued work, because a failure is the thing the user
+   * has to act on and a queued request is visible in two places already
+   * (the queue tab, and the document's own "Pending review…" state). When
+   * the sweep managed to queue something but nothing failed, it still says
+   * so — with a count, so two documents queued read as two and not as the
+   * two near-identical sentences the old per-document pings produced.
+   */
+  function announceSweep(
+    sweptCount: number,
+    failures: { doc: Document; error: unknown }[],
+    queued: number,
+    job: NotificationJobContext | undefined
+  ): void {
+    if (failures.length > 0) {
+      for (const { doc, error } of failures) {
+        void recordNotification({
+          type: 'error',
+          source: 'ai',
+          message: contentReviewFailed(error),
+          // The raw error, not the summary: this is the per-model rotation
+          // `toastErrorSummary` threw away, and on the manual path there is
+          // no queue row's `lastError` holding it anywhere else.
+          fullMessage: `${docLabel(doc)}\n${errorText(error)}`,
+          job,
+        })
+      }
+      const many = failures.length > 1
+      const message = many
+        ? `Content review failed on ${failures.length} of ${sweptCount} document${sweptCount === 1 ? '' : 's'} — every error is in the notification center.`
+        : contentReviewFailed(failures[0].error)
+      notify({ message, type: 'error', action: { label: 'View', onClick: openNotificationCenter } })
+      return
+    }
+    if (queued > 0) {
+      const noun = queued === 1 ? 'review' : 'reviews'
+      notify(
+        `AI is rate-limited — ${queued} ${noun} added to the queue. Will retry automatically.`,
+        'info'
+      )
+    }
+  }
+
+  async function ensureDocVerified(doc: Document): Promise<{ doc: Document | null; queued: boolean }> {
     const topKeywords = extractJobKeywords(job.description ?? '').slice(0, 10)
+    let queued = false
     const v = await api.verifyDocument(job.id, doc.id, doc.type)
     if ('queued' in v) {
-      notify('AI is rate-limited — verification added to queue. Will retry automatically.', 'info')
-      return null
+      // Reported by the caller, once for the whole sweep, instead of from
+      // here. This function used to `notify` directly, which is how two
+      // documents in one tick produced '…verification added to queue.' AND
+      // '…regeneration added to queue.' — two visible toasts from one mount
+      // with nothing for the dedupe to collapse.
+      queued = true
+      return { doc: null, queued }
     }
     if (v.kind === 'skip') {
       // Don't carry over a stale verification_score into a skip state — clear
       // it on the local doc so the render code falls back to "Pending review…"
       // and doesn't keep showing a misleading 100/100 ✓.
-      return { ...doc, verification_score: null, verification_feedback: v.feedback }
+      return { doc: { ...doc, verification_score: null, verification_feedback: v.feedback }, queued }
     }
     if (v.score >= 70) {
-      return { ...doc, verification_score: v.score, verification_feedback: v.feedback }
+      return { doc: { ...doc, verification_score: v.score, verification_feedback: v.feedback }, queued }
     }
     let prevContent = doc.content
     let prevFeedback = v.feedback
@@ -325,7 +467,8 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
       if ('queued' in r) {
         // AI is rate-limited; bail with the best score we've seen so far.
         // The previous document keeps whatever score was last persisted.
-        notify('AI is rate-limited — regeneration added to queue. Will retry automatically.', 'info')
+        // Counted, not announced: see `announceSweep`.
+        queued = true
         break
       }
       prevContent = r.content
@@ -336,7 +479,7 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
       })
       const v2 = await api.verifyDocument(job.id, bestId, doc.type)
       if ('queued' in v2) {
-        notify('AI is rate-limited — verification added to queue. Will retry automatically.', 'info')
+        queued = true
         break
       }
       if (v2.kind === 'skip') {
@@ -349,7 +492,10 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
       if (v2.passed) break
     }
     const final = await api.listDocuments(job.id).then((ds) => ds.find((d) => d.id === bestId))
-    return final || { ...doc, id: bestId, verification_score: bestScore, verification_feedback: prevFeedback }
+    return {
+      doc: final || { ...doc, id: bestId, verification_score: bestScore, verification_feedback: prevFeedback },
+      queued,
+    }
   }
 
   async function handleTailor(type: 'cv' | 'cover_letter') {
@@ -369,7 +515,17 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
       onUpdate(updated)
       await load()
     } catch (err) {
-      notify(`Generation failed: ${toastErrorSummary(errorText(err))}`, 'error')
+      reportFailure({
+        source: 'ai',
+        message: `Generation failed: ${toastErrorSummary(errorText(err))}`,
+        // The whole rotation, which `toastErrorSummary` deliberately threw
+        // away to keep the toast short. On the manual path there is no
+        // queue row and therefore no `lastError` holding this anywhere
+        // else — summarising it on screen lost it from every surface the
+        // user and support can reach.
+        fullMessage: errorText(err),
+        job: jobContext(currentJob),
+      })
     } finally {
       setTailoring(null)
     }
@@ -417,7 +573,12 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
       onUpdate(updated)
       await load()
     } catch (err) {
-      notify(`Status change failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+      reportFailure({
+        source: 'app',
+        message: `Status change failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        fullMessage: errorText(err),
+        job: jobContext(currentJob),
+      })
     } finally {
       setStatusBusy(false)
     }
@@ -430,10 +591,15 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
   }
 
   async function handleReview(type: 'cv' | 'cover_letter') {
+    // Resolved BEFORE the spinner goes up, not inside the try. A guard
+    // inside the try would return past the `finally` and leave `reviewing`
+    // set for the mount, so both Review buttons would stay disabled — but
+    // it also has to be outside the try for the catch to name the document
+    // that failed, which the record needs.
+    const target = type === 'cv' ? cv : coverLetter
+    if (!target) return
     setReviewing(type)
     try {
-      const target = type === 'cv' ? cv : coverLetter
-      if (!target) return
       const result = await api.verifyDocument(job.id, target.id, type)
       if ('queued' in result) {
         notify('AI is rate-limited — review added to queue. Will retry automatically.', 'info')
@@ -457,7 +623,12 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
         result.passed ? 'success' : 'info'
       )
     } catch (err) {
-      notify(`Content review failed: ${toastErrorSummary(errorText(err))}`, 'error')
+      reportFailure({
+        source: 'ai',
+        message: contentReviewFailed(err),
+        fullMessage: `${docLabel(target)}\n${errorText(err)}`,
+        job: jobContext(currentJob),
+      })
     } finally {
       setReviewing(null)
     }
@@ -510,7 +681,14 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
       setDocContent(updatedContent)
       setViewDoc({ ...viewDoc, content: updatedContent })
     } catch (err) {
-      notify(`Section regeneration failed: ${toastErrorSummary(errorText(err))}`, 'error')
+      reportFailure({
+        source: 'ai',
+        message: `Section regeneration failed: ${toastErrorSummary(errorText(err))}`,
+        fullMessage: viewDoc
+          ? `${docLabel(viewDoc)} — ${selectedSection}\n${errorText(err)}`
+          : `${selectedSection}\n${errorText(err)}`,
+        job: jobContext(currentJob),
+      })
     } finally {
       setRegeneratingSection(null)
     }
@@ -538,7 +716,12 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
       onUpdate(updated)
       setEditing(false)
     } catch (err) {
-      notify(`Save failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+      reportFailure({
+        source: 'app',
+        message: `Save failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        fullMessage: errorText(err),
+        job: jobContext(currentJob),
+      })
     }
   }
 
@@ -791,10 +974,22 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
                           // and only set fit_last_error. The toast surfaces
                           // the reason; the card continues to show the
                           // previously generated explanation.
-                          notify(`Recompute failed: ${toastErrorSummary(result.job.fit_last_error)}`, 'error', 12000)
+                          reportFailure({
+                            source: 'ai',
+                            message: `Recompute failed: ${toastErrorSummary(result.job.fit_last_error)}`,
+                            fullMessage: result.job.fit_last_error,
+                            job: jobContext(result.job),
+                            ttl: 12000,
+                          })
                         }
                       } else {
-                        notify(`Recompute failed: ${toastErrorSummary(result.error)}`, 'error', 12000)
+                        reportFailure({
+                          source: 'ai',
+                          message: `Recompute failed: ${toastErrorSummary(result.error)}`,
+                          fullMessage: result.error,
+                          job: jobContext(currentJob),
+                          ttl: 12000,
+                        })
                       }
                     })
                     if (!accepted) {
@@ -1220,7 +1415,12 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
                   setDocuments(fresh)
                   setViewDoc(null)
                 } catch (err) {
-                  notify(`Failed to delete document: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+                  reportFailure({
+                    source: 'app',
+                    message: `Failed to delete document: ${err instanceof Error ? err.message : 'Unknown error'}`,
+                    fullMessage: errorText(err),
+                    job: jobContext(currentJob),
+                  })
                 }
               }}>Delete</button>
               <button className="btn btn-secondary" onClick={async () => {

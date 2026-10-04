@@ -7,6 +7,8 @@ import { parseLocationPicks } from '../utils'
 import { inheritProviderApiKey } from '../apiModels'
 import Modal from '../components/Modal'
 import { BOARD_TYPES } from '../boardTypes'
+import { errorText } from '../aiErrorSummary'
+import { reportFailure } from '../notifications/record'
 
 // Quick-add buttons for OpenRouter's `:free` tier. Every entry was checked
 // against the live catalog (GET /api/v1/models + /endpoints) for: pricing 0,
@@ -185,7 +187,11 @@ export default function SettingsPage() {
     try {
       await api.updateSettings({ disabled_boards: Array.from(next) })
     } catch (err) {
-      notify(`Failed to save board toggle: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+      reportFailure({
+        source: 'app',
+        message: `Failed to save board toggle: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        fullMessage: `${name}\n${errorText(err)}`,
+      })
       // Revert.
       setDisabled(disabled)
     } finally {
@@ -207,7 +213,11 @@ export default function SettingsPage() {
     try {
       await api.updateSettings({ disabled_boards: Array.from(next) })
     } catch (err) {
-      notify(`Failed to save category toggle: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+      reportFailure({
+        source: 'app',
+        message: `Failed to save category toggle: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        fullMessage: `${boardsInCategory.join(', ')}\n${errorText(err)}`,
+      })
       setDisabled(disabled)
     } finally {
       setBoardsSaving(false)
@@ -253,7 +263,11 @@ export default function SettingsPage() {
       // just wrote.
       setSettings((prev) => (prev ? { ...prev, [key]: updated[key] } : updated))
     } catch (err) {
-      notify(`${errorPrefix}${err instanceof Error ? err.message : 'Unknown error'}`, 'error')
+      reportFailure({
+        source: 'app',
+        message: `${errorPrefix}${err instanceof Error ? err.message : 'Unknown error'}`,
+        fullMessage: `${errorPrefix}\n${errorText(err)}`,
+      })
       // Roll back ONLY the key this function wrote, for the same reason the
       // success path merges only that key: restoring the whole snapshot
       // captured above would discard every unsaved batch edit the user has
@@ -584,7 +598,11 @@ export default function SettingsPage() {
       // Auto-save on drop / arrow click. Catch and roll back on failure
       // so the on-screen order matches the persisted order.
       api.saveApiModels(next).catch((err) => {
-        notify(`Failed to save model order: ${err.message}`, 'error')
+        reportFailure({
+          source: 'app',
+          message: `Failed to save model order: ${err.message}`,
+          fullMessage: `${m.name || `Model ${from + 1}`}\n${errorText(err)}`,
+        })
         setModels(prev)
       })
       return next
@@ -599,7 +617,11 @@ export default function SettingsPage() {
     const next = models.filter((_, idx) => idx !== i)
     setModels(next)
     api.saveApiModels(next).catch((err) => {
-      notify(`Failed to save model changes: ${err.message}`, 'error')
+      reportFailure({
+        source: 'app',
+        message: `Failed to save model changes: ${err.message}`,
+        fullMessage: `${label}\n${errorText(err)}`,
+      })
     })
   }
 

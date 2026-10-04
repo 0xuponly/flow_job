@@ -11,7 +11,7 @@ import { join, relative } from 'node:path'
 // aiQueue.autoQueue.test.ts calls `enqueue(item, { manual: true })` or
 // `enqueue(item)` with the flag written by the TEST, so:
 //
-//   * delete `{ manual: true }` from electron/main.ts:495 and all 24
+//   * delete `{ manual: true }` from electron/main.ts:529 and all 24
 //     shipped tests still pass, while the Verify button stops queueing
 //     with the switches off — the exact failure the feature promises
 //     cannot happen;
@@ -141,14 +141,16 @@ const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]
   // The line numbers moved when the per-provider spend cap added the
   // manual/automated ORIGIN plumbing above these call sites: `MANUAL` and
   // its doc comment at the top of registerIpc, and `opts` at the top of
-  // processItem. No call site was added, removed or reclassified — the
-  // `manual` column below is unchanged, which is the claim this table
-  // exists to make.
+  // processItem. They moved again when the notification center recorded
+  // `uncaughtException` in this file (electron/main.ts), which added a
+  // block ABOVE registerIpc. No call site was added, removed or
+  // reclassified in either pass — the `manual` column below is unchanged,
+  // which is the claim this table exists to make.
   'electron/main.ts': [
-    { line: 506, manual: true, why: 'documents:verify — the Verify button' },
-    { line: 523, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
-    { line: 710, manual: true, why: 'ai:tailor — Tailor / Generate' },
-    { line: 726, manual: true, why: 'tailor:quickApply — Quick Apply' }
+    { line: 540, manual: true, why: 'documents:verify — the Verify button' },
+    { line: 557, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
+    { line: 744, manual: true, why: 'ai:tailor — Tailor / Generate' },
+    { line: 760, manual: true, why: 'tailor:quickApply — Quick Apply' }
   ],
   'electron/aiQueue.ts': [
     { line: 637, manual: false, why: 'processor: generation finished, chain the review' },
@@ -402,7 +404,7 @@ describe('a REAL automatic caller, classified from its own source', () => {
 
 describe('a REAL manual caller, with every switch off', () => {
   it('Quick Apply still queues tailor_job_docs', async () => {
-    // electron/main.ts:709 — the Queue panel / job row's Quick Apply.
+    // electron/main.ts:743 — the Queue panel / job row's Quick Apply.
     // The one manual path that needs no AI mock, because it queues
     // unconditionally rather than as a rate-limit fallback.
     const jobId = addJob()

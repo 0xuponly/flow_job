@@ -4,6 +4,7 @@ import type { Document } from '../types'
 import { STATUS_LABELS } from '../types'
 import { notify } from '../components/Notifications'
 import { toastErrorSummary, errorText } from '../aiErrorSummary'
+import { jobContext, reportFailure } from '../notifications/record'
 
 const SECTION_HEADERS = new Set([
   'professional summary', 'summary', 'profile',
@@ -90,7 +91,17 @@ export default function DocumentsPage() {
       setEditContent(updatedContent)
       setSelected({ ...selected, content: updatedContent })
     } catch (err) {
-      notify(`Section regeneration failed: ${toastErrorSummary(errorText(err))}`, 'error')
+      // A failed regeneration is a fact about a document that is now
+      // worse than it was, and the unsummarised provider text is not held
+      // anywhere else. The job is resolved here rather than guessed: the
+      // document only carries an id.
+      const job = selected?.job_id ? await api.getJob(selected.job_id).catch(() => undefined) : undefined
+      reportFailure({
+        source: 'ai',
+        message: `Section regeneration failed: ${toastErrorSummary(errorText(err))}`,
+        fullMessage: `${selectedSection}\n${errorText(err)}`,
+        job: jobContext(job),
+      })
     } finally {
       setRegeneratingSection(null)
     }

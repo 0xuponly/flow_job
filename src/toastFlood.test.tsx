@@ -43,15 +43,19 @@ import type { Job } from './types'
  */
 
 /**
- * The toast host renders each message in the one element in the renderer
- * with `white-space: pre-line`, which makes this a count of visible
- * toasts rather than a count of emitter calls.
+ * The visible toast messages.
+ *
+ * Read from the per-toast message node rather than the whole toast, which
+ * is what made this a count of visible toasts rather than a count of
+ * emitter calls: the toast also renders a copy button and, since the
+ * notification center landed, an action button, and either of those would
+ * otherwise be measured as part of the message.
  */
 function noop(): void {}
 
 function visibleToasts(): string[] {
-  return Array.from(document.body.querySelectorAll('div[style*="pre-line"]')).map(
-    (el) => (el.textContent ?? '').replace(/[⧉✓]$/, '')
+  return Array.from(document.body.querySelectorAll('[data-testid="toast-message"]')).map(
+    (el) => (el.textContent ?? '')
   )
 }
 
@@ -86,6 +90,12 @@ function installApi(overrides: Record<string, unknown>): void {
   ;(window as unknown as { api: unknown }).api = {
     getOrCreateApplication: vi.fn(async () => ({ id: 1, job_id: 1, cv_document_id: 9, cover_letter_document_id: 10 })),
     listDocuments: vi.fn(async () => []),
+    // The notification center. Every failure path writes a record here,
+    // and `recordNotification` announces the write on a window event the
+    // provider would listen to — there is no provider in this file, which
+    // is the point: recording a failure must not require one.
+    notificationsAdd: vi.fn(async () => ({ id: 1 })),
+    notificationsList: vi.fn(async () => ({ rows: [] })),
     getJob: vi.fn(async () => job),
     updateApplication: vi.fn(async () => ({ id: 1 })),
     updateJob: vi.fn(async () => job),
@@ -184,8 +194,31 @@ describe('one manual generate, one toast', () => {
   })
 })
 
+/**
+ * The sweep's contract now, in one sentence: it raises ONE toast naming
+ * the count, and writes ONE notification-center record per individual
+ * failure. The second half is the load-bearing one — the toast funnel's
+ * byte-equality dedupe can collapse identical sentences, but it cannot
+ * collapse the ten *different* bucket counts the real bug produced, which
+ * is why the records have to be written independently of the toast and
+ * per-document rather than per-sentence.
+ */
+const TWO_DOC_AGGREGATE =
+  'Content review failed on 2 of 2 documents — every error is in the notification center.'
+
+/** Every row the sweep wrote to the notification center, in order. */
+function recordedMessages(): string[] {
+  const api = (window as unknown as { api: { notificationsAdd: { mock: { calls: unknown[][] } } } }).api
+  return api.notificationsAdd.mock.calls.map((c) => (c[0] as { message: string }).message)
+}
+
+function recordedCalls(): { message: string; full_message: string; job?: { job_title: string | null; job_location: string | null } }[] {
+  const api = (window as unknown as { api: { notificationsAdd: { mock: { calls: unknown[][] } } } }).api
+  return api.notificationsAdd.mock.calls.map((c) => c[0] as never)
+}
+
 describe('the document sweep does not turn one failure into a stack of them', () => {
-  it('two unreviewed documents failing identically produce one toast, not two', async () => {
+  it('two unreviewed documents failing identically produce one toast and two records', async () => {
     installApi({
       tailorDocument: vi.fn(async () => ({ queued: true })),
       listDocuments: vi.fn(async () => TWO_UNREVIEWED),
@@ -194,10 +227,14 @@ describe('the document sweep does not turn one failure into a stack of them', ()
     renderDetail()
     await waitFor(() => expect(visibleToasts().length).toBeGreaterThan(0))
 
-    expect(visibleToasts()).toEqual(['Content review failed: review call failed: socket hang up.'])
+    expect(visibleToasts()).toEqual([TWO_DOC_AGGREGATE])
+    expect(recordedMessages()).toEqual([
+      'Content review failed: review call failed: socket hang up.',
+      'Content review failed: review call failed: socket hang up.'
+    ])
   })
 
-  it('re-running the sweep (mount, refresh) does not repeat the failure', async () => {
+  it('re-running the sweep (mount, refresh) does not repeat the toast', async () => {
     installApi({
       tailorDocument: vi.fn(async () => ({ queued: true })),
       listDocuments: vi.fn(async () => TWO_UNREVIEWED),
@@ -218,8 +255,26 @@ describe('the document sweep does not turn one failure into a stack of them', ()
     // The sweep said its piece once. The click's own outcome is a
     // different sentence and is still there.
     expect(visibleToasts()).toEqual([
-      'Content review failed: review call failed: socket hang up.',
+      TWO_DOC_AGGREGATE,
       'AI is rate-limited — generation added to queue. Will retry automatically.'
+    ])
+  })
+
+  it('the sweep records one row per document, each naming its own document', async () => {
+    // The records are the only place the per-document detail survives, so
+    // "one record per document" has to be checkable and the document has
+    // to be identifiable in it.
+    installApi({
+      tailorDocument: vi.fn(async () => ({ queued: true })),
+      listDocuments: vi.fn(async () => TWO_UNREVIEWED),
+      verifyDocument: vi.fn(async () => { throw new Error('review call failed: socket hang up') })
+    })
+    renderDetail()
+    await waitFor(() => expect(recordedCalls()).toHaveLength(2))
+
+    expect(recordedCalls().map((r) => r.full_message)).toEqual([
+      'CV #9\nreview call failed: socket hang up',
+      'Cover letter #10\nreview call failed: socket hang up'
     ])
   })
 
@@ -235,10 +290,110 @@ describe('the document sweep does not turn one failure into a stack of them', ()
     fireEvent.click(generateButton())
     await waitFor(() => expect(visibleToasts()).toHaveLength(2))
 
+    // Two ACTIONS failed — the sweep and the click — so two toasts, not
+    // three. The sweep's own two documents are one action.
     expect(visibleToasts().sort()).toEqual([
-      'Content review failed: review call failed: socket hang up.',
+      'Content review failed on 2 of 2 documents — every error is in the notification center.',
       'Generation failed: All 3 configured AI models failed.'
     ])
+    // ...and three records: two documents from the sweep, one from the
+    // click.
+    expect(recordedCalls()).toHaveLength(3)
+  })
+
+  it('a single unreviewed document still gets the plain one-line toast', async () => {
+    // The aggregate wording exists for the multi-document case. With one
+    // document the specific sentence is more useful than a count of one,
+    // and keeping it byte-identical is what keeps this a summarisation
+    // change rather than a new vocabulary.
+    installApi({
+      tailorDocument: vi.fn(async () => ({ queued: true })),
+      listDocuments: vi.fn(async () => [doc()]),
+      verifyDocument: vi.fn(async () => { throw new Error('review call failed: socket hang up') })
+    })
+    renderDetail()
+    await waitFor(() => expect(visibleToasts().length).toBeGreaterThan(0))
+
+    expect(visibleToasts()).toEqual(['Content review failed: review call failed: socket hang up.'])
+    expect(recordedCalls()).toHaveLength(1)
+  })
+
+  /**
+   * The reviewer's ATTACK 1, case 1, verbatim in shape: six unreviewed
+   * documents whose failure MIXES differ. This is the case that defeated
+   * the text-dedupe fix — six different sentences from one mount, with
+   * nothing for byte-equality to collapse. It is here because "the fix
+   * works" and "the dedupe was hiding a second bug" are different claims
+   * and only this case separates them.
+   */
+  it('six unreviewed documents with six DIFFERENT failure mixes give one toast and six records', async () => {
+    let rotation = 0
+    const sixDocs = Array.from({ length: 6 }, (_, i) =>
+      doc({ id: 20 + i, type: i % 2 === 0 ? 'cv' : 'cover_letter', title: `Doc ${i}` })
+    )
+    installApi({
+      tailorDocument: vi.fn(async () => ({ queued: true })),
+      listDocuments: vi.fn(async () => sixDocs),
+      verifyDocument: vi.fn(async () => {
+        rotation++
+        // The n-th rotation fails a different NUMBER of models for a
+        // non-429 reason, which is what the bucket summary is keyed on and
+        // what varies between two rotations of one pool.
+        const lines = Array.from({ length: 12 }, (_, k) =>
+          `Model ${k}: ${k < rotation ? 'HTTP 503' : 'rate limited (429)'}`
+        )
+        throw new Error(
+          `All 12 configured AI models are rate limited — try again in a minute:\n${lines.join('\n')}`
+        )
+      })
+    })
+
+    renderDetail()
+    await waitFor(() => expect(visibleToasts().length).toBeGreaterThan(0))
+
+    // ONE toast, naming the count. The six different sentences are not on
+    // screen at all any more, which is the entire fix.
+    expect(visibleToasts()).toEqual([
+      'Content review failed on 6 of 6 documents — every error is in the notification center.'
+    ])
+
+    // ...and SIX records, one per document, each keeping its own rotation.
+    // These messages differ, so nothing downstream can collapse them into
+    // a summary and lose the difference between them.
+    expect(recordedCalls().map((r) => r.message)).toEqual([
+      'Content review failed: 12 errors: 11 rate limited, 1 other.',
+      'Content review failed: 12 errors: 10 rate limited, 2 other.',
+      'Content review failed: 12 errors: 9 rate limited, 3 other.',
+      'Content review failed: 12 errors: 8 rate limited, 4 other.',
+      'Content review failed: 12 errors: 7 rate limited, 5 other.',
+      'Content review failed: 12 errors: 6 rate limited, 6 other.'
+    ])
+    for (const record of recordedCalls()) {
+      expect(record.full_message).toContain('All 12 configured AI models are rate limited')
+    }
+  })
+
+  it('the sweep toast can take the user straight to the notification center', async () => {
+    // A toast that names a place it cannot take you to has only moved the
+    // problem. The action button fires a window event; Sidebar owns the
+    // one `open` in the tree and listens for it.
+    installApi({
+      tailorDocument: vi.fn(async () => ({ queued: true })),
+      listDocuments: vi.fn(async () => TWO_UNREVIEWED),
+      verifyDocument: vi.fn(async () => { throw new Error('review call failed: socket hang up') })
+    })
+    renderDetail()
+    await waitFor(() => expect(visibleToasts().length).toBeGreaterThan(0))
+
+    let opened = 0
+    const onOpen = () => { opened++ }
+    window.addEventListener('app:open-notification-center', onOpen)
+    try {
+      fireEvent.click(screen.getByTitle('View'))
+      expect(opened).toBe(1)
+    } finally {
+      window.removeEventListener('app:open-notification-center', onOpen)
+    }
   })
 })
 

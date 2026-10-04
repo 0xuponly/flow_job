@@ -196,7 +196,7 @@ export default function Notifications() {
               position: 'relative'
             }}
           >
-            <div style={{ paddingRight: hasAction ? 56 : 0 }}>{t.message}</div>
+            <div data-testid="toast-message" style={{ paddingRight: hasAction ? 56 : 0 }}>{t.message}</div>
             {t.action && (
               <button
                 onClick={() => handleActionClick(t.id, t.action)}

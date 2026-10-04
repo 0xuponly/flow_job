@@ -719,6 +719,35 @@ export interface DeletedJobRecord {
 export type NotificationType = 'info' | 'success' | 'error' | 'warning'
 export type NotificationSource = 'app' | 'ai' | 'scanner' | 'tailor' | 'scraper'
 
+/**
+ * Which job an occurrence happened on, snapshotted at the moment it was
+ * recorded.
+ *
+ * A snapshot, not a foreign key, and that is the whole point. The job may
+ * be renamed or deleted between the failure and the moment the user opens
+ * the drawer to read it, and a centre that resolves `job_id` at render
+ * time would show nothing for exactly the failures that are oldest. The
+ * cost is that the snapshot goes stale; the benefit is that the record
+ * never does.
+ *
+ * Every field except `job_id` is nullable because every field except
+ * `job_id` may genuinely be unknown — `null` means "we did not have this",
+ * never "we guessed". See `jobContext` in src/notifications/record.ts for
+ * the rule that keeps the distinction true.
+ */
+export interface NotificationJobContext {
+  /**
+   * Null when the app knew which company and role a failure belonged to
+   * but never resolved the row — the follow-up queue holds an
+   * application id, not a job id, and inventing one to fill this column
+   * would put a number in front of the user that resolves to nothing.
+   */
+  job_id: number | null
+  job_title: string | null
+  job_company: string | null
+  job_location: string | null
+}
+
 export interface NotificationRow {
   id: number
   type: NotificationType
@@ -727,4 +756,18 @@ export interface NotificationRow {
   full_message: string
   created_at: number
   dismissed_at: number | null
+  /**
+   * Rows sharing a key are the same kind of thing said again, and the
+   * drawer collapses them into one row with a count. Required rather than
+   * optional: it is written on every insert and backfilled onto every
+   * pre-existing row by the store migration in database.ts, so there is
+   * no state in which a loaded row lacks one — and a required field means
+   * no reader anywhere has to carry a fallback that could disagree with
+   * electron/notificationGroup.ts about what belongs together.
+   *
+   * `job` is optional because not every notification belongs to a job (a
+   * main-process crash, a failed backup).
+   */
+  group_key: string
+  job?: NotificationJobContext
 }

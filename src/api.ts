@@ -13,6 +13,7 @@ import type {
   KeywordResult,
   NotificationRow,
   NotificationSource,
+  NotificationJobContext,
   QueueItemView,
   ScanFilters,
   ScanResult,
@@ -132,15 +133,18 @@ export interface Api {
     requiresPassphrase?: boolean
     fileCount?: number
   } | null>
-  // Notification center — 5 typed wrappers. Return shapes are
+  // Notification center — 6 typed wrappers. Return shapes are
   // re-strict-typed here (not loose) so the renderer can pattern-match
   // on the INTERNAL sentinel at the call site without a cast. The
   // actual implementation in preload.ts is `window.api.X(params)`
   // dispatched via the contextBridge.
-  notificationsAdd: (params: { type: string; source?: NotificationSource; message: string; full_message: string }) =>
+  notificationsAdd: (params: { type: string; source?: NotificationSource; message: string; full_message: string; group_key?: string; job?: NotificationJobContext }) =>
     Promise<{ id: number } | { error: 'INTERNAL' }>
   notificationsList: () => Promise<{ rows: NotificationRow[] }>
   notificationsDismiss: (params: { id: number }) => Promise<{ ok: true } | { error: 'INTERNAL' }>
+  // Bulk, because the center collapses rows into groups and "dismiss this
+  // group" is one user action over N rows — not N actions.
+  notificationsDismissMany: (params: { ids: number[] }) => Promise<{ updated: number } | { error: 'INTERNAL' }>
   notificationsDismissAll: () => Promise<{ updated: number } | { error: 'INTERNAL' }>
   notificationsPurgeOldDismissed: () => Promise<{ deleted: number }>
   onMainError: (cb: (message: string) => void) => () => void

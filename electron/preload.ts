@@ -12,6 +12,7 @@ import type {
   KeywordResult,
   NotificationRow,
   NotificationSource,
+  NotificationJobContext,
   QueueItemView,
   ScanFilters,
   ScanResult,
@@ -120,13 +121,14 @@ export interface Api {
     requiresPassphrase?: boolean
     fileCount?: number
   } | null>
-  // Notification center — 5 channels, all invoke-style. Param shapes
+  // Notification center — 6 channels, all invoke-style. Param shapes
   // mirror the helpers in electron/notifications.ts; the renderer
   // wrapper in src/api.ts re-strict-types the return shape.
-  notificationsAdd: (params: { type: string; source?: NotificationSource; message: string; full_message: string }) =>
+  notificationsAdd: (params: { type: string; source?: NotificationSource; message: string; full_message: string; group_key?: string; job?: NotificationJobContext }) =>
     Promise<{ id: number } | { error: 'INTERNAL' }>
   notificationsList: () => Promise<{ rows: NotificationRow[] }>
   notificationsDismiss: (params: { id: number }) => Promise<{ ok: true } | { error: 'INTERNAL' }>
+  notificationsDismissMany: (params: { ids: number[] }) => Promise<{ updated: number } | { error: 'INTERNAL' }>
   notificationsDismissAll: () => Promise<{ updated: number } | { error: 'INTERNAL' }>
   notificationsPurgeOldDismissed: () => Promise<{ deleted: number }>
   onMainError: (cb: (message: string) => void) => () => void
@@ -239,6 +241,7 @@ const api: Api = {
   notificationsAdd: (params) => ipcRenderer.invoke('notifications:notificationsAdd', params),
   notificationsList: () => ipcRenderer.invoke('notifications:notificationsList'),
   notificationsDismiss: (params) => ipcRenderer.invoke('notifications:notificationsDismiss', params),
+  notificationsDismissMany: (params) => ipcRenderer.invoke('notifications:notificationsDismissMany', params),
   notificationsDismissAll: () => ipcRenderer.invoke('notifications:notificationsDismissAll'),
   notificationsPurgeOldDismissed: () => ipcRenderer.invoke('notifications:notificationsPurgeOldDismissed'),
   onMainError: (cb: (message: string) => void) => {
