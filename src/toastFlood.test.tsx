@@ -375,8 +375,8 @@ describe('the document sweep does not turn one failure into a stack of them', ()
 
   it('the sweep toast can take the user straight to the notification center', async () => {
     // A toast that names a place it cannot take you to has only moved the
-    // problem. The action button fires a window event; Sidebar owns the
-    // one `open` in the tree and listens for it.
+    // problem. The action button fires a window event; Sidebar owns the one
+    // `open` in the tree and listens for it.
     installApi({
       tailorDocument: vi.fn(async () => ({ queued: true })),
       listDocuments: vi.fn(async () => TWO_UNREVIEWED),
@@ -393,6 +393,91 @@ describe('the document sweep does not turn one failure into a stack of them', ()
       expect(opened).toBe(1)
     } finally {
       window.removeEventListener('app:open-notification-center', onOpen)
+    }
+  })
+})
+
+/**
+ * MAJOR 2. The sweep used to collect its failures into an array and write
+ * the records at the very end, after a `getJob` re-fetch that has nothing
+ * to do with producing them. That put a non-essential network call in the
+ * path of every record: the failures were invisible until it returned, and
+ * a rejection in it threw the whole sweep away — silently, with no toast
+ * and no row — taking every failure the user had just caused with it.
+ *
+ * Both halves are measured here rather than asserted in prose. The re-fetch
+ * is made to hang for one test and to reject for the other, which are the
+ * two ways it used to cost the user the records.
+ */
+describe('a sweep failure is recorded where it is known, not after a side-fetch', () => {
+  it('records the failure while the re-fetch is still hanging', async () => {
+    // `getJob` never resolves, so anything downstream of it never happens.
+    // If the record waited on the re-fetch there would be none of them.
+    installApi({
+      tailorDocument: vi.fn(async () => ({ queued: true })),
+      listDocuments: vi.fn(async () => TWO_UNREVIEWED),
+      getJob: vi.fn(() => new Promise(() => undefined)),
+      verifyDocument: vi.fn(async () => { throw new Error('review call failed: socket hang up') })
+    })
+    renderDetail()
+    await waitFor(() => expect(recordedCalls()).toHaveLength(2))
+
+    // Both documents, each naming itself, with no re-fetch anywhere in the
+    // path that produced them.
+    expect(recordedCalls().map((r) => r.full_message)).toEqual([
+      'CV #9\nreview call failed: socket hang up',
+      'Cover letter #10\nreview call failed: socket hang up'
+    ])
+  })
+
+  it('a rejected re-fetch does not take the records with it', async () => {
+    installApi({
+      tailorDocument: vi.fn(async () => ({ queued: true })),
+      listDocuments: vi.fn(async () => TWO_UNREVIEWED),
+      getJob: vi.fn(async () => { throw new Error('ipc channel closed') }),
+      verifyDocument: vi.fn(async () => { throw new Error('review call failed: socket hang up') })
+    })
+    renderDetail()
+    // The sweep writes its two records, then the page reports the failed
+    // re-fetch as a third. No polling on the way there: the two can land in
+    // the same tick, so waiting for "exactly two" would be a race against
+    // the third rather than a check of anything.
+    await waitFor(() => expect(recordedCalls().length).toBeGreaterThanOrEqual(3))
+
+    const sweepRecords = recordedCalls().filter(
+      (r) => r.full_message.startsWith('CV #') || r.full_message.startsWith('Cover letter #')
+    )
+    expect(sweepRecords.map((r) => r.full_message)).toEqual([
+      'CV #9\nreview call failed: socket hang up',
+      'Cover letter #10\nreview call failed: socket hang up'
+    ])
+
+    // ...and the user is told the refresh failed separately, rather than
+    // the failure being swallowed along with it. The sweep's own summary
+    // toast is unchanged.
+    await waitFor(() => expect(visibleToasts()).toContain(
+      'Content review failed on 2 of 2 documents — every error is in the notification center.'
+    ))
+    expect(recordedCalls().some((r) => /could not refresh job status/i.test(r.message))).toBe(true)
+  })
+
+  it('a rejected page load does not escape as an unhandled rejection', async () => {
+    // `load()` is called as `void load()` from the mount effect and from
+    // the `app:refresh` listener, so a throw out of it has no owner at all.
+    let failures = 0
+    const onRejection = () => { failures++ }
+    process.on('unhandledRejection', onRejection)
+    try {
+      installApi({
+        getOrCreateApplication: vi.fn(async () => { throw new Error('ipc channel closed') }),
+        listDocuments: vi.fn(async () => { throw new Error('ipc channel closed') })
+      })
+      renderDetail()
+      await waitFor(() => expect(recordedCalls().length).toBeGreaterThan(0))
+      await new Promise((r) => setTimeout(r, 120))
+      expect(failures).toBe(0)
+    } finally {
+      process.off('unhandledRejection', onRejection)
     }
   })
 })
