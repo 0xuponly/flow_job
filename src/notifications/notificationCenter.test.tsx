@@ -240,6 +240,117 @@ describe('the badge counts things that went wrong, not emissions', () => {
 })
 
 /**
+ * MAJOR 1, reduced to the one property on which the three candidate answers
+ * differ. Not "what number" but "what is that number about".
+ *
+ * The user asked for similar messages "grouped together collapsed with the
+ * ability to be expanded to view each one". That last clause is the
+ * constraint that decides it, and it decides it by ruling out the other two
+ * answers rather than by picking a third:
+ *
+ *   "12"  — twelve distinct failures happened. There is no such fact in the
+ *           store: twelve emissions of one failure is one row, and the other
+ *           eleven payloads were never written. Badging 12 there would tell
+ *           the user twelve documents failed when one did.
+ *
+ *   "12 attempts · 1 issue" — both numbers, distinguished. This is the
+ *           honest-looking answer and it needs an emission count to exist.
+ *           It cannot: the fold is what removed the inflation, and the thing
+ *           it removed is precisely the second payload, so "12 attempts"
+ *           would be a number about the app's verbosity with nothing behind
+ *           it and nothing to expand to.
+ *
+ * So the badge is the number of THINGS that went wrong — which, because one
+ * row is one thing, is also the number of entries expanding the group
+ * reveals. That equality is the whole answer, and it is falsifiable in both
+ * directions: a badge larger than the entries is the MAJOR 1 lie, and a
+ * collapsed count over entries that cannot be shown is the brief's other
+ * sentence — collapsing the number while hiding the occurrences — which the
+ * pager below is held to for the same reason.
+ */
+describe('every number a collapsed group shows is a number expanding it can account for', () => {
+  const SUMMARY = 'Content review failed: 12 errors: 11 rate limited, 1 other.'
+
+  it.each([1, 2, 3, 7, 12, 25, 26, 60])('a group of %i rows', async (n) => {
+    await openDrawer(flood(n))
+    await screen.findAllByTestId('notif-group')
+
+    // The exact number on the collapsed row, read off the screen rather than
+    // off the model. `× N`, or nothing at all for a group of one — a single
+    // thing is not a repetition, and a count of 1 would be the widest thing
+    // on every ordinary row.
+    const badge = screen.queryByTestId('notif-group-count')
+    const claimed = badge === null ? null : Number((badge.textContent ?? '').replace(/\D+/g, ''))
+    expect(claimed, `the badge read ${JSON.stringify(badge?.textContent ?? null)}`).toBe(
+      n > 1 ? n : null
+    )
+
+    expandGroup(SUMMARY)
+    await screen.findByTestId('notif-group-occurrences')
+    let revealed = occurrences().length
+
+    // Expand until nothing more is offered, checking the pager's promise
+    // against what the click actually produced on every page.
+    for (;;) {
+      const more = screen.queryByRole('button', { name: /^Show \d+ more$/ })
+      if (more === null) break
+      const promised = Number((more.textContent ?? '').replace(/\D+/g, ''))
+      expect(promised, 'the pager may only promise rows that exist').toBeGreaterThan(0)
+      expect(revealed + promised, 'the pager promised rows past the end of the group').toBeLessThanOrEqual(n)
+      fireEvent.click(more)
+      const after = occurrences().length
+      expect(after, 'a click revealed a different number than it promised').toBe(revealed + promised)
+      revealed = after
+    }
+
+    // THE PROPERTY. What the collapsed row claimed is what the expanded group
+    // holds, once the pager has nothing left to offer.
+    expect(revealed).toBe(n)
+    if (claimed !== null) expect(claimed).toBe(revealed)
+  })
+
+  it('a byte-identical burst is ONE row, badges nothing, and reveals that one entry', async () => {
+    // The fixture the burst actually produces. Twelve emissions of one failure
+    // is one thing that went wrong, so there is nothing to count and nothing
+    // to expand to — and the footer agrees with both.
+    await openDrawer([{ ...flood(1)[0], full_message: 'CV #1\nrotation' }])
+    await screen.findAllByTestId('notif-group')
+
+    expect(screen.getAllByTestId('notif-group')).toHaveLength(1)
+    expect(screen.queryByTestId('notif-group-count')).not.toBeInTheDocument()
+    expect(screen.getByText('1 notification')).toBeInTheDocument()
+
+    expandGroup(SUMMARY)
+    await screen.findByTestId('notif-group-occurrences')
+    expect(occurrences()).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: /^Show \d+ more$/ })).not.toBeInTheDocument()
+  })
+
+  it('the same burst spread beyond the dedupe window is twelve rows, badges twelve, and reveals all of them', async () => {
+    // The other direction, and the one that would catch a badge reading a
+    // number the group cannot back. Three sweeps five seconds apart are
+    // thirty things that happened, so the badge is honest and the expansion
+    // has to hold every one of them.
+    const twelve = 12
+    const rows: NotificationRow[] = Array.from({ length: twelve }, (_, d) => ({
+      ...flood(1)[0],
+      id: d + 1,
+      full_message: `CV #${d}\nrotation`
+    }))
+    await openDrawer(rows)
+    await screen.findAllByTestId('notif-group')
+
+    expect(screen.getAllByTestId('notif-group')).toHaveLength(1)
+    expect(screen.getByTestId('notif-group-count')).toHaveTextContent(`× ${twelve}`)
+    expect(screen.getByText(`${twelve} notifications in 1 group`)).toBeInTheDocument()
+
+    expandGroup(SUMMARY)
+    await screen.findByTestId('notif-group-occurrences')
+    expect(occurrences()).toHaveLength(twelve)
+  })
+})
+
+/**
  * MINOR 1. The badge and the pager were briefly reading different numbers —
  * the badge a sum of per-row counters, the pager `occurrences.length` — and
  * on a group holding one row that counter read 30, the pager offered "Show 5
