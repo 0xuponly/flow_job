@@ -15,6 +15,52 @@ interface NotificationContextValue {
   list: NotificationRow[]
   isOpen: boolean
   hasUnread: boolean
+  /**
+   * Set when the LAST read of the store failed.
+   *
+   * Not derivable from `list`. An empty list is the answer to "the store
+   * has nothing in it", and a failed read is not an answer at all — before
+   * this existed the two were indistinguishable in the UI, so a store that
+   * could not be read rendered as a center with nothing in it. That is how
+   * a crash record could sit in the file, in plain sight of the user, and
+   * be reported by the drawer as "No notifications."
+   *
+   * `string` rather than `boolean` so the drawer can say which read failed
+   * without the provider inventing a message the user then has to parse.
+   */
+  loadError: string | null
+  /**
+   * How many entries of the stored notification list the main process had
+   * to discard because they were not rows.
+   *
+   * The corrupt-row arm of the same problem `loadError` covers, and it
+   * needs a number rather than a flag because "something" cannot be acted
+   * on and "three entries" can be reasoned about. Zero on every read of a
+   * store that holds nothing but well-formed rows, which is every read in
+   * normal operation — the store migration in electron/database.ts has to
+   * drop them (`loadStore` is the accessor for the whole Store and a
+   * `null` in that array would take jobs and documents down with it), but
+   * dropping them quietly is what let a store containing one string report
+   * itself as empty.
+   */
+  unreadable: number
+  /**
+   * The last read did not give the whole story, so the bell must not read as
+   * "there is nothing here".
+   *
+   * `hasUnread` alone cannot carry this, and folding it in would be its own
+   * lie in the other direction: the dot means "something you have not seen",
+   * and a store that could not be read is not something unseen. So this is a
+   * separate flag and the sidebar renders it differently. Before it existed
+   * the failure was reachable only by opening the centre — the user had to
+   * open the thing that was broken to find out that it was broken, and
+   * nothing outside the drawer said a word.
+   *
+   * True for either arm: the read failed outright (`loadError`), or it
+   * succeeded over a store holding entries that had to be discarded
+   * (`unreadable`).
+   */
+  readFailed: boolean
   open: () => void
   close: () => void
   dismiss: (id: number) => void
@@ -46,13 +92,15 @@ const RECORDED_REFRESH_COALESCE_MS = 50
 export function NotificationsProvider({ children }: { children: React.ReactNode }) {
   const [list, setList] = useState<NotificationRow[]>([])
   const [isOpen, setIsOpen] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [unreadable, setUnreadable] = useState(0)
 
   /**
  * Re-read the store into `list`.
  *
  * This is the list the badge counts and the drawer renders, which makes
  * it a cache rather than a source of truth — so it never throws and never
- * reports failure:
+ * reports failure by rejecting:
  *
  *   - It VALIDATES the envelope. This codebase returns `{ error:
  *     'INTERNAL' }` from handlers that can fail, and destructuring
@@ -62,18 +110,47 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
  *   - It swallows a rejection. `ipcRenderer.invoke` rejects when the
  *     channel itself fails, and the four callers — mount, the coalesced
  *     recorded-event timer, the drawer on open, `persistentNotify` — all
- *     float the promise. A failed read of a cache is not something the
- *     user needs a toast about; the next refresh gets it. Toasting it
- *     would also make the notification center one of the things that
- *     notifies you about itself.
+ *     float the promise.
+ *
+ * A failed read now RECORDS the failure instead of only swallowing it.
+ * That is the change, and it is the load-error half of "a record list that
+ * fails to load must not render as silently empty": the previous
+ * arrangement returned quietly, which left `list` at whatever it was —
+ * and at mount that is `[]` — so the drawer rendered its empty state and
+ * the user was told there was nothing to see. Records that exist, including
+ * a crash recorded by the main process while no renderer was listening,
+ * were in the file and absent from the screen.
+ *
+ * So the cache is never replaced by the failure: `list` keeps whatever it
+ * last successfully read, and `loadError` says the drawer is looking at a
+ * possibly-stale copy. An error that blanked the list would be a second
+ * lie, this time on top of rows the user had already read.
+ *
+ * `unreadable` is the other half and rides along on the same envelope. It
+ * is deliberately NOT folded into `loadError`: the read succeeded, and
+ * saying it failed would be its own kind of wrong. The drawer needs to
+ * distinguish "I could not read the store" from "I read the store and some
+ * of what is in it is not a record", because only the second one still has
+ * a usable list to show.
  */
 const refresh = useCallback(async () => {
   try {
     const result = await api.notificationsList()
-    if (!result || !Array.isArray(result.rows)) return
+    if (!result || !('rows' in result) || !Array.isArray(result.rows)) {
+      setLoadError('The notification center could not be read.')
+      return
+    }
     setList(result.rows)
+    // Coerced rather than trusted. A main-process build older than the
+    // field omits it, and `NaN > 0` is false so a `?? 0` would not help
+    // anyway — the only failure mode worth worrying about is a count that
+    // is not a non-negative integer, and the drawer must never render one.
+    const dropped = Number(result.unreadable)
+    setUnreadable(Number.isFinite(dropped) && dropped > 0 ? Math.floor(dropped) : 0)
+    setLoadError(null)
   } catch {
-    // Leave the cache as it is.
+    // Leave the cache as it is, and say so. See the doc comment.
+    setLoadError('The notification center could not be reached.')
   }
 }, [])
 
@@ -108,6 +185,41 @@ const refresh = useCallback(async () => {
     window.addEventListener(NOTIFICATION_RECORDED_EVENT, onRecorded)
     return () => {
       window.removeEventListener(NOTIFICATION_RECORDED_EVENT, onRecorded)
+      if (refreshTimer.current !== null) {
+        clearTimeout(refreshTimer.current)
+        refreshTimer.current = null
+      }
+    }
+  }, [refresh])
+
+  // The other direction: a record written by the MAIN process.
+  //
+  // There is one of those, and it is the one that matters most. An
+  // `uncaughtException` is handled in `electron/main.ts`, which writes the
+  // crash straight to the store — there is no renderer there to fire
+  // `NOTIFICATION_RECORDED_EVENT` from, which is exactly why the write is
+  // in the main process rather than in `useMainErrorToasts`. So without
+  // this subscription the crash sits in the file, the sidebar badge stays
+  // dark, and the only way to find out it happened is to open the center
+  // and look. A record the user has to go looking for is not a
+  // notification.
+  //
+  // Every live window is sent the ping rather than the focused one (see
+  // `notifyStoreChanged` in electron/main.ts), because unlike the crash
+  // toast there is no question of who can act on it: the badge is a dot in
+  // each window's own sidebar, and a window nobody is looking at costs
+  // nothing. The same coalescing timer serves both events, so a burst from
+  // either side is still one read.
+  useEffect(() => {
+    const unsubscribe = api.onNotificationsChanged(() => {
+      if (refreshTimer.current !== null) return
+      refreshTimer.current = setTimeout(() => {
+        refreshTimer.current = null
+        void refresh()
+      }, RECORDED_REFRESH_COALESCE_MS)
+    })
+    return () => {
+      unsubscribe()
       if (refreshTimer.current !== null) {
         clearTimeout(refreshTimer.current)
         refreshTimer.current = null
@@ -190,6 +302,9 @@ const refresh = useCallback(async () => {
     list,
     isOpen,
     hasUnread: list.length > 0,
+    loadError,
+    unreadable,
+    readFailed: loadError !== null || unreadable > 0,
     open,
     close,
     dismiss,
@@ -197,7 +312,7 @@ const refresh = useCallback(async () => {
     dismissAll,
     refresh,
     persistentNotify,
-  }), [list, isOpen, open, close, dismiss, dismissGroup, dismissAll, refresh, persistentNotify])
+  }), [list, isOpen, loadError, unreadable, open, close, dismiss, dismissGroup, dismissAll, refresh, persistentNotify])
 
   return <NotificationContext.Provider value={value}>{children}</NotificationContext.Provider>
 }

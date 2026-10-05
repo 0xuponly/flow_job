@@ -140,7 +140,12 @@ function installApi(): void {
     notificationsPurgeOldDismissed: () => invoke('notifications:notificationsPurgeOldDismissed'),
     notificationsDismiss: (params: unknown) => invoke('notifications:notificationsDismiss', params),
     notificationsDismissAll: () => invoke('notifications:notificationsDismissAll'),
-    notificationsAdd: (params: unknown) => invoke('notifications:notificationsAdd', params)
+    notificationsAdd: (params: unknown) => invoke('notifications:notificationsAdd', params),
+    // No main-process write can reach this file, so there is nothing to
+    // announce; the provider still subscribes on mount, and the bridge
+    // proxy in src/api.ts throws on a missing method rather than returning
+    // undefined.
+    onNotificationsChanged: () => () => undefined
   }
   // @ts-expect-error - test mock: attach `api` to the existing jsdom window
   globalThis.window.api = bridge

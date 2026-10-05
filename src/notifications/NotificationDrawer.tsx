@@ -22,19 +22,29 @@ function formatTime(ts: number): string {
  * rebuilds the very flood the grouping just prevented, which is a worse
  * surprise because the user opened it deliberately. Same shape as the
  * queue panel's window (`QueuePanel.tsx`), same reason.
+ *
+ * Paged by ROW, because a row is what the window reveals. `shown` is a row
+ * count and so is `occurrences.length`; deriving the button from anything
+ * else is how it came to promise five more entries and reveal none — a
+ * group holding one row whose counter read 30 satisfied `count > shown`
+ * while there was no second row to show.
  */
 const OCCURRENCE_PAGE = 25
 
 /**
  * Counts both things, because they answer different questions and the
- * user needs both: how many distinct things went wrong, and how many
- * times. A center reading "1 notification" when twelve documents failed
- * would be technically true and practically a lie.
+ * user needs both: how many distinct things went wrong, and how many lines
+ * they collapse onto. A centre reading "1 notification" when twelve
+ * documents failed would be technically true and practically a lie.
+ *
+ * Both numbers are ROW counts, for the reason in `NotificationGroup`. There
+ * is no emission count anywhere in this component, because there is no
+ * emission count anywhere in the product.
  */
 function notificationsFooter(rowCount: number, groupCount: number): string {
   if (rowCount === 0) return '0 notifications'
   const total = `${rowCount} notification${rowCount === 1 ? '' : 's'}`
-  if (groupCount === rowCount) return total
+  if (groupCount >= rowCount) return total
   return `${total} in ${groupCount} group${groupCount === 1 ? '' : 's'}`
 }
 
@@ -58,6 +68,11 @@ const dismissButtonStyle: React.CSSProperties = {
  */
 function Occurrence({ row, onDismiss }: { row: NotificationRow; onDismiss: (id: number) => void }) {
   const job = row.job
+  // One entry, one thing that went wrong, at one time, with one payload.
+  // Nothing here repeats itself: a repeat of the same thing did not become
+  // a second row, and it does not get an entry that claims it did — the
+  // store decided it was the same thing inside a two-second window, so
+  // this is one occurrence and the timestamp is the only time it has.
   return (
     <li
       className="notif-occurrence"
@@ -111,6 +126,12 @@ interface GroupProps {
 function GroupRow({ group, onDismiss, onDismissGroup }: GroupProps) {
   const [expanded, setExpanded] = useState(false)
   const [shown, setShown] = useState(OCCURRENCE_PAGE)
+  // One number for the badge AND for the pager, because they are the same
+  // number: rows. They were briefly different — the badge summed a
+  // per-row counter while `shown` counted rows — which made the pager offer
+  // "Show 5 more" on a group holding a single row and reveal nothing on
+  // click. A badge and a pager that disagree about what they are counting
+  // cannot both be right, so they read the same field.
   const count = group.occurrences.length
   const countLabel = groupCountLabel(count)
   const visible = expanded ? group.occurrences.slice(0, shown) : []
@@ -168,6 +189,12 @@ function GroupRow({ group, onDismiss, onDismissGroup }: GroupProps) {
               <Occurrence key={row.id} row={row} onDismiss={onDismiss} />
             ))}
           </ul>
+          {/* `count > shown` and the number in the label are both row
+              arithmetic, and `shown` only ever grows by OCCURRENCE_PAGE, so
+              the label cannot promise more rows than exist. The label is
+              `count - shown` rather than a bare page size because that is
+              the honest answer to "how much is left" — and when it is wrong
+              the button is dead, so the two are read from one number. */}
           {count > shown && (
             <button
               type="button"
@@ -197,7 +224,7 @@ type Panel = 'notifications' | 'queue'
 const QUEUE_POLL_MS = 10000
 
 export default function NotificationDrawer() {
-  const { list, isOpen, close, dismiss, dismissGroup, dismissAll, refresh } = useNotifications()
+  const { list, isOpen, close, dismiss, dismissGroup, dismissAll, refresh, loadError, unreadable } = useNotifications()
   const [mounted, setMounted] = useState(false)
   const [panel, setPanel] = useState<Panel>('notifications')
   const [queue, setQueue] = useState<QueueItemView[]>([])
@@ -317,6 +344,47 @@ export default function NotificationDrawer() {
 
   const groups = groupNotifications(list)
 
+  // The list, or nothing at all when there is nothing to be honest about.
+  //
+  // Two different ways the list can be incomplete, and both suppress the
+  // empty state rather than sitting beside it, because "No notifications."
+  // over an incomplete list is indistinguishable from the truth and is a
+  // lie exactly when the user most needs to be told:
+  //
+  //   `loadError` — the read itself failed (a store that cannot be
+  //     decrypted, or an IPC channel that is gone).
+  //
+  //   `unreadable` — the read worked, but the store file holds entries the
+  //     migration had to discard because they were not rows. A store whose
+  //     only entry is the string `'not-an-object'` used to land here
+  //     indistinguishable from a centre that had genuinely never been used.
+  //
+  // Rows the last successful read DID produce stay on screen under the
+  // banner. Blanking them would replace one lie with another, this time on
+  // top of rows the user had already read, so the banner says they may be
+  // stale instead.
+  let body: React.ReactNode = null
+  if (list.length > 0) {
+    body = (
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        {groups.map((group) => (
+          <GroupRow
+            key={group.key}
+            group={group}
+            onDismiss={dismiss}
+            onDismissGroup={dismissGroup}
+          />
+        ))}
+      </ul>
+    )
+  } else if (!loadError && unreadable === 0) {
+    body = (
+      <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 32, fontSize: 14 }}>
+        No notifications.
+      </div>
+    )
+  }
+
   return createPortal(
     <>
       <div
@@ -416,22 +484,69 @@ export default function NotificationDrawer() {
         </header>
         <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
           {panel === 'notifications' ? (
-            list.length === 0 ? (
-              <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 32, fontSize: 14 }}>
-                No notifications.
-              </div>
-            ) : (
-              <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-                {groups.map((group) => (
-                  <GroupRow
-                    key={group.key}
-                    group={group}
-                    onDismiss={dismiss}
-                    onDismissGroup={dismissGroup}
-                  />
-                ))}
-              </ul>
-            )
+            <>
+              {loadError && (
+                <div
+                  data-testid="notif-load-error"
+                  role="alert"
+                  style={{
+                    border: '1px solid var(--danger)',
+                    borderRadius: 6,
+                    padding: 12,
+                    marginBottom: 12,
+                    fontSize: 13,
+                    color: 'var(--text)',
+                  }}
+                >
+                  <div>{loadError}</div>
+                  <div style={{ color: 'var(--text-muted)', marginTop: 4 }}>
+                    {list.length > 0
+                      ? 'What is shown below is the last list that could be read.'
+                      : 'Nothing could be shown.'}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { void refresh() }}
+                    style={{
+                      marginTop: 8,
+                      background: 'transparent',
+                      border: '1px solid var(--border)',
+                      borderRadius: 6,
+                      color: 'var(--text)',
+                      padding: '4px 10px',
+                      cursor: 'pointer',
+                      fontSize: 12,
+                    }}
+                  >
+                    Try again
+                  </button>
+                </div>
+              )}
+              {unreadable > 0 && (
+                <div
+                  data-testid="notif-unreadable"
+                  role="alert"
+                  style={{
+                    border: '1px solid var(--danger)',
+                    borderRadius: 6,
+                    padding: 12,
+                    marginBottom: 12,
+                    fontSize: 13,
+                    color: 'var(--text)',
+                  }}
+                >
+                  <div>
+                    {`${unreadable} ${unreadable === 1 ? 'entry' : 'entries'} in the notification store could not be read.`}
+                  </div>
+                  <div style={{ color: 'var(--text-muted)', marginTop: 4 }}>
+                    {list.length > 0
+                      ? 'What is shown below is everything else the store holds.'
+                      : 'Nothing could be shown.'}
+                  </div>
+                </div>
+              )}
+              {body}
+            </>
           ) : (
             <QueuePanel
               items={queue}

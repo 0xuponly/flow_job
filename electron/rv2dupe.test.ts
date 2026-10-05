@@ -1230,10 +1230,10 @@ describe('5. the five previously-fixed defects are still fixed', () => {
     expect(rows.filter((r) => r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
       'electron/aiQueue.ts:825',
       'electron/aiQueue.ts:827',
-      'electron/main.ts:540',
-      'electron/main.ts:557',
-      'electron/main.ts:744',
-      'electron/main.ts:760'
+      'electron/main.ts:577',
+      'electron/main.ts:594',
+      'electron/main.ts:781',
+      'electron/main.ts:797'
     ])
     expect(rows.filter((r) => !r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
       'electron/aiQueue.ts:644',

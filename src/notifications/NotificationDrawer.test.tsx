@@ -13,6 +13,7 @@ const mockApi = {
   notificationsDismissMany: vi.fn(),
   notificationsDismissAll: vi.fn(),
   notificationsPurgeOldDismissed: vi.fn(),
+  onNotificationsChanged: vi.fn(() => () => undefined),
   listAIQueue: vi.fn(),
   clearAIQueue: vi.fn(),
   retryAIQueueItem: vi.fn(),

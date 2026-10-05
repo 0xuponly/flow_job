@@ -7,7 +7,7 @@ import { KeywordUnknownList } from '../components/KeywordUnknownList'
 import RuleCheckList from '../components/RuleCheckList'
 import { extractJobKeywords, extractRulesFromFeedback } from '../documentRules'
 import { notify } from '../components/Notifications'
-import type { Application, Document, Job, JobStatus, KeywordCategory, KeywordResult, NotificationJobContext } from '../types'
+import type { Application, Document, Job, JobStatus, KeywordCategory, KeywordResult } from '../types'
 import { STATUS_COLORS, STATUS_LABELS } from '../types'
 import { EMPLOYMENT_TYPES, EMPLOYMENT_TYPE_LABELS, WORK_MODES, formatEmploymentType } from '../employmentType'
 import { enqueueFitRecompute, isJobInFitQueue } from '../fitQueue'
@@ -314,6 +314,31 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
   }
 
   async function load() {
+    // Never rejects. Every caller floats this promise — the mount effect
+    // ignores its return value and `app:refresh` does `void load()` — so
+    // a throw out of here was an unhandled rejection with no owner, and
+    // the first thing it could throw on was the fetch that picks up the
+    // new job status AFTER the sweep has already done its work. That is
+    // the defect this whole function is being restructured around: the
+    // expensive part (talking to the model pool) ran first and its
+    // failures were held in a local array until an unrelated network call
+    // had returned, so a rejection there threw away every one of them.
+    try {
+      await runLoad()
+    } catch (err) {
+      // Only reachable from the two fetches that produce the page itself.
+      // The sweep's own failures are recorded inside the loop, so by the
+      // time anything reaches here they are already durable.
+      reportFailure({
+        source: 'app',
+        message: `Could not load job: ${errorText(err)}`,
+        fullMessage: errorText(err),
+        job: jobContext(job),
+      })
+    }
+  }
+
+  async function runLoad() {
     let [app, docs] = await Promise.all([
       api.getOrCreateApplication(job.id),
       api.listDocuments(job.id)
@@ -338,7 +363,21 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
     // and points there. The sweep is still how the user learns a review
     // failed — that is not what changed.
     const swept = docs.filter((d) => d.verification_score == null)
-    const failures: { doc: Document; error: unknown }[] = []
+    // One citation for the whole sweep, taken from `job` — the prop this
+    // `load` closure was created for, which is the job whose documents are
+    // being swept. Derived once here rather than per failure so it cannot
+    // drift mid-loop, and derived from `job` rather than `currentJob`
+    // because `setCurrentJob` runs in a separate effect and does not land
+    // until a re-render, so `currentJob` still holds the PREVIOUS job for
+    // the whole sweep on sibling navigation. A record citing the wrong job
+    // is a fabricated field in the one row meant to be the durable answer.
+    const citation = jobContext(job)
+    let failures = 0
+    // The first failure's error, kept so the single-document case can
+    // still say what went wrong rather than a count of one. Only the
+    // first is ever read: the aggregate wording covers the rest, and
+    // holding all of them would be the array this function just got rid of.
+    let firstFailure: unknown = null
     let queued = 0
     for (const doc of swept) {
       try {
@@ -350,41 +389,70 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
         }
         if (outcome.queued) queued++
       } catch (err) {
-        failures.push({ doc, error: err })
+        // Recorded HERE, where the failure is known, and not at the end of
+        // the sweep. Holding it in `failures` until after the re-fetch
+        // below meant the record depended on that call returning: if it
+        // rejected, every failure the sweep had just discovered was
+        // discarded along with the whole sweep, silently, and the user was
+        // told nothing at all. A re-fetch is not part of producing a
+        // failure, so it must not be in the path of recording one.
+        //
+        // Through `recordNotification` and NOT `reportFailure`: this is
+        // the per-document detail, and `reportFailure` toasts as well as
+        // records, so calling it per failure would put N toasts back on
+        // screen — the exact flood this sweep was restructured to remove.
+        // The one toast that does happen is below, naming the count.
+        void recordNotification({
+          type: 'error',
+          source: 'ai',
+          message: contentReviewFailed(err),
+          // The raw error, not the summary: this is the per-model rotation
+          // `toastErrorSummary` threw away, and on the manual path there is
+          // no queue row's `lastError` holding it anywhere else.
+          fullMessage: `${docLabel(doc)}\n${errorText(err)}`,
+          job: citation,
+        })
+        failures++
+        if (failures === 1) firstFailure = err
       }
     }
     // Note: status transitions off document changes are owned by the backend
     // (recomputeJobStatusFromDocs in electron/database.ts). The frontend
     // re-fetches the job below to pick up the new status.
-    const refreshed = await api.getJob(job.id)
-    if (refreshed) {
-      setCurrentJob(refreshed)
-      onUpdate(refreshed)
+    //
+    // Which is all this call is for, and which is why it is allowed to
+    // fail on its own terms: it picks up a status the BACKEND already
+    // transitioned. Every failure above is in the store by now, and none of
+    // them is waiting on this. A rejected re-fetch must not become a
+    // silent failure of its own either — it is a real thing that went
+    // wrong and the user is owed to hear it — so it is caught here and
+    // reported rather than thrown, which is what used to swallow the sweep.
+    try {
+      const refreshed = await api.getJob(job.id)
+      if (refreshed) {
+        setCurrentJob(refreshed)
+        onUpdate(refreshed)
+      }
+    } catch (err) {
+      reportFailure({
+        source: 'app',
+        message: `Could not refresh job status: ${errorText(err)}`,
+        fullMessage: errorText(err),
+        job: citation,
+      })
     }
 
-    // Announced after the re-fetch, and citing what it returned rather than
-    // `currentJob`. This `load` closure was captured when the component
-    // rendered, so on ordinary sibling navigation — JobsPage swaps
-    // `selectedJob` without remounting, and this very effect is the one
-    // reacting to it — `currentJob` still held the PREVIOUS job for the
-    // whole sweep. The record would have cited job 1 while its payload
-    // described job 2's document: a fabricated field, in a row that is
-    // meant to be the durable answer. `refreshed ?? job` because the job
-    // may have been deleted mid-sweep, and the id we swept under is still
-    // the truthful citation.
-    announceSweep(swept.length, failures, queued, jobContext(refreshed ?? job))
+    announceSweep(swept.length, failures, firstFailure, queued)
   }
 
   /**
-   * One sweep, one toast. See `load()` for what this replaced.
+   * One sweep, one toast. See `runLoad()` for what this replaced.
    *
-   * Records go through `recordNotification` and NOT `reportFailure`, and
-   * that is the whole mechanism: `reportFailure` toasts as well as
-   * records, so calling it per failure would put N toasts back on screen
-   * and only the toast funnel's byte-equality dedupe would be standing
-   * between the sweep and the original bug. Here the N records are
-   * written first and independently, then a single toast names the count.
-   * Nothing about the record depends on a toast surviving.
+   * Records are written in the sweep loop, at the point each failure is
+   * known, so this function only speaks. That split is the mechanism and
+   * not an organisational preference: the record must not be downstream of
+   * anything that can fail, and a toast is downstream of the whole sweep by
+   * definition because it reports how the sweep went.
    *
    * Failures win over queued work, because a failure is the thing the user
    * has to act on and a queued request is visible in two places already
@@ -395,27 +463,15 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
    */
   function announceSweep(
     sweptCount: number,
-    failures: { doc: Document; error: unknown }[],
-    queued: number,
-    job: NotificationJobContext | undefined
+    failures: number,
+    firstFailure: unknown,
+    queued: number
   ): void {
-    if (failures.length > 0) {
-      for (const { doc, error } of failures) {
-        void recordNotification({
-          type: 'error',
-          source: 'ai',
-          message: contentReviewFailed(error),
-          // The raw error, not the summary: this is the per-model rotation
-          // `toastErrorSummary` threw away, and on the manual path there is
-          // no queue row's `lastError` holding it anywhere else.
-          fullMessage: `${docLabel(doc)}\n${errorText(error)}`,
-          job,
-        })
-      }
-      const many = failures.length > 1
+    if (failures > 0) {
+      const many = failures > 1
       const message = many
-        ? `Content review failed on ${failures.length} of ${sweptCount} document${sweptCount === 1 ? '' : 's'} — every error is in the notification center.`
-        : contentReviewFailed(failures[0].error)
+        ? `Content review failed on ${failures} of ${sweptCount} document${sweptCount === 1 ? '' : 's'} — every error is in the notification center.`
+        : contentReviewFailed(firstFailure)
       notify({ message, type: 'error', action: { label: 'View', onClick: openNotificationCenter } })
       return
     }

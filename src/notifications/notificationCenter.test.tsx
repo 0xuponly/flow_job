@@ -38,6 +38,7 @@ const mockApi = {
   notificationsDismissMany: vi.fn(),
   notificationsDismissAll: vi.fn(),
   notificationsPurgeOldDismissed: vi.fn(),
+  onNotificationsChanged: vi.fn((_cb: () => void) => () => undefined),
   listAIQueue: vi.fn(),
 }
 
@@ -55,7 +56,7 @@ beforeEach(() => {
 
 const JOB = { job_id: 7, job_title: 'Staff Engineer', job_company: 'Acme', job_location: 'Berlin, DE' }
 
-/** n occurrences of one kind of failure, one per minute apart. */
+/** n distinct failures of one kind, one per minute apart. */
 function flood(count: number, over: Partial<NotificationRow> = {}): NotificationRow[] {
   const message = 'Content review failed: 12 errors: 11 rate limited, 1 other.'
   return Array.from({ length: count }, (_, i) => ({
@@ -159,6 +160,232 @@ describe('R2 — similar messages collapse into one row with a count', () => {
     await screen.findAllByTestId('notif-group')
 
     expect(screen.getByText('12 notifications in 1 group')).toBeInTheDocument()
+  })
+})
+
+/**
+ * MAJOR 1, at the surface the user actually reads.
+ *
+ * The model, in one sentence: **the centre holds one row per thing that went
+ * wrong, and the `× N` badge is the number of things.** A repeat of a thing
+ * is not another thing, so it does not become a row and it does not become
+ * another unit in the count either.
+ *
+ * The fixture that matters is the BYTE-IDENTICAL one. Two notifications
+ * whose summaries differ only in their digit buckets are two different
+ * sentences and correctly collapse into one group — that is what grouping
+ * is for, and it is unchanged. What must not happen is the badge counting
+ * the app's emissions: the earlier version of this change folded repeats
+ * into a per-row counter and summed it, which fixed the storage and left
+ * the number on screen reading exactly what it read before, `× 30` for ten
+ * documents.
+ */
+describe('the badge counts things that went wrong, not emissions', () => {
+  it('TWELVE EMISSIONS OF ONE FAILURE ARE ONE THING, SO THE BADGE SHOWS NO COUNT', async () => {
+    // Byte-identical payload: the shape a StrictMode double-mount really
+    // produces, because the sweep re-runs over the same documents with the
+    // same provider error. Before the fix this rendered `× 12`.
+    await openDrawer([{ ...flood(1)[0], occurrences: 12 } as NotificationRow])
+
+    await screen.findAllByTestId('notif-group')
+    expect(screen.getAllByTestId('notif-group')).toHaveLength(1)
+    // Twelve emissions were one failure, so there is nothing to count. A
+    // `× 12` here would be the app's own verbosity reported as the user's
+    // problem.
+    expect(screen.queryByTestId('notif-group-count')).not.toBeInTheDocument()
+    expect(screen.getByText('1 notification')).toBeInTheDocument()
+
+    expandGroup('Content review failed: 12 errors: 11 rate limited, 1 other.')
+    await screen.findByTestId('notif-group-occurrences')
+    // One entry, and it claims nothing about repetitions.
+    expect(occurrences()).toHaveLength(1)
+    expect(citationOf(occurrences()[0])).not.toContain('occurrences')
+  })
+
+  it('TEN DOCUMENTS THAT EACH FAILED IS TEN THINGS, SO THE BADGE SAYS TEN', async () => {
+    // The reported scenario end to end: ten documents, three sweeps each,
+    // byte-identical per document. Rows 30 -> 10 is the storage fix; the
+    // number on screen has to follow it to 10 rather than staying at 30.
+    const rows: NotificationRow[] = Array.from({ length: 10 }, (_, d) => ({
+      ...flood(1)[0],
+      id: d + 1,
+      full_message: `CV #${d}\nrotation`
+    }))
+    await openDrawer(rows)
+
+    await screen.findAllByTestId('notif-group')
+    expect(screen.getAllByTestId('notif-group')).toHaveLength(1)
+    expect(screen.getByTestId('notif-group-count')).toHaveTextContent('× 10')
+    expect(screen.getByText('10 notifications in 1 group')).toBeInTheDocument()
+
+    // ...and the payload of each of the ten is still there, which is what
+    // the fold was never allowed to cost. A group renders newest first, so
+    // the entries are read back by id rather than by position.
+    expandGroup('Content review failed: 12 errors: 11 rate limited, 1 other.')
+    await screen.findByTestId('notif-group-occurrences')
+    const rendered = occurrences().map((el) => el.textContent ?? '').join('\n')
+    expect(occurrences()).toHaveLength(10)
+    for (let d = 0; d < 10; d++) {
+      expect(rendered).toContain(`CV #${d}\nrotation`)
+    }
+  })
+
+  it('a row carries no counter at all, so there is nothing to inflate', async () => {
+    // The field is gone from the contract rather than merely unused: a
+    // per-row emission count is exactly the thing that made the badge
+    // report a multiple of the truth, and leaving it in the type would
+    // invite the next reader to sum it.
+    expect('occurrences' in flood(1)[0]).toBe(false)
+  })
+})
+
+/**
+ * MAJOR 1, reduced to the one property on which the three candidate answers
+ * differ. Not "what number" but "what is that number about".
+ *
+ * The user asked for similar messages "grouped together collapsed with the
+ * ability to be expanded to view each one". That last clause is the
+ * constraint that decides it, and it decides it by ruling out the other two
+ * answers rather than by picking a third:
+ *
+ *   "12"  — twelve distinct failures happened. There is no such fact in the
+ *           store: twelve emissions of one failure is one row, and the other
+ *           eleven payloads were never written. Badging 12 there would tell
+ *           the user twelve documents failed when one did.
+ *
+ *   "12 attempts · 1 issue" — both numbers, distinguished. This is the
+ *           honest-looking answer and it needs an emission count to exist.
+ *           It cannot: the fold is what removed the inflation, and the thing
+ *           it removed is precisely the second payload, so "12 attempts"
+ *           would be a number about the app's verbosity with nothing behind
+ *           it and nothing to expand to.
+ *
+ * So the badge is the number of THINGS that went wrong — which, because one
+ * row is one thing, is also the number of entries expanding the group
+ * reveals. That equality is the whole answer, and it is falsifiable in both
+ * directions: a badge larger than the entries is the MAJOR 1 lie, and a
+ * collapsed count over entries that cannot be shown is the brief's other
+ * sentence — collapsing the number while hiding the occurrences — which the
+ * pager below is held to for the same reason.
+ */
+describe('every number a collapsed group shows is a number expanding it can account for', () => {
+  const SUMMARY = 'Content review failed: 12 errors: 11 rate limited, 1 other.'
+
+  it.each([1, 2, 3, 7, 12, 25, 26, 60])('a group of %i rows', async (n) => {
+    await openDrawer(flood(n))
+    await screen.findAllByTestId('notif-group')
+
+    // The exact number on the collapsed row, read off the screen rather than
+    // off the model. `× N`, or nothing at all for a group of one — a single
+    // thing is not a repetition, and a count of 1 would be the widest thing
+    // on every ordinary row.
+    const badge = screen.queryByTestId('notif-group-count')
+    const claimed = badge === null ? null : Number((badge.textContent ?? '').replace(/\D+/g, ''))
+    expect(claimed, `the badge read ${JSON.stringify(badge?.textContent ?? null)}`).toBe(
+      n > 1 ? n : null
+    )
+
+    expandGroup(SUMMARY)
+    await screen.findByTestId('notif-group-occurrences')
+    let revealed = occurrences().length
+
+    // Expand until nothing more is offered, checking the pager's promise
+    // against what the click actually produced on every page.
+    for (;;) {
+      const more = screen.queryByRole('button', { name: /^Show \d+ more$/ })
+      if (more === null) break
+      const promised = Number((more.textContent ?? '').replace(/\D+/g, ''))
+      expect(promised, 'the pager may only promise rows that exist').toBeGreaterThan(0)
+      expect(revealed + promised, 'the pager promised rows past the end of the group').toBeLessThanOrEqual(n)
+      fireEvent.click(more)
+      const after = occurrences().length
+      expect(after, 'a click revealed a different number than it promised').toBe(revealed + promised)
+      revealed = after
+    }
+
+    // THE PROPERTY. What the collapsed row claimed is what the expanded group
+    // holds, once the pager has nothing left to offer.
+    expect(revealed).toBe(n)
+    if (claimed !== null) expect(claimed).toBe(revealed)
+  })
+
+  it('a byte-identical burst is ONE row, badges nothing, and reveals that one entry', async () => {
+    // The fixture the burst actually produces. Twelve emissions of one failure
+    // is one thing that went wrong, so there is nothing to count and nothing
+    // to expand to — and the footer agrees with both.
+    await openDrawer([{ ...flood(1)[0], full_message: 'CV #1\nrotation' }])
+    await screen.findAllByTestId('notif-group')
+
+    expect(screen.getAllByTestId('notif-group')).toHaveLength(1)
+    expect(screen.queryByTestId('notif-group-count')).not.toBeInTheDocument()
+    expect(screen.getByText('1 notification')).toBeInTheDocument()
+
+    expandGroup(SUMMARY)
+    await screen.findByTestId('notif-group-occurrences')
+    expect(occurrences()).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: /^Show \d+ more$/ })).not.toBeInTheDocument()
+  })
+
+  it('the same burst spread beyond the dedupe window is twelve rows, badges twelve, and reveals all of them', async () => {
+    // The other direction, and the one that would catch a badge reading a
+    // number the group cannot back. Three sweeps five seconds apart are
+    // thirty things that happened, so the badge is honest and the expansion
+    // has to hold every one of them.
+    const twelve = 12
+    const rows: NotificationRow[] = Array.from({ length: twelve }, (_, d) => ({
+      ...flood(1)[0],
+      id: d + 1,
+      full_message: `CV #${d}\nrotation`
+    }))
+    await openDrawer(rows)
+    await screen.findAllByTestId('notif-group')
+
+    expect(screen.getAllByTestId('notif-group')).toHaveLength(1)
+    expect(screen.getByTestId('notif-group-count')).toHaveTextContent(`× ${twelve}`)
+    expect(screen.getByText(`${twelve} notifications in 1 group`)).toBeInTheDocument()
+
+    expandGroup(SUMMARY)
+    await screen.findByTestId('notif-group-occurrences')
+    expect(occurrences()).toHaveLength(twelve)
+  })
+})
+
+/**
+ * MINOR 1. The badge and the pager were briefly reading different numbers —
+ * the badge a sum of per-row counters, the pager `occurrences.length` — and
+ * on a group holding one row that counter read 30, the pager offered "Show 5
+ * more" and revealed nothing on click. A control that promises entries it
+ * cannot produce is worse than no control.
+ */
+describe('MINOR 1 — the pager reveals rows, because that is what it counts', () => {
+  it('offers nothing on a group that fits in the first page', async () => {
+    await openDrawer(flood(3))
+    expandGroup('Content review failed: 12 errors: 11 rate limited, 1 other.')
+    await screen.findByTestId('notif-group-occurrences')
+
+    expect(screen.queryByRole('button', { name: /show \d+ more/i })).not.toBeInTheDocument()
+  })
+
+  it('offers rows that exist, and each click reveals exactly what it promised', async () => {
+    await openDrawer(flood(60))
+    expandGroup('Content review failed: 12 errors: 11 rate limited, 1 other.')
+    await screen.findByTestId('notif-group-occurrences')
+
+    expect(occurrences()).toHaveLength(25)
+    // 60 rows, 25 shown: 35 left, so the label says the page size rather
+    // than the remainder — and 35 is not what it says.
+    expect(screen.getByRole('button', { name: /show 25 more/i })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /show 25 more/i }))
+    expect(occurrences()).toHaveLength(50)
+
+    // The last page has 10 left, and the button says 10.
+    expect(screen.getByRole('button', { name: /show 10 more/i })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /show 10 more/i }))
+    expect(occurrences()).toHaveLength(60)
+    // Nothing left, so nothing offered. The promise and the contents cannot
+    // drift apart now that both read `occurrences.length`.
+    expect(screen.queryByRole('button', { name: /show \d+ more/i })).not.toBeInTheDocument()
   })
 })
 
@@ -469,20 +696,164 @@ describe('R1 — the drawer reflects a record as soon as it is written', () => {
     }
   })
 
-  it('ignores a malformed list rather than rendering undefined rows', async () => {
+  it('reports a list it could not read, rather than rendering it as empty', async () => {
     // Same convention the queue panel follows: this codebase returns an
     // error envelope from handlers that can fail, and destructuring `{rows}`
     // off one is what crashed the drawer on render before.
+    //
+    // What it must NOT do is treat the failure as "nothing is in there".
+    // That is the whole of the MAJOR-3 hole: an `uncaughtException` is
+    // recorded in the store by the main process, and if the store cannot
+    // then be read the drawer answers "No notifications." — a confident,
+    // specific, wrong statement about records that are on disk. So the
+    // failure is surfaced, and the empty wording is gone entirely.
     await openDrawer([])
     // Set AFTER the helper, which installs its own `notificationsList` mock.
     mockApi.notificationsList.mockResolvedValue({ error: 'INTERNAL' })
     fireEvent.keyDown(document, { key: 'Escape' })
     fireEvent.click(screen.getByText('open'))
     await new Promise((r) => setTimeout(r, 120))
-    // Still mounted, still showing the empty state rather than a crash on
-    // `list.length`.
+
     expect(screen.getByTestId('notif-backdrop')).toBeInTheDocument()
-    expect(screen.getByText(/no notifications/i)).toBeInTheDocument()
+    expect(await screen.findByTestId('notif-load-error')).toBeInTheDocument()
+    expect(screen.queryByText(/no notifications/i)).not.toBeInTheDocument()
+  })
+
+  it('keeps the rows it could read when a later read fails', async () => {
+    // The failure must not blank the list. Blanking it would replace one
+    // lie — "there is nothing" — with another, "there is nothing you can
+    // currently see", on a screen holding rows the user had already read.
+    await openDrawer(flood(2))
+    await screen.findAllByTestId('notif-group')
+
+    mockApi.notificationsList.mockResolvedValue({ error: 'INTERNAL' })
+    fireEvent.keyDown(document, { key: 'Escape' })
+    fireEvent.click(screen.getByText('open'))
+    await screen.findByTestId('notif-load-error')
+
+    // The rows are still there, and the banner says they may be stale.
+    expect(screen.getAllByTestId('notif-group')).toHaveLength(1)
+    expect(screen.getByText(/last list that could be read/i)).toBeInTheDocument()
+  })
+
+  /**
+   * MINOR 6 — the corrupt-row arm of the same obligation.
+   *
+   * Distinct from the load error above, and kept distinct on purpose: the
+   * READ SUCCEEDED. The store held entries the migration had to discard
+   * because they were not rows, so `rows` really is empty — and before the
+   * count was carried on the envelope, an empty `rows` was the only thing
+   * the renderer could see. A store containing the single string
+   * `'not-an-object'` therefore rendered "No notifications.": a confident,
+   * specific, wrong statement about a store that was not empty.
+   */
+  it('says a store held entries it could not read, instead of claiming it is empty', async () => {
+    mockApi.notificationsList.mockResolvedValue({ rows: [], unreadable: 1 })
+    render(
+      <NotificationsProvider>
+        <OpenButton />
+        <NotificationDrawer />
+      </NotificationsProvider>
+    )
+    fireEvent.click(screen.getByText('open'))
+
+    expect(await screen.findByTestId('notif-unreadable')).toBeInTheDocument()
+    expect(screen.getByText(/1 entry in the notification store could not be read/i)).toBeInTheDocument()
+    expect(screen.queryByText(/no notifications/i)).not.toBeInTheDocument()
+  })
+
+  it('pluralises the unreadable count, and keeps the readable rows on screen', async () => {
+    mockApi.notificationsList.mockResolvedValue({ rows: flood(2), unreadable: 3 })
+    render(
+      <NotificationsProvider>
+        <OpenButton />
+        <NotificationDrawer />
+      </NotificationsProvider>
+    )
+    fireEvent.click(screen.getByText('open'))
+
+    expect(await screen.findByTestId('notif-unreadable')).toBeInTheDocument()
+    expect(screen.getByText(/3 entries in the notification store could not be read/i)).toBeInTheDocument()
+    // The rows it COULD read are still shown — dropping them too would be
+    // the same over-correction one level up.
+    expect(screen.getAllByTestId('notif-group')).toHaveLength(1)
+  })
+
+  it('shows nothing of the sort on a store that is merely empty', async () => {
+    await openDrawer([])
+    await screen.findByText(/no notifications/i)
+    expect(screen.queryByTestId('notif-unreadable')).not.toBeInTheDocument()
+  })
+
+  it('treats a main-process build that omits the count as zero unreadable', async () => {
+    // The provider coerces rather than trusts: `NaN > 0` is false and
+    // `undefined` has no arithmetic at all, so a missing or nonsense count
+    // must not put a banner on a store that is fine.
+    mockApi.notificationsList.mockResolvedValue({ rows: [] })
+    render(
+      <NotificationsProvider>
+        <OpenButton />
+        <NotificationDrawer />
+      </NotificationsProvider>
+    )
+    fireEvent.click(screen.getByText('open'))
+
+    await screen.findByText(/no notifications/i)
+    expect(screen.queryByTestId('notif-unreadable')).not.toBeInTheDocument()
+  })
+
+  it('says so when the store cannot be reached at all, and recovers on retry', async () => {
+    // `ipcRenderer.invoke` rejects rather than answering when the channel
+    // itself is gone — the main-process restart under `npm run dev`. Same
+    // requirement, different transport: not an empty center.
+    await openDrawer([])
+    mockApi.notificationsList.mockRejectedValue(new Error('ipc channel closed'))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    fireEvent.click(screen.getByText('open'))
+    expect(await screen.findByTestId('notif-load-error')).toBeInTheDocument()
+    expect(screen.queryByText(/no notifications/i)).not.toBeInTheDocument()
+
+    mockApi.notificationsList.mockResolvedValue({ rows: flood(1) })
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }))
+
+    await waitFor(() => expect(screen.queryByTestId('notif-load-error')).not.toBeInTheDocument())
+    expect(screen.getAllByTestId('notif-group')).toHaveLength(1)
+  })
+
+  it('re-reads on the main process saying the store changed', async () => {
+    // The crash is recorded from the main process, where there is no
+    // renderer to fire the window event record.ts uses — so this channel
+    // is the only thing that makes the badge and the drawer learn about it
+    // without the user opening the center and looking. Everything else in
+    // this file goes through `app:notification-recorded`; this is the
+    // main-process half of the same arrangement.
+    const seen: (() => void)[] = []
+    mockApi.onNotificationsChanged.mockImplementation((cb: () => void) => {
+      seen.push(cb)
+      return () => undefined
+    })
+    await openDrawer([])
+    await screen.findByText(/no notifications/i)
+    expect(seen).toHaveLength(1)
+
+    mockApi.notificationsList.mockResolvedValue({ rows: flood(1) })
+    seen[0]()
+    expect(await screen.findByTestId('notif-group')).toBeInTheDocument()
+  })
+
+  it('stops listening to the main process when the provider unmounts', async () => {
+    const unsubscribe = vi.fn()
+    mockApi.onNotificationsChanged.mockImplementation(() => unsubscribe)
+    const view = render(
+      <NotificationsProvider>
+        <OpenButton />
+        <NotificationDrawer />
+      </NotificationsProvider>
+    )
+    await waitFor(() => expect(mockApi.onNotificationsChanged).toHaveBeenCalled())
+
+    view.unmount()
+    expect(unsubscribe).toHaveBeenCalled()
   })
 
   it('re-reads the store every time the drawer is opened', async () => {

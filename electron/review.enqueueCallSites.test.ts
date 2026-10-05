@@ -160,10 +160,10 @@ const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]
   // reclassified in either pass — the `manual` column below is unchanged,
   // which is the claim this table exists to make.
   'electron/main.ts': [
-    { line: 540, manual: true, why: 'documents:verify — the Verify button' },
-    { line: 557, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
-    { line: 744, manual: true, why: 'ai:tailor — Tailor / Generate' },
-    { line: 760, manual: true, why: 'tailor:quickApply — Quick Apply' }
+    { line: 577, manual: true, why: 'documents:verify — the Verify button' },
+    { line: 594, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
+    { line: 781, manual: true, why: 'ai:tailor — Tailor / Generate' },
+    { line: 797, manual: true, why: 'tailor:quickApply — Quick Apply' }
   ],
   'electron/aiQueue.ts': [
     { line: 644, manual: false, why: 'processor: generation finished, chain the review' },

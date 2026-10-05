@@ -516,5 +516,10 @@ export interface NotificationRow {
   created_at: number
   dismissed_at: number | null
   group_key: string
+  // No occurrence counter, deliberately. One row is one thing that went
+  // wrong, so a row has nothing to count: a repeat of the same thing is
+  // not folded into the row with a number on it, it simply does not become
+  // a row. Anything that summed a per-row count here would put the number
+  // of times the app spoke back on screen as the number of failures.
   job?: NotificationJobContext
 }

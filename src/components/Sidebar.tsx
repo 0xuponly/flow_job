@@ -33,7 +33,7 @@ export default function Sidebar({ current, onNavigate }: Props) {
   // resolution. Multiple concurrent clicks stack — the indicator stays
   // visible until the count returns to zero.
   const [fitPending, setFitPending] = useState(0)
-  const { open, hasUnread } = useNotifications()
+  const { open, hasUnread, readFailed } = useNotifications()
   const [collapsed, setCollapsed] = usePersistedState<boolean>('sidebarCollapsed', false)
 
   useEffect(() => {
@@ -134,14 +134,18 @@ export default function Sidebar({ current, onNavigate }: Props) {
             </svg>
           </button>
         </Tooltip>
-        <Tooltip label="Notification center">
+        <Tooltip label={readFailed ? 'Notification center — could not be read' : 'Notification center'}>
           <button
             type="button"
             className="sidebar-action"
-            aria-label="Open notification center"
+            // The dot and the ring are both `aria-hidden` on the icon, so
+            // without this the button would read identically whether the
+            // centre is fine, full, or broken. The failure is the one state a
+            // screen-reader user otherwise has no way to learn about at all.
+            aria-label={readFailed ? 'Open notification center — could not be read' : 'Open notification center'}
             onClick={open}
           >
-            <BellIcon size={16} badge={hasUnread} />
+            <BellIcon size={16} badge={hasUnread} alert={readFailed} />
           </button>
         </Tooltip>
         <ThemeToggle className="sidebar-action" />

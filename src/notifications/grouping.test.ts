@@ -107,16 +107,40 @@ describe('groupNotifications', () => {
   })
 })
 
-describe('groupCountLabel', () => {
-  it('shows nothing for one occurrence', () => {
-    // A single occurrence is not a repetition, and `× 1` would be the
-    // widest thing on every ordinary row.
-    expect(groupCountLabel(1)).toBeNull()
+/**
+ * What the number on a collapsed row means.
+ *
+ * There is no `count` field and no per-row counter, and that is the fix
+ * rather than a simplification of one: `electron/notifications.ts` refuses
+ * to write a second row for the same thing inside `DEDUPE_WINDOW_MS`, so a
+ * group's `occurrences.length` is already the number of things that went
+ * wrong. Summing a per-row emission counter on top of it would have put
+ * `× 12` back on screen for twelve emissions of one failure — the exact
+ * number that was filed as a lie, reached from better code.
+ */
+describe('the count a group reports', () => {
+  it('is the number of things that went wrong, which is the number of rows', () => {
+    const groups = groupNotifications([
+      row({ id: 1, group_key: A }),
+      row({ id: 2, group_key: A }),
+      row({ id: 3, group_key: A })
+    ])
+
+    expect(groups[0].occurrences).toHaveLength(3)
+    // Three failures. Not three emissions, because a row IS a failure: the
+    // store never writes a second one for the same thing inside its
+    // window, so there is nothing here that could inflate this.
+    expect(groupCountLabel(groups[0].occurrences.length)).toBe('× 3')
   })
 
-  it('names the repetition for two or more', () => {
-    expect(groupCountLabel(2)).toBe('× 2')
-    expect(groupCountLabel(12)).toBe('× 12')
-    expect(groupCountLabel(500)).toBe('× 500')
+  it('does not grow when the rows are identical repeats of each other', () => {
+    // The store is what folds these — a byte-identical repeat inside the
+    // window never becomes a second row — so at the render layer the count
+    // is rows and only rows. Twelve emissions of one failure arrive as one
+    // row and therefore as no count at all.
+    const groups = groupNotifications([row({ id: 1, group_key: A })])
+    expect(groups[0].occurrences).toHaveLength(1)
+    // `× 1` would assert a repetition that did not happen.
+    expect(groupCountLabel(groups[0].occurrences.length)).toBeNull()
   })
 })

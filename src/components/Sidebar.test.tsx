@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, within, fireEvent } from '@testing-library/react'
+import { render, screen, within, fireEvent, waitFor } from '@testing-library/react'
 import { ThemeProvider } from '../theme/ThemeProvider'
 import { NotificationsProvider } from '../notifications/NotificationsProvider'
 import { OPEN_NOTIFICATION_CENTER_EVENT } from '../notifications/record'
@@ -13,6 +13,7 @@ const mockApi = {
   notificationsDismissMany: vi.fn(),
   notificationsDismissAll: vi.fn(),
   notificationsPurgeOldDismissed: vi.fn(),
+  onNotificationsChanged: vi.fn(() => () => undefined),
   getScanStatus: vi.fn(),
   openQuickAddWindow: vi.fn(),
 }
@@ -107,6 +108,87 @@ describe('Sidebar bottom-actions order', () => {
     const bellBtn = await screen.findByRole('button', { name: /notification center/i })
     const dot = bellBtn.querySelector('span > span[aria-hidden="true"]')
     expect(dot).toBeTruthy()
+  })
+})
+
+/**
+ * MINOR 5. `loadError` and `unreadable` were visible only inside the drawer,
+ * so a centre that could not be read had a dark bell and no other signal
+ * anywhere: the user had to open the broken thing to find out it was broken,
+ * and `hasUnread: list.length > 0` said there was nothing to see.
+ *
+ * The failure therefore gets its own mark rather than being folded into the
+ * unread dot. The dot claims something exists that you have not seen; a
+ * broken read claims the question could not be answered, and reusing the dot
+ * would be a second lie in the opposite direction.
+ */
+describe('the bell reports a centre it could not read', () => {
+  /**
+   * Rendered with the drawer beside the sidebar, because the recovery this
+   * last case checks is the drawer's: opening the centre is the one moment
+   * the app re-reads the store, so it is the moment a mark earned by a
+   * failed read has to come off. `renderSidebar` mounts no drawer, so a
+   * click on the bell there changes nothing.
+   */
+  async function bell(): Promise<HTMLElement> {
+    render(
+      <ThemeProvider>
+        <NotificationsProvider>
+          <Sidebar current="dashboard" onNavigate={vi.fn()} />
+          <NotificationDrawer />
+        </NotificationsProvider>
+      </ThemeProvider>
+    )
+    return screen.findByRole('button', { name: /notification center/i })
+  }
+
+  it('marks the bell when the read itself failed, and says so in its name', async () => {
+    mockApi.notificationsList.mockResolvedValue({
+      error: 'The notification center could not be read.',
+    })
+    const btn = await bell()
+    // Not a dot: the unread dot is still absent, because nothing was read and
+    // so nothing is known to be unread.
+    expect(within(btn).queryByTestId('bell-alert')).toBeInTheDocument()
+    expect(btn).toHaveAccessibleName(/could not be read/i)
+    expect(btn).not.toHaveAccessibleName(/^Open notification center$/)
+  })
+
+  it('marks the bell when the read succeeded over entries it had to discard', async () => {
+    // The other arm, and the one that reads as "empty" rather than as
+    // "broken": the call succeeded, so `loadError` is null and only
+    // `unreadable` is left to say anything.
+    mockApi.notificationsList.mockResolvedValue({ rows: [], unreadable: 1 })
+    const btn = await bell()
+    expect(within(btn).queryByTestId('bell-alert')).toBeInTheDocument()
+    expect(btn).toHaveAccessibleName(/could not be read/i)
+  })
+
+  it('leaves the bell alone when the read worked, even with rows in it', async () => {
+    mockApi.notificationsList.mockResolvedValue({
+      rows: [
+        {
+          id: 1, type: 'info', source: 'app', message: 'm', full_message: 'm',
+          created_at: 1, dismissed_at: null, group_key: 'info|app|m',
+        },
+      ],
+    })
+    const btn = await bell()
+    expect(within(btn).queryByTestId('bell-alert')).not.toBeInTheDocument()
+    expect(btn).toHaveAccessibleName('Open notification center')
+  })
+
+  it('clears the mark once a later read succeeds', async () => {
+    mockApi.notificationsList.mockResolvedValue({ error: 'The notification center could not be read.' })
+    const btn = await bell()
+    expect(within(btn).queryByTestId('bell-alert')).toBeInTheDocument()
+
+    // The same thing the drawer does on open: a re-read. A mark that only
+    // ever turns on would be its own lie after the store recovered.
+    mockApi.notificationsList.mockResolvedValue({ rows: [] })
+    fireEvent.click(btn)
+    await waitFor(() => expect(within(btn).queryByTestId('bell-alert')).not.toBeInTheDocument())
+    expect(btn).toHaveAccessibleName('Open notification center')
   })
 })
 

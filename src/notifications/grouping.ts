@@ -25,7 +25,20 @@ export interface NotificationGroup {
   message: string
   type: NotificationType
   source: NotificationSource
-  /** Newest first. Never empty — a group with no rows is not a group. */
+  /**
+   * The things in this group, newest first. Never empty — a group with no
+   * rows is not a group.
+   *
+   * THE COUNT IS `occurrences.length`, and that is the answer to "what
+   * number does the user read". Each row is one thing that went wrong, and
+   * `addNotification` refuses to write a second row for the same thing
+   * inside `DEDUPE_WINDOW_MS` (electron/notifications.ts) — so this length
+   * is the number of failures, not the number of times the app opened its
+   * mouth. A row carrying a counter of how many emissions folded into it,
+   * and a badge that summed those counters, would put "× 12" back on screen
+   * for twelve emissions of one failure: the exact number that was filed as
+   * a lie, arrived at from better code.
+   */
   occurrences: NotificationRow[]
   /** Newest occurrence's timestamp; the group's position in the list. */
   latestAt: number

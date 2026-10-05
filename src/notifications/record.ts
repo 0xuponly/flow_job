@@ -176,12 +176,18 @@ export interface FailureReport {
  *     a log full of successes is a log nobody ever opens — which then
  *     makes the one row that mattered (the failure) easy to miss.
  *
- * The record is written BEFORE `notify` is asked to deduplicate, and it is
- * written independently of whether a toast survives. That is deliberate
- * and it is the point of the whole change: the toast overlay is allowed
- * to collapse ten identical sentences because the overlay's job is to be
- * glanceable, but the record must not collapse at all, or the center
- * inherits exactly the information loss the toast was hiding.
+ * The record is written independently of whether a toast survives. That is
+ * deliberate: the toast overlay is allowed to collapse ten identical
+ * sentences because the overlay's job is to be glanceable, and the centre
+ * would not be glanceable if it did the same.
+ *
+ * `notify` runs FIRST here, and it is not an ordering claim about which
+ * layer should collapse — it is that the toast is the transient half and
+ * this is the durable one, so the transient one is allowed to finish before
+ * the durable one starts. Both layers collapse a repeat; they collapse over
+ * different windows, and the reason is in `DEDUPE_WINDOW_MS` in
+ * electron/notifications.ts: the record's window is the SHORTER of the two,
+ * so the centre never knows about fewer things than the overlay did.
  */
 export function reportFailure(report: FailureReport): void {
   const type = report.type ?? 'error'

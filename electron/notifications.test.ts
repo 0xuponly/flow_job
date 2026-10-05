@@ -18,6 +18,11 @@ const store: StubStore = { notifications: [], nextId: 1 }
 vi.mock('./database', () => ({
   loadStore: () => store,
   saveStore: vi.fn(),
+  // `listActiveNotifications` reports how many entries the migration had to
+  // discard, and it reads that from here. A stub store built entirely out
+  // of well-formed rows has none, so zero — and if this export is missing
+  // the mock throws instead of returning a wrong answer.
+  unreadableNotificationEntries: vi.fn(() => 0),
   // Per-provider spend ledger + the cap constants that ai.ts imports at
   // module scope. A partial ./database mock that omits them makes the
   // import fail outright, which surfaces as every assertion in the file

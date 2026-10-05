@@ -10,9 +10,18 @@
  * `selectedJob` without remounting `JobDetail` (sibling prev/next, and
  * `handleNavigateSibling`), so the component's `useEffect([job.id])` is
  * what re-runs the sweep — and the `load` that effect calls closes over
- * the render that PRODUCED it, whose `currentJob` is still the job the
- * user just left. Reading the job back from the store after the sweep, and
- * citing that, is what makes the row truthful.
+ * the render that PRODUCED it. So the citation comes from the `job` PROP of
+ * the closure the sweep is running in, which is the job whose documents
+ * were swept, and never from `currentJob`, which is still the job the user
+ * just left for the whole of the sweep.
+ *
+ * It also comes from that prop rather than from a fresh `getJob`, because
+ * the record is written at the moment the failure is known — the sweep's
+ * own re-fetch happens after every failure has already been recorded, and
+ * gating the write on it is the defect MAJOR 2 is about. That makes the
+ * citation a snapshot taken at the moment of the failure, which is exactly
+ * what `NotificationJobContext` documents itself to be in
+ * electron/types.ts.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, act, waitFor } from '@testing-library/react'
@@ -75,6 +84,18 @@ function citations(): unknown[] {
   return api.notificationsAdd.mock.calls.map((c) => (c[0] as { job?: unknown }).job)
 }
 
+/**
+ * The record the sweep wrote, as opposed to anything the page reported
+ * separately — the refresh failure below is its own record with its own
+ * citation, and counting both would make "the sweep recorded its failure"
+ * and "the page reported a second problem" indistinguishable.
+ */
+function sweepRecord(): Record<string, unknown> {
+  const found = addCalls().find((c) => String(c.message).startsWith('Content review failed'))
+  if (!found) throw new Error('the sweep recorded nothing')
+  return found
+}
+
 function addCalls(): Record<string, unknown>[] {
   const api = (window as unknown as { api: { notificationsAdd: { mock: { calls: unknown[][] } } } }).api
   return api.notificationsAdd.mock.calls.map((c) => c[0] as Record<string, unknown>)
@@ -121,9 +142,20 @@ describe('a record cites the job it was raised for', () => {
     })
   })
 
-  it('still cites it after the job was edited, using the store not the old render', async () => {
-    // The row should describe the job as it is NOW, which is also what a
-    // user comparing the notification to the job board will check against.
+  it('cites the job the sweep ran under, as it was at the moment of the failure', async () => {
+    // The store was renamed after the page last read it, so `getJob` and
+    // the prop disagree. The record takes the prop — the row the sweep
+    // actually swept — and takes it at the moment of the failure, because
+    // that is the only point at which the failure is known. This is not a
+    // guess and not a fabrication: every field is a real field of a real
+    // job row, and `job_id` is the authoritative identity, so the row still
+    // resolves to the right job for the user who comes back to it.
+    //
+    // The cost, stated plainly so nobody has to rediscover it: the title
+    // can be one rename behind. The alternative — citing the store — is
+    // what this file used to do, and it meant the write sat behind a
+    // `getJob` that runs after every document has already been swept, so a
+    // rejection there took every failure with it. Not worth a stale title.
     const renamed = job({ id: 1, title: 'Staff Engineer', company: 'AlphaCo', location: 'Berlin' })
     installApi({
       listDocuments: vi.fn(async () => [doc()]),
@@ -133,7 +165,51 @@ describe('a record cites the job it was raised for', () => {
     renderDetail(ALPHA)
     await waitFor(() => expect(citations()).toHaveLength(1))
 
-    expect(citations()[0]).toMatchObject({ job_id: 1, job_title: 'Staff Engineer' })
+    // Same job, same company, same location. The id is the one that
+    // matters and it is right; only the label is a moment behind, and the
+    // other case in this file is what pins that the JOB is never wrong.
+    expect(citations()[0]).toEqual({
+      job_id: 1,
+      job_title: 'Alpha Engineer',
+      job_company: 'AlphaCo',
+      job_location: 'Berlin'
+    })
+  })
+
+  it('records the failure even when the re-fetch after the sweep rejects', async () => {
+    // The re-fetch exists to pick up a status the backend transitioned
+    // during the sweep. It is not part of producing a failure, so it must
+    // not be able to take one away — and when it fails, IT is what the
+    // user is told about, rather than nothing happening at all.
+    installApi({
+      listDocuments: vi.fn(async () => [doc()]),
+      getJob: vi.fn(async () => { throw new Error('ipc channel closed') }),
+      verifyDocument: vi.fn(async () => { throw new Error('review call failed: socket hang up') })
+    })
+    renderDetail(ALPHA)
+    await waitFor(() => expect(addCalls()).toHaveLength(2))
+
+    // The failure the sweep found is durable, and it cites the job.
+    expect(sweepRecord().full_message).toContain('review call failed: socket hang up')
+    expect(sweepRecord().job).toMatchObject({ job_id: 1, job_title: 'Alpha Engineer' })
+    // ...and the failed re-fetch is itself reported rather than swallowed.
+    const reported = addCalls().map((c) => c.message)
+    expect(reported.some((m) => /could not refresh job status/i.test(String(m)))).toBe(true)
+  })
+
+  it('records the failure before the re-fetch has answered at all', async () => {
+    // "No re-fetch in the path", measured rather than asserted in prose:
+    // the re-fetch is held open forever, so anything that waits on it
+    // never happens. The record has to be written anyway.
+    installApi({
+      listDocuments: vi.fn(async () => [doc()]),
+      getJob: vi.fn(() => new Promise(() => undefined)),
+      verifyDocument: vi.fn(async () => { throw new Error('review call failed: socket hang up') })
+    })
+    renderDetail(ALPHA)
+
+    await waitFor(() => expect(addCalls()).toHaveLength(1))
+    expect(sweepRecord().full_message).toContain('review call failed: socket hang up')
   })
 
   it('follows a sibling navigation instead of citing the job left behind', async () => {
@@ -219,10 +295,12 @@ describe('a record cites the job it was raised for', () => {
     }
   })
 
-  it('falls back to the swept id when the job was deleted mid-sweep', async () => {
-    // `getJob` returning nothing must not cost the row its citation: the id
-    // the sweep actually ran under is still the truth, and the title and
-    // company are simply not available.
+  it('cites the swept job even when the store no longer has it', async () => {
+    // `getJob` returning nothing must not cost the row its citation. Under
+    // the old arrangement this was the re-fetch's own fallback path; now
+    // the citation never went near the re-fetch, so a job deleted mid-sweep
+    // is simply a case where the refresh produced no status to apply — and
+    // the id the sweep actually ran under is still the truth.
     installApi({
       listDocuments: vi.fn(async () => [doc()]),
       getJob: vi.fn(async () => undefined),

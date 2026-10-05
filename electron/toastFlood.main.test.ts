@@ -123,10 +123,10 @@ vi.mock('./ai', async (importOriginal) => {
   }
 })
 
-import { existsSync, mkdirSync, unlinkSync } from 'fs'
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { createJob, getAIQueue, reloadStore, updateAIQueueItem } from './database'
-import { listActiveNotifications } from './notifications'
+import { addNotification, listActiveNotifications } from './notifications'
 import { RateLimitError } from './ai'
 import type { CreateJobInput } from './types'
 
@@ -153,6 +153,44 @@ function toastsFor(name: string): string[] {
 
 function totalToasts(): number {
   return windows.reduce((n, w) => n + w.sent.filter(([c]) => c === 'main:errorToast').length, 0)
+}
+
+/** Every window that was told the notification store changed, by name. */
+function storeChangePings(): string[] {
+  return windows
+    .filter((w) => w.sent.some(([c]) => c === 'notifications:changed'))
+    .map((w) => w.name)
+}
+
+/**
+ * Replace the store with one `loadStore` cannot read.
+ *
+ * The real failure, not a stubbed one: `loadStore` throws `Cannot decrypt
+ * data file` on a payload carrying the modern `enc:v1:` envelope it cannot
+ * open, and refuses to fall back to a fresh store so it does not silently
+ * wipe the user's data. That refusal is what makes the read fail at all,
+ * so stubbing `listActiveNotifications` instead would have tested the
+ * handler's shape and not its reachability.
+ *
+ * `reloadStore()` is deliberately inside a catch: it drops the in-memory
+ * copy and immediately re-reads, which throws by design. The point is that
+ * the cache is EMPTY afterwards, so every later `loadStore` goes back to
+ * the file and throws too — which is the condition the code under test has
+ * to survive.
+ */
+function makeStoreUnreadable(): void {
+  writeFileSync(storeFile, 'enc:v1:not-a-real-envelope')
+  try {
+    reloadStore()
+  } catch {
+    // Expected. See above.
+  }
+}
+
+/** Put a working store back and drop the in-memory copy. */
+function makeStoreReadable(): void {
+  if (existsSync(storeFile)) unlinkSync(storeFile)
+  reloadStore()
 }
 
 function invoke(channel: string, ...args: unknown[]): Promise<unknown> {
@@ -360,5 +398,138 @@ describe('the crash is recorded in the store, whichever window it went to', () =
     raise(new Error('boom'))
     expect(totalToasts()).toBe(1)
     expect(listActiveNotifications().rows).toHaveLength(1)
+  })
+})
+
+/**
+ * MAJOR 3, the visible half. Recording the crash was the previous fix and it
+ * was necessary but not sufficient: a record in a file that nothing tells
+ * the app about is not a notification. The user only found it by opening the
+ * center and looking, and the badge — the one thing on screen that says
+ * "there is something you have not seen" — stayed dark.
+ *
+ * So the answer is BOTH surfaces, because each covers the other's blind
+ * spot:
+ *
+ *   a toast, where a window that can render one has focus, which is the
+ *     existing `main:errorToast` path; and
+ *   the centre on next open, plus the badge lighting now, via
+ *     `notifications:changed` — sent to EVERY window, because unlike the
+ *     toast this carries no claim for anyone to act on and it lights a dot
+ *     in each window's own sidebar.
+ */
+describe('a recorded crash announces itself to the windows that can show it', () => {
+  it('tells every live window the store changed, focused or not', () => {
+    windows[0].focused = false
+    windows[1].focused = true
+
+    raise(new Error('provider socket exploded'))
+
+    // quickadd is the window that CANNOT render a toast, so the main window
+    // is the only place this is visible — and it is told, precisely because
+    // it was not the focused one.
+    expect(toastsFor('main')).toEqual([])
+    expect(storeChangePings().sort()).toEqual(['main', 'quickadd'])
+  })
+
+  it('a crash routed to a window that cannot render a toast still reaches the main window', () => {
+    // The combination that was actually invisible: the record is written,
+    // the toast is dropped by the renderer that was chosen, and nothing
+    // else happens. This is the case the reviewer called a record the user
+    // never sees.
+    windows[0].focused = false
+    windows[1].focused = true
+
+    raise(new TypeError('better-sqlite3 has no exported member'))
+
+    expect(toastsFor('quickadd')).toEqual(['Internal error: better-sqlite3 has no exported member'])
+    expect(toastsFor('main')).toEqual([])
+    expect(storeChangePings()).toContain('main')
+    expect(listActiveNotifications().rows).toHaveLength(1)
+  })
+
+  it('does not ping a window whose renderer is gone, and does not turn one crash into a second', () => {
+    windows.length = 0
+    windows.push(mkWindow('dead', { destroyed: true }), mkWindow('gone', { webContentsDestroyed: true }), mkWindow('main'))
+    expect(() => raise(new Error('boom'))).not.toThrow()
+    // Only the one window that can actually receive it.
+    expect(storeChangePings()).toEqual(['main'])
+    expect(listActiveNotifications().rows).toHaveLength(1)
+  })
+
+  it('pings once per crash, not once per window', () => {
+    windows.length = 0
+    windows.push(mkWindow('main', { focused: true }), mkWindow('quickadd'), mkWindow('pdf'))
+    raise(new Error('boom'))
+    for (const w of windows) {
+      expect(w.sent.filter(([c]) => c === 'notifications:changed')).toHaveLength(1)
+    }
+  })
+
+  it('an unreadable store neither records nor pings, and does not throw out of the handler', () => {
+    // Nothing was written, so announcing it would light a badge that finds
+    // an empty list — a claim of "there is something" with nothing behind
+    // it. The crash is in crash.log either way, and the handler must come
+    // back clean: it is running from inside `uncaughtException`, where a
+    // second throw replaces the crash the user is being told about.
+    makeStoreUnreadable()
+    try {
+      expect(() => raise(new Error('boom'))).not.toThrow()
+      expect(storeChangePings()).toEqual([])
+    } finally {
+      makeStoreReadable()
+    }
+  })
+})
+
+/**
+ * A failed read must not be reported as an empty centre. `loadStore` throws
+ * on a store it cannot decrypt, so this handler's catch is reachable, and
+ * the answer it used to give — `{ rows: [] }` — is indistinguishable from
+ * "there is nothing in here". That is what let a crash record sit in the
+ * file, in plain sight, with the drawer reporting nothing to see.
+ */
+describe('the list channel reports a read it could not do', () => {
+  it('answers with an error envelope rather than an empty list', async () => {
+    makeStoreUnreadable()
+    try {
+      expect(await invoke('notifications:notificationsList')).toEqual({ error: 'INTERNAL' })
+    } finally {
+      makeStoreReadable()
+    }
+  })
+
+  it('still answers with rows when the read works', async () => {
+    addNotification({ type: 'error', source: 'app', message: 'Internal error: boom', full_message: 'boom' })
+    const result = await invoke('notifications:notificationsList') as { rows?: unknown[]; unreadable?: number }
+    expect(Array.isArray(result.rows)).toBe(true)
+    expect((result.rows ?? []).length).toBeGreaterThan(0)
+    // A clean store reports zero, so the drawer has a number to compare
+    // against rather than an absence it has to interpret.
+    expect(result.unreadable).toBe(0)
+  })
+
+  /**
+   * MINOR 6, end to end through the real handler. The store migration
+   * discards entries of `notifications` that are not rows — it has to, this
+   * is `loadStore` and a string in that array would take jobs and documents
+   * down with it — and the count is what stops the discard from reading as
+   * "there is nothing here".
+   */
+  it('carries the count of entries it could not read', async () => {
+    writeFileSync(storeFile, JSON.stringify({
+      jobs: [], documents: [], applications: [], api_models: [],
+      nextId: 900, seen_urls: [], ai_queue: [], board_health: {},
+      board_scan_times: {}, provider_spend: {}, deleted_jobs: [],
+      blacklisted_companies: [], settings: {},
+      notifications: ['not-an-object']
+    }))
+    reloadStore()
+
+    const result = await invoke('notifications:notificationsList') as { rows?: unknown[]; unreadable?: number }
+    expect(result.rows).toEqual([])
+    // Without this number the renderer sees an empty list and reports an
+    // empty notification center over a store that was not empty.
+    expect(result.unreadable).toBe(1)
   })
 })
