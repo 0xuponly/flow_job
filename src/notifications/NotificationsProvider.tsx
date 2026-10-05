@@ -44,6 +44,23 @@ interface NotificationContextValue {
    * itself as empty.
    */
   unreadable: number
+  /**
+   * The last read did not give the whole story, so the bell must not read as
+   * "there is nothing here".
+   *
+   * `hasUnread` alone cannot carry this, and folding it in would be its own
+   * lie in the other direction: the dot means "something you have not seen",
+   * and a store that could not be read is not something unseen. So this is a
+   * separate flag and the sidebar renders it differently. Before it existed
+   * the failure was reachable only by opening the centre — the user had to
+   * open the thing that was broken to find out that it was broken, and
+   * nothing outside the drawer said a word.
+   *
+   * True for either arm: the read failed outright (`loadError`), or it
+   * succeeded over a store holding entries that had to be discarded
+   * (`unreadable`).
+   */
+  readFailed: boolean
   open: () => void
   close: () => void
   dismiss: (id: number) => void
@@ -287,6 +304,7 @@ const refresh = useCallback(async () => {
     hasUnread: list.length > 0,
     loadError,
     unreadable,
+    readFailed: loadError !== null || unreadable > 0,
     open,
     close,
     dismiss,
