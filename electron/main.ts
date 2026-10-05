@@ -53,6 +53,7 @@ function stripHmac(manifest: Record<string, unknown>): Record<string, unknown> {
   return manifest
 }
 import { formatLocation } from './utils'
+import { notifyStoreChanged } from './notifyStoreChanged'
 import { startQueueProcessor, stopQueueProcessor, enqueue, listQueueInPickOrder, retryQueueItem, removeQueueItem, clearQueue, aiQueueBlockedState } from './aiQueue'
 import type { AIQueueBlockedState } from './aiQueue'
 import { scheduleNextAutoScan, cancelAutoScan, markScanStarted, markScanCompleted, restartAutoScanTimer } from './autoScan'
@@ -109,35 +110,6 @@ process.on('unhandledRejection', (reason) => {
   const msg = reason instanceof Error ? reason.stack || `${reason.name}: ${reason.message}` : String(reason)
   log.crash.error(`unhandledRejection: ${msg}`)
 })
-
-/**
- * Tell every live window that the store's notification list changed.
- *
- * All windows, not the focused one, and the asymmetry with the crash toast
- * below is deliberate. The toast is a claim about one error and asks one
- * person to act on it, so it goes where the user is. This carries no
- * content at all — "go and look" — and what it lights up is each window's
- * own unread badge, which is correct in every window regardless of which
- * one is focused. Sending it to only the focused window would mean a crash
- * recorded while quick-add is in front left the main window's badge dark,
- * which is the original hole: the main window is the one that can show it.
- *
- * Never throws. `send` on a window whose renderer has gone raises, and
- * this runs from inside the `uncaughtException` handler, where a second
- * throw replaces the crash the user is being told about with a crash they
- * are not.
- */
-function notifyStoreChanged(): void {
-  for (const w of BrowserWindow.getAllWindows()) {
-    try {
-      if (!w.isDestroyed() && !w.webContents.isDestroyed()) {
-        w.webContents.send('notifications:changed')
-      }
-    } catch (err) {
-      log.crash.error(`could not announce a new notification record: ${String(err)}`)
-    }
-  }
-}
 
 process.on('uncaughtException', (err) => {
   log.crash.error(`uncaughtException: ${err.stack || `${err.name}: ${err.message}`}`)

@@ -7,6 +7,7 @@ import { withAiOperation } from './ai'
 // clocks in the same scope.
 import { tailorDocument, regenerateSection, verifyDocumentContent, nextProviderCapFreeAt, ProviderCapError, ProviderCooldownError, providerAvailability, RateLimitError, type AiCallOptions } from './ai'
 import { PROVIDERS_COOLING_DOWN_MESSAGE } from './cooldownBlock'
+import { reportStalledQueue } from './queueStalls'
 import type { AIQueueItem, Job, QueueItemView } from './types'
 import {
   AUTO_REGEN_MAX,
@@ -1166,7 +1167,23 @@ export async function processQueue(): Promise<void> {
 async function runPass(): Promise<void> {
   const queue = getAIQueue()
   const now = Date.now()
+  try {
+    await runPassBody(queue, now)
+  } finally {
+    // Every exit, including the two early returns below and a throw from a
+    // row, gets its outcome recorded — and the outcome is read fresh from
+    // the store rather than off `queue`, which was snapshotted before any of
+    // it ran.
+    //
+    // `PROVIDER_REPROBE_CAP_MS` is the argument, not a number chosen here:
+    // it is the ceiling of the ladder `parkBlockedRow` parks on, so it is the
+    // point past which this queue is no longer trying harder — see
+    // `queueStalls.ts` for the rule that turns a refusal into a record.
+    reportStalledQueue(Date.now(), PROVIDER_REPROBE_CAP_MS)
+  }
+}
 
+async function runPassBody(queue: AIQueueItem[], now: number): Promise<void> {
   // Every eligible model is cooling down: there is nothing this pass can
   // accomplish, so it does not claim a row.
   //

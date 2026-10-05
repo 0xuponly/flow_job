@@ -159,23 +159,26 @@ const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]
   // block ABOVE registerIpc. They moved a third time when `processItem`'s
   // `opts` comment grew to explain why the processor is never attended —
   // which is the one change here that altered WHAT a processor call means
-  // rather than where it lives. No call site was added, removed or
+  // rather than where it lives — and a fourth time when the queue recorded a
+  // stall in the notification centre, which added one import to the top of
+  // `aiQueue.ts` and moved `notifyStoreChanged` out of `main.ts` and above
+  // `registerIpc` into its own module. No call site was added, removed or
   // reclassified in any pass, and the `manual` column is unchanged, which is
   // the claim this table exists to make: provenance still travels on the row
   // to the children a processor hands work to, and only the spend-cap
   // exemption stopped reading it as presence.
   'electron/main.ts': [
-    { line: 577, manual: true, why: 'documents:verify — the Verify button' },
-    { line: 594, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
-    { line: 781, manual: true, why: 'ai:tailor — Tailor / Generate' },
-    { line: 797, manual: true, why: 'tailor:quickApply — Quick Apply' }
+    { line: 549, manual: true, why: 'documents:verify — the Verify button' },
+    { line: 566, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
+    { line: 753, manual: true, why: 'ai:tailor — Tailor / Generate' },
+    { line: 769, manual: true, why: 'tailor:quickApply — Quick Apply' }
   ],
   'electron/aiQueue.ts': [
-    { line: 667, manual: false, why: 'processor: generation finished, chain the review' },
-    { line: 724, manual: false, why: 'processor: review failed, auto-regenerate the document' },
-    { line: 824, manual: false, why: 'processor: tailor_job_docs finished, review each new document' },
+    { line: 668, manual: false, why: 'processor: generation finished, chain the review' },
+    { line: 725, manual: false, why: 'processor: review failed, auto-regenerate the document' },
+    { line: 825, manual: false, why: 'processor: tailor_job_docs finished, review each new document' },
     {
-      line: 848,
+      line: 849,
       manual: true,
       why:
         "processor: a lane tailor_job_docs' provider REFUSED, so the missing " +
@@ -188,7 +191,7 @@ const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]
         'promised.'
     },
     {
-      line: 850,
+      line: 851,
       manual: true,
       why: 'the same handoff for the cover-letter half'
     }
@@ -488,7 +491,7 @@ describe('the processor picking work up without going through enqueue()', () => 
     // finding 2.
     //
     // This is the lane `rg "enqueue\("` cannot see. `runPass`
-    // (electron/aiQueue.ts:801) revives any `failed` row that still has
+    // (electron/aiQueue.ts:825) revives any `failed` row that still has
     // revival budget, writes it back to `pending`, and hands it to
     // `processItem` — with no settings read anywhere on that path. So
     // with `auto_queue_cv` off, a generation row that failed (queued
@@ -669,9 +672,9 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
     // retired, so it is absent from the list and from the comment.
     const automatic = callSites().filter((c) => !c.manual)
     expect(automatic.map((c) => `${c.where}:${c.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:667',
-      'electron/aiQueue.ts:724',
-      'electron/aiQueue.ts:824',
+      'electron/aiQueue.ts:668',
+      'electron/aiQueue.ts:725',
+      'electron/aiQueue.ts:825',
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:136'
@@ -688,8 +691,8 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
       new RegExp(`There are ${WORDS[automatic.length]} automatic producers`)
     )
     // Every producer it names, including the fan-out this comment used
-    // to omit (aiQueue.ts:801 — a different producer from the
-    // generation → review chaining at :637, which fires for a directly
+    // to omit (aiQueue.ts:825 — a different producer from the
+    // generation → review chaining at :668, which fires for a directly
     // queued generate_*). Both line numbers are the INVENTORY's, and the
     // two assertions above are what makes saying so here honest: a stale
     // number in this comment would be the same rot the case exists to
