@@ -641,6 +641,58 @@ export interface AIQueueItem {
    */
   manualQueued?: boolean
   /**
+   * PRESENCE, and the field `manualQueued` is not: epoch ms of a person's
+   * own request for this row, while that request is still unanswered.
+   *
+   * `manualQueued` records PROVENANCE — "a person asked once" — and that is
+   * a true and permanent statement about the row, worth everything it is
+   * already worth: revived unattended, ungated by the `auto_queue_*`
+   * switches, promoted, inherited by the children that finish it.
+   *
+   * This records PRESENCE — "a person is asking NOW, and nothing has been
+   * handed back to them yet" — and it is the only thing the spend cap's
+   * manual exemption is for. Refusing work a person pressed a button for is
+   * a dead end, and that is worth any cost. Reading the first as the second
+   * is the 12.6x: measured on 2026-10-05, one click bought a row the
+   * processor then drove uncapped for 6h44m — 369 requests, all
+   * `origin=manual`, in 37 bursts on this file's own re-probe cadence —
+   * while the automated ledger sat pinned at the cap.
+   *
+   * SO IT IS A GRANT, NOT A STATE, and that difference is the whole design.
+   * `processItem` spends it in the SAME write that claims the row, so:
+   *
+   *   - one grant buys exactly one claim, hence at most one `callAI` the
+   *     cap cannot refuse. After that claim the row is automated again for
+   *     good, whatever happens to it next — a cap refusal, an ordinary
+   *     failure, a cooldown, the auto-revival ladder, a restart, three more
+   *     days in the panel.
+   *   - only a click arms it. It is written from `enqueue`'s `present`
+   *     option (which the four `ipcMain` entry points pass) and by
+   *     `retryQueueItem` (the Queue panel's Retry). The processor, the
+   *     backlog sweeps, the re-seeders and the revival lanes can reach it
+   *     through none of them, so a row the APP chose can never buy itself
+   *     exemption. `review.enqueueCallSites.test.ts` pins that inventory
+   *     against the source tree.
+   *   - it cannot be inherited, and this is structural rather than a
+   *     convention: a parent spends its grant in its claim write BEFORE it
+   *     can enqueue anything, so every row it fans out to is born without
+   *     one. (The refused-lane handoff still reads `manualQueued` — that is
+   *     provenance, and it stays.)
+   *
+   * Re-armable only by another gesture: `enqueue`'s duplicate path re-arms
+   * it from `present`, so pressing Quick Apply (or Retry) N times buys N
+   * grants — which is exactly what N presses of the direct Generate button
+   * already spend, and the cap counts those too.
+   *
+   * ABSENT means nobody is waiting, deliberately, for the same reason
+   * `manualQueued`'s absence means automatic: rows written before this
+   * field existed carry none, and the reading that cannot hand out an
+   * exemption is the one that closes the leak. A row a person queued before
+   * this shipped keeps every provenance right it had and simply waits for
+   * the budget like any other queued work.
+   */
+  userPresentAt?: number
+  /**
    * How many times this item has been revived from `failed` back to
    * `pending` by the automatic recovery loop. Absent on rows written
    * before auto-revival existed; treat undefined as 0 so legacy rows

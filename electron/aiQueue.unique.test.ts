@@ -294,10 +294,19 @@ describe('a failed row is revived in place rather than re-added', () => {
     expect(store.rows[0].autoRevives).toBe(3)
   })
 
-  it('writes the same patch the Retry button writes', () => {
-    // One definition of "give this row another run". If these two ever
-    // drift, a re-add and a Retry hand the user different budgets for
-    // the same failure.
+  it('writes the revive patch, and the presence grant the re-add cannot', () => {
+    // One definition of "give this row another run" — but ONE DIFFERENCE, and
+    // it is the whole point of the two flags being separate.
+    //
+    // `revivePatch()` is shared, so the revive itself cannot drift. What a
+    // press of RETRY adds on top is `userPresentAt`: the row's provenance is
+    // untouched (it keeps whatever origin it had — Retry does not make an
+    // automatic row manual, which would change the restart lanes), but the
+    // row is now owed an answer by a person, so its next claim must be one
+    // the daily spend cap cannot refuse. An AUTOMATIC re-add has no person
+    // waiting, so it gets no grant — and if it did, the fit-landing trigger
+    // or the backlog sweep could buy itself an uncapped request, which is the
+    // 12.6x measured on 2026-10-05.
     seedRow({ type: 'score_fit', jobId: 42, status: 'failed' })
     const before = Date.now()
     enqueue({ type: 'score_fit', jobId: 42 })
@@ -314,8 +323,15 @@ describe('a failed row is revived in place rather than re-added', () => {
     // the one remaining intermittent failure in a 16-spinner run. The
     // deadline is checked separately, against the clock, below.
     const { nextRetryAt: enqueueAt, ...enqueueRest } = viaEnqueue
-    const { nextRetryAt: retryAt, ...retryRest } = viaRetry
-    expect(enqueueRest).toEqual(retryRest)
+    const { nextRetryAt: retryAt, userPresentAt: retryGrant, ...retryRest } = viaRetry
+    expect(retryRest).toEqual(enqueueRest)
+    // The one difference, named: presence, and it is a real timestamp rather
+    // than a placeholder.
+    expect(typeof retryGrant).toBe('number')
+    expect(retryGrant).toBeGreaterThanOrEqual(before)
+    // ...and it is ABSENT from the automatic re-add, so "absent means nobody
+    // is waiting" is not merely a convention this file happens to follow.
+    expect('userPresentAt' in viaEnqueue).toBe(false)
     // Both deadlines are "now" rather than a backoff or the old nextRetryAt,
     // which is the property the deadline is there to carry. Read the clock
     // after both calls so the comparison cannot lose a millisecond to a tick,
@@ -576,20 +592,23 @@ describe('the processing guard still prevents a double-add during an in-flight c
 // promoting, and its public shape (write + the queue in pick order) is
 // unchanged.
 describe('retryQueueItem is unchanged', () => {
-  it('writes the revive patch and nothing else', () => {
+  it('writes the revive patch, plus a presence grant and no promotion', () => {
     seedRow({ id: 5, type: 'verify', jobId: 7, documentId: 11, status: 'failed', attempts: 3 })
     const before = Date.now()
     retryQueueItem(5)
     // Exact object, not objectContaining: a `promotedAt` key here would
-    // mean Retry had started promoting, which it must not.
+    // mean Retry had started promoting, which it must not. The grant IS
+    // expected — Retry is a press, so the row it re-arms is owed an answer.
     expect(store.writes).toHaveLength(1)
     expect(store.writes[0].patch).toEqual({
       status: 'pending',
       nextRetryAt: store.writes[0].patch.nextRetryAt,
       attempts: 0,
-      lastError: undefined
+      lastError: undefined,
+      userPresentAt: store.writes[0].patch.userPresentAt
     })
     expect(store.writes[0].patch.nextRetryAt).toBeGreaterThanOrEqual(before)
+    expect(store.writes[0].patch.userPresentAt).toBeGreaterThanOrEqual(before)
     expect(store.rows[0].promotedAt).toBeUndefined()
   })
 

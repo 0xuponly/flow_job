@@ -36,7 +36,7 @@ import { join, relative } from 'node:path'
 // Part 1 — a source-level scan of every `enqueue(` call site.
 // ---------------------------------------------------------------------------
 
-interface CallSite { where: string; line: number; manual: boolean; types: string[] }
+interface CallSite { where: string; line: number; manual: boolean; present: boolean; types: string[] }
 
 /** Every source file the audit covers. Tests are excluded: they are the
  *  callers that gave the flag themselves, which is the whole problem. */
@@ -121,6 +121,16 @@ function callSites(): CallSite[] {
         // lookahead is for; a site with no `manual:` key at all does not
         // match the pattern and is automatic too.
         manual: /\{\s*manual\s*:\s*(?!false\b|undefined\b)/.test(args),
+        // `present`, the way to be told apart from a state.
+        //
+        // The presence grant is what the spend cap reads through the
+        // processor, and a grant is a per-request exemption — so handing one
+        // to something that runs on a timer is not a style question, it is
+        // the 12.6x (369 requests in 6h44m from one click, measured on
+        // 2026-10-05). So the flag is classified from the source here for the
+        // same reason `manual` is: a reviewer reading a diff cannot be shown
+        // that a new automatic producer stayed automatic, and a test can.
+        present: /\bpresent\s*:\s*(?!false\b|undefined\b)/.test(args),
         types: [...args.matchAll(/type:\s*'([a-z_]+)'/g)].map((t) => t[1])
       })
     }
@@ -139,6 +149,10 @@ function callSites(): CallSite[] {
  *
  * `manual: true` = a person triggered it, so it must not be gated.
  * `manual: false` = the app decided to, so the switch governs it.
+ * `present: true` = a person triggered it AND is still waiting for it, so
+ * the row must not be parkable on the daily spend cap. A strictly stronger
+ * claim than `manual`, spent by the processor at the row's next claim, and
+ * only a click may pass it.
  *
  * `electron/jobSearch.ts` is no longer a key here: the scan-time
  * auto-tailor was retired (the Scan tab's "Auto-Queue" section and the
@@ -150,7 +164,7 @@ function callSites(): CallSite[] {
  * below, and the post-scan document work it handed over to is the
  * documents backlog sweep, which is still listed.
  */
-const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]> = {
+const INVENTORY: Record<string, { line: number; manual: boolean; present?: boolean; why: string }[]> = {
   // The line numbers moved when the per-provider spend cap added the
   // manual/automated ORIGIN plumbing above these call sites: `MANUAL` and
   // its doc comment at the top of registerIpc, and `opts` at the top of
@@ -162,23 +176,29 @@ const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]
   // rather than where it lives — and a fourth time when the queue recorded a
   // stall in the notification centre, which added one import to the top of
   // `aiQueue.ts` and moved `notifyStoreChanged` out of `main.ts` and above
-  // `registerIpc` into its own module. No call site was added, removed or
-  // reclassified in any pass, and the `manual` column is unchanged, which is
-  // the claim this table exists to make: provenance still travels on the row
-  // to the children a processor hands work to, and only the spend-cap
-  // exemption stopped reading it as presence.
+  // `registerIpc` into its own module. And a fifth when the spend cap's
+  // manual exemption was re-grounded on PRESENCE rather than provenance:
+  // both this file's headers grew, `MANUAL`'s doc comment in `main.ts` had to
+  // explain why it is not the whole inventory (so everything below it moved
+  // down), and the grant needed its own argument in every comment in
+  // `processItem` that already explained provenance. No call site was added,
+  // removed or moved BETWEEN files; the `manual` column is unchanged; and the
+  // only change to what a call site MEANS is the new `present` column, which
+  // went on to exactly the four `main.ts` rows a person reaches — the point
+  // of the audit being that both columns are read off the tree rather than
+  // promised in prose.
   'electron/main.ts': [
-    { line: 549, manual: true, why: 'documents:verify — the Verify button' },
-    { line: 566, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
-    { line: 753, manual: true, why: 'ai:tailor — Tailor / Generate' },
-    { line: 769, manual: true, why: 'tailor:quickApply — Quick Apply' }
+    { line: 576, manual: true, present: true, why: 'documents:verify — the Verify button, queued when the direct call was throttled' },
+    { line: 594, manual: true, present: true, why: 'documents:regenerateSection — the Regenerate button, likewise' },
+    { line: 784, manual: true, present: true, why: 'ai:tailor — Tailor / Generate, likewise' },
+    { line: 809, manual: true, present: true, why: 'tailor:quickApply — Quick Apply, which has NO direct call at all' }
   ],
   'electron/aiQueue.ts': [
-    { line: 668, manual: false, why: 'processor: generation finished, chain the review' },
-    { line: 725, manual: false, why: 'processor: review failed, auto-regenerate the document' },
-    { line: 825, manual: false, why: 'processor: tailor_job_docs finished, review each new document' },
+    { line: 724, manual: false, why: 'processor: generation finished, chain the review' },
+    { line: 781, manual: false, why: 'processor: review failed, auto-regenerate the document' },
+    { line: 881, manual: false, why: 'processor: tailor_job_docs finished, review each new document' },
     {
-      line: 849,
+      line: 914,
       manual: true,
       why:
         "processor: a lane tailor_job_docs' provider REFUSED, so the missing " +
@@ -188,10 +208,12 @@ const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]
         'keep the same ungated restart rights — an automatic child would be ' +
         'dropped by `autoQueueAllows` the moment the user turned that ' +
         "document's toggle off, which is the manual lane losing work it " +
-        'promised.'
+        'promised. NO `present` here, and the omission is structural rather ' +
+        'than careful: the parent spends its grant in the claim write before ' +
+        'it can enqueue anything, so there is nothing here to inherit.'
     },
     {
-      line: 851,
+      line: 916,
       manual: true,
       why: 'the same handoff for the cover-letter half'
     }
@@ -265,14 +287,74 @@ describe('every enqueue() call site is classified', () => {
     }
   })
 
-  it('leaves the ungated type with no automatic producer at all', () => {
-    // `regenerate_section` is the one type with no switch. Nothing in
-    // the tree enqueues it without `manual: true`; if an automatic
+it('leaves the ungated type with no automatic producer at all', () => {
+    // `regenerate_section` is the one type with no switch. Nothing in the
+    // tree enqueues it without `manual: true`; if an automatic
     // producer ever appears, the switch table in autoQueueAllows needs
     // a row for it.
     const regen = sites.filter((s) => s.types.includes('regenerate_section'))
     expect(regen).toHaveLength(1)
     expect(regen[0].manual).toBe(true)
+  })
+
+  it('hands the presence grant to a click and to nothing else', () => {
+    // THE LEAK BOUND, AS A TEST RATHER THAN AS A PROMISE.
+    //
+    // `userPresentAt` is what the spend cap reads through the processor, and
+    // the processor spends it on the row's next claim. That makes it a
+    // per-request exemption, and a per-request exemption reachable from a
+    // timer is how one click became 369 requests in 6h44m (2026-10-05). So
+    // the class of call site allowed to pass `present` is pinned to exactly
+    // the four `ipcMain` handlers a person reaches, and every automatic
+    // producer in the tree — the fit-landing trigger, both re-seeders, the
+    // documents backlog sweep, the processor's own follow-up chaining and
+    // its refused-lane handoff — is checked to be absent from it.
+    //
+    // The stronger statement, "a row the app chose can never buy itself
+    // exemption", is also structural rather than only policed here: `enqueue`
+    // derives the grant from `manual && present`, and `processItem` is the
+    // only reader and spends it in the claim write.
+    const granted = sites.filter((s) => s.present)
+    expect(granted.map((s) => `${s.where}:${s.line}`).sort()).toEqual([
+      'electron/main.ts:576',
+      'electron/main.ts:594',
+      'electron/main.ts:784',
+      'electron/main.ts:809'
+    ])
+    for (const site of granted) {
+      const entry = INVENTORY[site.where]?.find((e) => e.line === site.line)
+      expect(
+        entry?.manual,
+        `${site.where}:${site.line} carries a grant without being provenance-manual`
+      ).toBe(true)
+    }
+    // Named, so the failure says which producer acquired the ability to buy
+    // itself an uncapped request rather than just printing a boolean.
+    for (const site of sites.filter((s) => !s.present)) {
+      expect(
+        site.present,
+        `${site.where}:${site.line} (${INVENTORY[site.where]?.find((e) => e.line === site.line)?.why}) ` +
+          'hands a person\'s work to the queue but does NOT arm the presence grant, so the spend cap ' +
+          'may park that row on the daily budget; if this producer really is reached by a click, it ' +
+          'is a user path and needs `present: true`'
+      ).toBe(false)
+    }
+  })
+
+  it('never lets the refused-lane handoff inherit a grant', () => {
+    // The one call site inside the processor allowed to carry a manual flag,
+    // because it READS the parent's provenance rather than asserting it. It
+    // must not carry presence: the parent has already spent its grant by the
+    // time it gets here, so there is nothing to inherit, and a handoff that
+    // could pass one on would let a single click cascade into a chain of
+    // uncapped rows.
+    const handoff = sites.filter((s) =>
+      /manualQueued/.test(
+        readFileSync(s.where, 'utf8').split('\n').slice(s.line - 1, s.line + 4).join('\n')
+      )
+    )
+    expect(handoff.length).toBeGreaterThan(0)
+    for (const site of handoff) expect(site.present).toBe(false)
   })
 })
 
@@ -672,9 +754,9 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
     // retired, so it is absent from the list and from the comment.
     const automatic = callSites().filter((c) => !c.manual)
     expect(automatic.map((c) => `${c.where}:${c.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:668',
-      'electron/aiQueue.ts:725',
-      'electron/aiQueue.ts:825',
+      'electron/aiQueue.ts:724',
+      'electron/aiQueue.ts:781',
+      'electron/aiQueue.ts:881',
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:136'
@@ -691,8 +773,8 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
       new RegExp(`There are ${WORDS[automatic.length]} automatic producers`)
     )
     // Every producer it names, including the fan-out this comment used
-    // to omit (aiQueue.ts:825 — a different producer from the
-    // generation → review chaining at :668, which fires for a directly
+    // to omit (aiQueue.ts:881 — a different producer from the
+    // generation → review chaining at :724, which fires for a directly
     // queued generate_*). Both line numbers are the INVENTORY's, and the
     // two assertions above are what makes saying so here honest: a stale
     // number in this comment would be the same rot the case exists to

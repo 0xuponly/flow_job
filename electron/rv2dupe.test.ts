@@ -1227,18 +1227,25 @@ describe('5. the five previously-fixed defects are still fixed', () => {
     // assert the flag — they read it off the row they are finishing, which
     // is checked below rather than assumed; six automatic sites, none of
     // them — the scan-time auto-tailor that was the seventh is retired.
+    //
+    // The line numbers moved when the cap's manual exemption was re-grounded
+    // on PRESENCE rather than provenance: both files' comments above these
+    // call sites grew to explain the two flags and what each one buys. No
+    // call site was added, removed or reclassified, and this list is the
+    // independent cross-check that says so — `review.enqueueCallSites.test.ts`
+    // carries the same inventory with a `present` column beside `manual`.
     expect(rows.filter((r) => r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:849',
-      'electron/aiQueue.ts:851',
-      'electron/main.ts:549',
-      'electron/main.ts:566',
-      'electron/main.ts:753',
-      'electron/main.ts:769'
+      'electron/aiQueue.ts:914',
+      'electron/aiQueue.ts:916',
+      'electron/main.ts:576',
+      'electron/main.ts:594',
+      'electron/main.ts:784',
+      'electron/main.ts:809'
     ])
     expect(rows.filter((r) => !r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:668',
-      'electron/aiQueue.ts:725',
-      'electron/aiQueue.ts:825',
+      'electron/aiQueue.ts:724',
+      'electron/aiQueue.ts:781',
+      'electron/aiQueue.ts:881',
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:136'

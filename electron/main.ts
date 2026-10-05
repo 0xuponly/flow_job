@@ -329,15 +329,38 @@ function registerIpc(): void {
    * spending on its OWN work — the queue, the backlog sweeps, the fit
    * re-seeder, background document generation — and never stops a user
    * pressing a button. Every handler below that a person triggers passes
-   * this, so the inventory of "what is never capped" is this list plus the
-   * `manualQueued` rows the queue processor already honours.
+   * this.
    *
    * Automatic producers deliberately do NOT pass it, including the ones
    * that hang off a user gesture: adding a job by hand (jobs:create,
    * jobs:importFromUrl) fires a background fit score the user never asked
    * for, so it is the app's spend and is capped like any other. Nothing is
    * lost by that — the hourly fit re-seeder picks the job up once there is
-   * budget again.
+   * budget again. A board scan is the same: `jobs:scanBoards` re-seeds the
+   * fit and document backlogs afterwards, and that work is the app's, not
+   * the user's.
+   *
+   * THIS CONSTANT IS NOT THE WHOLE INVENTORY, and it is the half that was
+   * missed. It covers a request the app answers IN THE CALL: the user
+   * presses Verify and the handler awaits the answer. It cannot cover a
+   * request whose ONLY delivery mechanism is the queue, because nothing is
+   * awaited and nobody gets an answer until a pass picks the row up — and
+   * four of the handlers below hand such a request to `enqueue` when the
+   * direct call has already thrown (`documents:verify`,
+   * `documents:regenerateSection`, `ai:tailor`), while `tailor:quickApply`
+   * is nothing but an enqueue. Those rows were then processed as automated
+   * work, so a button press could be parked on a full day's budget for up to
+   * 24h: a real regression, reproduced by the reviewer on a Quick Apply row
+   * that sat `parkedReason: 'provider_cap'` with 0 outbound requests over
+   * 6.7 hours while holding `manualQueued: true`.
+   *
+   * So those five call sites ALSO pass `{ present: true }`, which is a
+   * different claim with a different life: `manualQueued` on the row records
+   * that a person asked once and is permanent, and `userPresentAt` records
+   * that they are still waiting and is spent by the processor at the row's
+   * next claim. The first is provenance and the second is presence, they
+   * cannot be read as each other, and `aiQueue.enqueue`'s doc carries the
+   * full list of which is which. See `AIQueueItem.userPresentAt`.
    */
   const MANUAL: AiCallOptions = { manual: true }
 
@@ -546,7 +569,11 @@ function registerIpc(): void {
       return result
     } catch (err) {
       if (err instanceof RateLimitError) {
-        enqueue({ type: 'verify', jobId, documentId }, { manual: true })
+        // `present` as well as `manual`: from here the queue is the ONLY
+        // thing that will answer this press, so the row it creates has to
+        // get an attempt the daily budget cannot refuse. The window is still
+        // showing the user a spinner on this document.
+        enqueue({ type: 'verify', jobId, documentId }, { manual: true, present: true })
         return { queued: true }
       }
       throw err
@@ -560,10 +587,11 @@ function registerIpc(): void {
       // ProviderCooldownError included, deliberately — see the note above
       // documents:verify. Nothing was spent, so this is a deferral of the
       // user's own request, not a second attempt.
-      // `manual`: an already-queued regeneration for this section is
-      // revived and promoted, not queued twice.
+      // `manual`: an already-queued regeneration for this section is revived
+      // and promoted, not queued twice. `present`: nobody has answered this
+      // press yet, so its row must not wait on a budget.
       if (err instanceof RateLimitError) {
-        enqueue({ type: 'regenerate_section', jobId, documentId, sectionName, extraContext }, { manual: true })
+        enqueue({ type: 'regenerate_section', jobId, documentId, sectionName, extraContext }, { manual: true, present: true })
         return { queued: true }
       }
       throw err
@@ -750,7 +778,10 @@ function registerIpc(): void {
       return await tailorAndSanitize(request, MANUAL)
     } catch (err) {
       if (err instanceof RateLimitError) {
-        enqueue({ type: request.document_type === 'cv' ? 'generate_cv' : 'generate_cover_letter', jobId: request.job_id }, { manual: true })
+        // `present` as well as `manual` — see the note above MANUAL. The
+        // button answered "queued", so from here the queue is the only thing
+        // that will produce the document, and the user is waiting on it.
+        enqueue({ type: request.document_type === 'cv' ? 'generate_cv' : 'generate_cover_letter', jobId: request.job_id }, { manual: true, present: true })
         return { queued: true }
       }
       throw err
@@ -766,7 +797,16 @@ function registerIpc(): void {
     // `manual`: Quick Apply is a user action, so an already-queued
     // generation item for this job is promoted to the top of its tier
     // rather than stacked a second time.
-    enqueue({ type: 'tailor_job_docs', jobId }, { manual: true })
+    //
+    // `present`, and this is the case the flag was added for. There is no
+    // direct `callAI` anywhere on this path — the handler's whole body is the
+    // enqueue and `{ queued: true }` — so the queue is not a fallback here,
+    // it IS the delivery mechanism, and a row that can be parked on a spent
+    // daily budget is a button that can say no to the person who pressed it.
+    // The renderer's optimistic spinner (JobsPage `onQuickApply`) waits on
+    // `tailor_generated_at` / `tailor_last_error`, so a parked row is a
+    // spinner with no explanation outside the drawer, for up to a day.
+    enqueue({ type: 'tailor_job_docs', jobId }, { manual: true, present: true })
     return { queued: true }
   })
 
