@@ -49,6 +49,28 @@ import type { AIQueueItem } from './types'
  * long as it is true. Recording per pass would turn the 8,061 refusals into
  * 36 rows and then into 36 more on the next bad afternoon.
  *
+ * AND WHY THE ONE-SHOT IS SET AFTER THE WRITE, NOT BEFORE. `reportedForStall`
+ * is the record "this stall has been announced", and it is what keeps the
+ * 8,061 refusals from becoming 8,061 rows. Latching it before the write made
+ * that suppression a CLAIM rather than a RECEIPT: the latch landed, then
+ * `addNotification` threw, and the row was already marked as announced — so
+ * every subsequent stall in that window, up to 24 hours of them, was silenced
+ * by a write that never happened. A one-shot whose whole job is to be a
+ * deduplication key has to be set by the thing that proves the row exists; a
+ * failure that is invisible after the first attempt is the silent-failure
+ * class this branch exists to remove, and here it was hiding the very record
+ * it was deduplicating. Proved by a probe: force the write to fail on the
+ * pass that crosses the ceiling, restore the store, report on 60 further
+ * passes (10 hours of a still-stuck queue), count 0 records. Now it records
+ * on the next one.
+ *
+ * Which is safe because the retry is idempotent. A pass that gets further
+ * than the one that failed writes the one row it would have written;
+ * `addNotification` collapses a repeat of the same `group_key` into the row
+ * that is already there, so the worst a failed write can cost is one extra
+ * no-op write — never a second row for one stall, and never a badge the user
+ * has to read twice.
+ *
  * AND WHY "NOTHING IS PARKED" IS NOT RECOVERY. `runPass` alternates. While
  * every model is cooling it parks the due rows and claims nothing; the moment
  * a cooldown lapses it claims one, the provider 429s it again, and the next
@@ -129,8 +151,7 @@ export function reportStalledQueue(now: number, stallAfterMs: number): void {
     if (stalledSince === 0) stalledSince = now
     // Strictly past the ceiling: at exactly the ceiling the app has only
     // just stopped trying harder, which is the patience, not the defect.
-    if (reportedForStall || now - stalledSince <= stallAfterMs) return
-    reportedForStall = true
+if (reportedForStall || now - stalledSince <= stallAfterMs) return
 
     const capped = blocked.filter((q) => q.parkedReason === 'provider_cap')
     const cooling = blocked.filter((q) => q.parkedReason !== 'provider_cap')
@@ -150,11 +171,21 @@ export function reportStalledQueue(now: number, stallAfterMs: number): void {
       // Scoped to what the parks themselves guarantee, because the queue
       // does NOT guarantee it for the whole stall: a lapsing cooldown lets a
       // pass claim a row and the provider refuse it, so requests can and do
-      // happen while this is true. What parking always guarantees is that
-      // the row spent no attempt, was charged no revival, and was not marked
+      // happen while this is true. What parking always guarantees is that the
+      // row spent no attempt, was charged no revival, and was not marked
       // failed — which is the part the user needs, since it is the
       // difference between work waiting and work being thrown away.
-      'Waiting on a provider costs a task no attempt and no revival, and none of them has been marked failed — this work is still queued and will run as soon as a provider can answer. It is not a retry countdown.',
+      //
+      // And it names no MOMENT, because the two kinds of wait are not the
+      // same length and no single clause can be true of both. A cooldown
+      // clears on the provider's own clock, minutes out; a spent daily call
+      // cap can wait hours — and in that case the provider would answer RIGHT
+      // NOW, because the budget is the only thing stopping the row. "As soon
+      // as a provider can answer" was exactly that over-promise, and a user
+      // who believed it would sit in front of an app already able to run
+      // their work. The real time is not invented either: it is on every
+      // affected row's own `lastError`, quoted in full below.
+      'Waiting on a provider costs a task no attempt and no revival, and none of them has been marked failed — this work is still queued, and it runs when the wait ends: a cooldown ends when the provider says so, and a spent daily budget frees when the window slides. It is not a retry countdown.',
       '',
       `Waiting on the daily call cap (${capped.length}):`,
       ...distinctErrors(capped, 3).map((t) => `  · ${t}`),
@@ -181,10 +212,29 @@ export function reportStalledQueue(now: number, stallAfterMs: number): void {
       // and it is why writing this is safe).
       group_key: `error|ai|queued AI work is not running`
     })
+
+    // THE RECEIPT, NOT THE CLAIM. Set here, after `addNotification` returned,
+    // so the latch means "this stall is on the badge" rather than "this stall
+    // is about to be, and we hope". A throw above leaves it false and the
+    // next pass over the threshold tries again — which is what the shipped
+    // `a store that cannot be written does not stop the queue` test only half
+    // covered: it proved the pass did not throw, and said nothing about
+    // whether a LATER pass could still record the stall. It can now.
+    reportedForStall = true
+
+    // The write is durable at this point and only the announcement is left,
+    // and `notifyStoreChanged` cannot throw (it guards its whole body). It
+    // stays inside the `try` anyway: the queue's next passes are the thing
+    // that must not be disturbed, and a future change here must not be able
+    // to reach past the catch.
     notifyStoreChanged()
   } catch (err) {
     // A store that cannot be written must not stop the queue from running the
     // work the record was about. The rows are still parked and still logged.
+    //
+    // What it must NOT do is swallow the stall: `reportedForStall` is only
+    // set once the row exists, so a failure here leaves the latch false and
+    // the next pass past the threshold writes the record.
     log.ai.warn(`could not record the stalled queue in the notification centre: ${String(err)}`)
   }
 }

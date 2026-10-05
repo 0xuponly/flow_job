@@ -372,6 +372,81 @@ describe('a stall past the ceiling is one row, however many refusals it contains
     expect(getAIQueue().filter((q: AIQueueItem) => q.blockedSince !== undefined)).toHaveLength(2)
   })
 
+  it('and a FAILED write does not consume the one-shot for the rest of the stall', () => {
+    // The defect the first test above could not see. It proved the pass does
+    // not throw; it said nothing about whether a LATER pass could still
+    // record the stall — and it could not, because `reportedForStall` latched
+    // BEFORE `addNotification`, so a store that refused the write on the one
+    // pass that crossed the ceiling silenced every stall in that window, up to
+    // 24 hours of them. A failure that is invisible after the first attempt is
+    // the silent-failure class this whole branch exists to remove.
+    //
+    // Proved the reviewer's way: fail the crossing pass, restore the store,
+    // then keep reporting over a still-stuck queue.
+    cooldownParked(2)
+    reportStalledQueue(T0, PROVIDER_REPROBE_CAP_MS)
+    const crossing = T0 + PROVIDER_REPROBE_CAP_MS + 60_000
+    notif.failWrites = true
+    vi.setSystemTime(crossing)
+    reportStalledQueue(crossing, PROVIDER_REPROBE_CAP_MS)
+    expect(rows(), 'the write that could not happen left no record').toHaveLength(0)
+
+    notif.failWrites = false
+    // The very next pass over the threshold. It has to record.
+    const next = crossing + 629_000
+    vi.setSystemTime(next)
+    reportStalledQueue(next, PROVIDER_REPROBE_CAP_MS)
+    expect(rows()).toHaveLength(1)
+    expect(rows()[0].message).toMatch(/not running/i)
+
+    // ...and it is still ONE record for the stall, not a record per attempt:
+    // the one-shot now latches, because latching is what the successful write
+    // is FOR and the write is what has to happen first.
+    for (let i = 2; i <= 60; i++) {
+      const at = next + i * 629_000
+      vi.setSystemTime(at)
+      reportStalledQueue(at, PROVIDER_REPROBE_CAP_MS)
+    }
+    expect(rows()).toHaveLength(1)
+  })
+
+  it('a retried write after a partial failure still collapses to one row', () => {
+    // The reason re-latching on a caught failure is safe rather than a flood:
+    // `addNotification` folds a repeat of the same `group_key` into the row
+    // that is already there. The worst a failed write can cost is one extra
+    // no-op write — never a second row for one stall.
+    capParked(3)
+    const crossing = T0 + PROVIDER_REPROBE_CAP_MS + 60_000
+    notif.failWrites = true
+    vi.setSystemTime(crossing)
+    reportStalledQueue(crossing, PROVIDER_REPROBE_CAP_MS)
+    notif.failWrites = false
+    // The next pass over the threshold. One second later would NOT do: the
+    // ceiling is measured from when the stall was first seen, so a report
+    // inside it is the patience rather than the defect.
+    const retry = crossing + 629_000
+    vi.setSystemTime(retry)
+    reportStalledQueue(retry, PROVIDER_REPROBE_CAP_MS)
+    expect(rows()).toHaveLength(1)
+    const groups = new Set(rows().map((r) => r.group_key))
+    expect(groups.size).toBe(1)
+  })
+
+  it('the record promises the wait, not a provider that can answer now', () => {
+    // m4: for a SPEND-CAP stall the provider would answer this instant — the
+    // budget is the only thing stopping the row, and the wait is up to a day.
+    // "As soon as a provider can answer" was that over-promise, two clauses
+    // after the claim that was already fixed for being too strong.
+    capParked(2, 'openrouter.ai/api/v1 is at its call cap — 2 calls in the last 24h against a cap of 2 (2 automated).')
+    reportAfter(PROVIDER_REPROBE_CAP_MS + 60_000)
+    const [row] = rows()
+    expect(row.full_message).not.toMatch(/as soon as a provider can answer/i)
+    // ...and what it says instead is true of BOTH kinds of wait rather than
+    // only the short one.
+    expect(row.full_message).toMatch(/runs when the wait ends/)
+    expect(row.full_message).toMatch(/budget frees when the window slides/)
+  })
+
   it('the queue still emits no toast for it', () => {
     cooldownParked(2)
     reportAfter(PROVIDER_REPROBE_CAP_MS + 60_000)
