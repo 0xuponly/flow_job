@@ -477,18 +477,41 @@ function pickOrder(items: AIQueueItem[]): AIQueueItem[] {
 }
 
 async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
-  // Who asked for this item. The row already records it (`manualQueued`,
-  // written by `enqueue({ manual: true })` from the five user entry points
-  // in main.ts), and it is the SAME division the auto-queue switches draw:
-  // the app may stop spending on its own, and never stops the user.
+  // Every request this function makes is the app's own, and `manual` has to
+  // say so, because `manual` is the flag the spend cap reads.
   //
-  // Read once, here, and handed to every AI call this item makes, because
-  // the spend cap (ai.ts) is enforced on automated work only — a cap that
-  // also refused the user's own Regenerate would be the dead end the whole
-  // manual/automated split exists to avoid. Absent means automated, which is
-  // the safe direction: an item from before the field existed is treated as
-  // the app's own work and therefore capped.
-  const opts: AiCallOptions = { manual: item.manualQueued === true }
+  // The row's `manualQueued` is NOT that flag, and reading it as one is what
+  // spent a user's budget while they were asleep. It records PROVENANCE —
+  // "a person asked for this once" — and it is the right flag for every
+  // meaning that has: reviving the row unattended, skipping the auto-queue
+  // switches, promoting it to the top of its tier. It is not PRESENCE, and
+  // presence is the only thing the cap's manual exemption is for: refusing
+  // work a person is watching and waiting on would be a dead end, and that
+  // is worth any cost.
+  //
+  // Nothing here is ever attended. `processQueue` has exactly one caller —
+  // the poll interval below — and `retryQueueItem`, the Retry button, is
+  // synchronous and only re-arms a row. Every user-initiated request goes
+  // straight to `callAI` with `manual: true` from an `ipcMain` handler that
+  // awaits it and hands the answer back to the window; the
+  // `enqueue({ manual: true })` beside it is the fallback taken when that
+  // direct call had already thrown, so by the time a manual row exists the
+  // app has already answered "queued" and nobody is waiting for it.
+  //
+  // Measured on 2026-10-05, on the row's own provenance being read as
+  // presence: 369 requests in 6h44m, every one logged `origin=manual`, in
+  // 37 bursts of 10 whose inter-burst gap was 629-630s — this file's
+  // `PROVIDER_REPROBE_CAP_MS` re-park ceiling plus the poll interval — while
+  // the automated ledger sat pinned at exactly the cap of 50 and every
+  // automatic row was refused 8,061 times. One click had bought an uncapped
+  // row that the machine then drove on its own schedule for a sixth of a day,
+  // at 12.6x the budget the user had set, spending into a rate-limited wall.
+  //
+  // So the processor sends automated work and the cap holds it exactly as it
+  // holds every other row. A refused row parks without spending an attempt
+  // or a revival, and runs the moment the budget comes back — which is what
+  // the user asked for and what the row is for.
+  const opts: AiCallOptions = { manual: false }
   try {
     // Inside the try: if this write throws there is nothing useful to
     // record for the item, and letting it escape would abort the whole

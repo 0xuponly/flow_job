@@ -156,9 +156,14 @@ const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]
   // its doc comment at the top of registerIpc, and `opts` at the top of
   // processItem. They moved again when the notification center recorded
   // `uncaughtException` in this file (electron/main.ts), which added a
-  // block ABOVE registerIpc. No call site was added, removed or
-  // reclassified in either pass — the `manual` column below is unchanged,
-  // which is the claim this table exists to make.
+  // block ABOVE registerIpc. They moved a third time when `processItem`'s
+  // `opts` comment grew to explain why the processor is never attended —
+  // which is the one change here that altered WHAT a processor call means
+  // rather than where it lives. No call site was added, removed or
+  // reclassified in any pass, and the `manual` column is unchanged, which is
+  // the claim this table exists to make: provenance still travels on the row
+  // to the children a processor hands work to, and only the spend-cap
+  // exemption stopped reading it as presence.
   'electron/main.ts': [
     { line: 577, manual: true, why: 'documents:verify — the Verify button' },
     { line: 594, manual: true, why: 'documents:regenerateSection — the Regenerate button' },
@@ -166,11 +171,11 @@ const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]
     { line: 797, manual: true, why: 'tailor:quickApply — Quick Apply' }
   ],
   'electron/aiQueue.ts': [
-    { line: 644, manual: false, why: 'processor: generation finished, chain the review' },
-    { line: 701, manual: false, why: 'processor: review failed, auto-regenerate the document' },
-    { line: 801, manual: false, why: 'processor: tailor_job_docs finished, review each new document' },
+    { line: 667, manual: false, why: 'processor: generation finished, chain the review' },
+    { line: 724, manual: false, why: 'processor: review failed, auto-regenerate the document' },
+    { line: 824, manual: false, why: 'processor: tailor_job_docs finished, review each new document' },
     {
-      line: 825,
+      line: 848,
       manual: true,
       why:
         "processor: a lane tailor_job_docs' provider REFUSED, so the missing " +
@@ -183,7 +188,7 @@ const INVENTORY: Record<string, { line: number; manual: boolean; why: string }[]
         'promised.'
     },
     {
-      line: 827,
+      line: 850,
       manual: true,
       why: 'the same handoff for the cover-letter half'
     }
@@ -664,9 +669,9 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
     // retired, so it is absent from the list and from the comment.
     const automatic = callSites().filter((c) => !c.manual)
     expect(automatic.map((c) => `${c.where}:${c.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:644',
-      'electron/aiQueue.ts:701',
-      'electron/aiQueue.ts:801',
+      'electron/aiQueue.ts:667',
+      'electron/aiQueue.ts:724',
+      'electron/aiQueue.ts:824',
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:136'

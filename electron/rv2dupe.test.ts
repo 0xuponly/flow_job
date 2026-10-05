@@ -1228,17 +1228,17 @@ describe('5. the five previously-fixed defects are still fixed', () => {
     // is checked below rather than assumed; six automatic sites, none of
     // them — the scan-time auto-tailor that was the seventh is retired.
     expect(rows.filter((r) => r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:825',
-      'electron/aiQueue.ts:827',
+      'electron/aiQueue.ts:848',
+      'electron/aiQueue.ts:850',
       'electron/main.ts:577',
       'electron/main.ts:594',
       'electron/main.ts:781',
       'electron/main.ts:797'
     ])
     expect(rows.filter((r) => !r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:644',
-      'electron/aiQueue.ts:701',
-      'electron/aiQueue.ts:801',
+      'electron/aiQueue.ts:667',
+      'electron/aiQueue.ts:724',
+      'electron/aiQueue.ts:824',
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:136'

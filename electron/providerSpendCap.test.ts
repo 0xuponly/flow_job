@@ -779,40 +779,56 @@ describe('manual work is never capped — and is never free', () => {
     expect(providerBudget(key).used).toBe(3)
   })
 
-  it('the origin travels off the queue row: a MANUAL row runs at the cap', async () => {
+  it('a MANUAL-origin queue row is still capped: presence, not provenance', async () => {
     // The end-to-end version, through the real processor, because the
-    // plumbing that matters is `manualQueued` on the row becoming `{ manual:
-    // true }` at the request. Testing callAI's flag alone would leave that
-    // hop unproven — and it is exactly the hop a future change could break
-    // in the one direction that silently re-introduces the dead end.
+    // plumbing that matters is `manualQueued` on the row meeting the spend
+    // gate in `ai.ts`. Testing callAI's flag alone would leave that hop
+    // unproven — and it is exactly the hop that let one click buy an
+    // uncapped row the machine then drove on its own: 369 requests over
+    // 6h44m on 2026-10-05, all `origin=manual`, in 37 bursts of 10 on a
+    // 629s cycle, against a ledger the automated side could not move past
+    // 50. Provenance is still on the row and still worth everything it is
+    // worth — it is revived unattended, it skips the auto-queue switches,
+    // it is promoted — but nothing in the processor is ever attended, so it
+    // is not what the cap reads.
     updateSettings({ provider_call_cap: 1 })
     addModels(OPENROUTER, OPENROUTER_KEY, 2)
     const { jobId, documentId } = jobWithCv()
     addAIQueueItem({ type: 'verify', jobId, documentId, manualQueued: true })
     stubTransport({ status: 200, content: '{"score":90,"passed":true,"feedback":"ok"}' })
 
-    // The user's Verify runs.
+    // The first row runs and spends the budget — the processor is not
+    // blocked from working, only from over-spending.
     await processQueue()
     expect(onTheWire()).toBe(1)
 
-    // The budget is now spent, so a row the APP queued is refused — while the
-    // user's own keeps working.
+    // A row the APP queued is refused — and so, now, is a row the USER
+    // queued. Same cap, same reason, no attempt and no revival charged.
     const second = jobWithCv()
     addAIQueueItem({ type: 'verify', jobId: second.jobId, documentId: second.documentId, manualQueued: false })
+    const third = jobWithCv()
+    addAIQueueItem({ type: 'verify', jobId: third.jobId, documentId: third.documentId, manualQueued: true })
     const before = onTheWire()
     await processQueue()
     expect(onTheWire()).toBe(before)
 
-    const third = jobWithCv()
-    addAIQueueItem({ type: 'verify', jobId: third.jobId, documentId: third.documentId, manualQueued: true })
-    await processQueue()
-    expect(onTheWire()).toBe(before + 1)
+    // Both are parked, not failed: the work is still wanted and the provider
+    // will be affordable again in a day.
+    for (const job of [second.jobId, third.jobId]) {
+      const parked = getAIQueue().find((q) => q.jobId === job)
+      expect(parked?.status).toBe('pending')
+      expect(parked?.lastError).toMatch(/call cap/i)
+      expect(parked?.attempts).toBe(0)
+      expect(parked?.autoRevives).toBeUndefined()
+    }
 
-    // The automatic row is parked, not failed: the work is still wanted and
-    // the provider will be affordable again in a day.
-    const parked = getAIQueue().find((q) => q.jobId === second.jobId)
-    expect(parked?.status).toBe('pending')
-    expect(parked?.lastError).toMatch(/call cap/i)
+    // And what the exemption is FOR is untouched: the user pressing Verify
+    // gets a direct, awaited call that the cap will not refuse. The row
+    // above exists only because that call had already failed.
+    resetModelHealth()
+    stubTransport({ status: 200, content: '{"score":90,"passed":true,"feedback":"ok"}' })
+    await callAI('sys', 'user pressed verify', 0.7, 45_000, undefined, undefined, undefined, { manual: true })
+    expect(onTheWire()).toBe(before + 1)
   })
 })
 
