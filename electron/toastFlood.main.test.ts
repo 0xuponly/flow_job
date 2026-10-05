@@ -501,8 +501,35 @@ describe('the list channel reports a read it could not do', () => {
 
   it('still answers with rows when the read works', async () => {
     addNotification({ type: 'error', source: 'app', message: 'Internal error: boom', full_message: 'boom' })
-    const result = await invoke('notifications:notificationsList') as { rows?: unknown[] }
+    const result = await invoke('notifications:notificationsList') as { rows?: unknown[]; unreadable?: number }
     expect(Array.isArray(result.rows)).toBe(true)
     expect((result.rows ?? []).length).toBeGreaterThan(0)
+    // A clean store reports zero, so the drawer has a number to compare
+    // against rather than an absence it has to interpret.
+    expect(result.unreadable).toBe(0)
+  })
+
+  /**
+   * MINOR 6, end to end through the real handler. The store migration
+   * discards entries of `notifications` that are not rows — it has to, this
+   * is `loadStore` and a string in that array would take jobs and documents
+   * down with it — and the count is what stops the discard from reading as
+   * "there is nothing here".
+   */
+  it('carries the count of entries it could not read', async () => {
+    writeFileSync(storeFile, JSON.stringify({
+      jobs: [], documents: [], applications: [], api_models: [],
+      nextId: 900, seen_urls: [], ai_queue: [], board_health: {},
+      board_scan_times: {}, provider_spend: {}, deleted_jobs: [],
+      blacklisted_companies: [], settings: {},
+      notifications: ['not-an-object']
+    }))
+    reloadStore()
+
+    const result = await invoke('notifications:notificationsList') as { rows?: unknown[]; unreadable?: number }
+    expect(result.rows).toEqual([])
+    // Without this number the renderer sees an empty list and reports an
+    // empty notification center over a store that was not empty.
+    expect(result.unreadable).toBe(1)
   })
 })

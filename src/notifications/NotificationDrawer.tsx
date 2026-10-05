@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNotifications } from './NotificationsProvider'
-import { groupCountLabel, groupNotifications, rowOccurrences, totalOccurrences, type NotificationGroup } from './grouping'
+import { groupCountLabel, groupNotifications, type NotificationGroup } from './grouping'
 import QueuePanel from './QueuePanel'
 import { notify } from '../components/Notifications'
 import { api } from '../api'
@@ -23,34 +23,27 @@ function formatTime(ts: number): string {
  * surprise because the user opened it deliberately. Same shape as the
  * queue panel's window (`QueuePanel.tsx`), same reason.
  *
- * Paged by ROW, not by occurrence, because an entry renders one row's
- * payload. A row that stands for four occurrences is four things that
- * happened and one thing to read, and a page boundary that counted
- * occurrences would render fewer entries than it says it is showing.
+ * Paged by ROW, because a row is what the window reveals. `shown` is a row
+ * count and so is `occurrences.length`; deriving the button from anything
+ * else is how it came to promise five more entries and reveal none — a
+ * group holding one row whose counter read 30 satisfied `count > shown`
+ * while there was no second row to show.
  */
 const OCCURRENCE_PAGE = 25
 
 /**
  * Counts both things, because they answer different questions and the
- * user needs both: how many distinct things went wrong, and how many
- * times. A center reading "1 notification" when twelve documents failed
- * would be technically true and practically a lie.
+ * user needs both: how many distinct things went wrong, and how many lines
+ * they collapse onto. A centre reading "1 notification" when twelve
+ * documents failed would be technically true and practically a lie.
  *
- * The first number is occurrences rather than rows for the same reason —
- * see `NotificationGroup.count`. Rows are an implementation detail of how
- * the repeats were stored; the user is asking how many things went wrong.
- *
- * "in N groups" is said only when rows were actually collapsed into fewer
- * lines than there are rows. Otherwise it would restate the first number
- * and read like a second fact about the user's work.
+ * Both numbers are ROW counts, for the reason in `NotificationGroup`. There
+ * is no emission count anywhere in this component, because there is no
+ * emission count anywhere in the product.
  */
-function notificationsFooter(
-  occurrenceCount: number,
-  groupCount: number,
-  rowCount: number
-): string {
-  if (occurrenceCount === 0) return '0 notifications'
-  const total = `${occurrenceCount} notification${occurrenceCount === 1 ? '' : 's'}`
+function notificationsFooter(rowCount: number, groupCount: number): string {
+  if (rowCount === 0) return '0 notifications'
+  const total = `${rowCount} notification${rowCount === 1 ? '' : 's'}`
   if (groupCount >= rowCount) return total
   return `${total} in ${groupCount} group${groupCount === 1 ? '' : 's'}`
 }
@@ -75,12 +68,11 @@ const dismissButtonStyle: React.CSSProperties = {
  */
 function Occurrence({ row, onDismiss }: { row: NotificationRow; onDismiss: (id: number) => void }) {
   const job = row.job
-  // The count is the store's, not this component's: the main process folds
-  // a recognised repeat into the row instead of writing a second one, so a
-  // row here can stand for several occurrences. Rendering it as though it
-  // were one would under-report, and rendering the time alone would read as
-  // "this happened once" — which is the claim the count exists to qualify.
-  const times = rowOccurrences(row)
+  // One entry, one thing that went wrong, at one time, with one payload.
+  // Nothing here repeats itself: a repeat of the same thing did not become
+  // a second row, and it does not get an entry that claims it did — the
+  // store decided it was the same thing inside a two-second window, so
+  // this is one occurrence and the timestamp is the only time it has.
   return (
     <li
       className="notif-occurrence"
@@ -89,7 +81,6 @@ function Occurrence({ row, onDismiss }: { row: NotificationRow; onDismiss: (id: 
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
         <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
           <time dateTime={new Date(row.created_at).toISOString()}>{formatTime(row.created_at)}</time>
-          {times > 1 ? <span> · {times} occurrences</span> : null}
           {job?.job_title ? <span> · {job.job_title}</span> : null}
           {job?.job_company ? <span> · {job.job_company}</span> : null}
           {job?.job_location ? <span> · {job.job_location}</span> : null}
@@ -135,7 +126,13 @@ interface GroupProps {
 function GroupRow({ group, onDismiss, onDismissGroup }: GroupProps) {
   const [expanded, setExpanded] = useState(false)
   const [shown, setShown] = useState(OCCURRENCE_PAGE)
-  const count = group.count
+  // One number for the badge AND for the pager, because they are the same
+  // number: rows. They were briefly different — the badge summed a
+  // per-row counter while `shown` counted rows — which made the pager offer
+  // "Show 5 more" on a group holding a single row and reveal nothing on
+  // click. A badge and a pager that disagree about what they are counting
+  // cannot both be right, so they read the same field.
+  const count = group.occurrences.length
   const countLabel = groupCountLabel(count)
   const visible = expanded ? group.occurrences.slice(0, shown) : []
 
@@ -192,6 +189,12 @@ function GroupRow({ group, onDismiss, onDismissGroup }: GroupProps) {
               <Occurrence key={row.id} row={row} onDismiss={onDismiss} />
             ))}
           </ul>
+          {/* `count > shown` and the number in the label are both row
+              arithmetic, and `shown` only ever grows by OCCURRENCE_PAGE, so
+              the label cannot promise more rows than exist. The label is
+              `count - shown` rather than a bare page size because that is
+              the honest answer to "how much is left" — and when it is wrong
+              the button is dead, so the two are read from one number. */}
           {count > shown && (
             <button
               type="button"
@@ -221,7 +224,7 @@ type Panel = 'notifications' | 'queue'
 const QUEUE_POLL_MS = 10000
 
 export default function NotificationDrawer() {
-  const { list, isOpen, close, dismiss, dismissGroup, dismissAll, refresh, loadError } = useNotifications()
+  const { list, isOpen, close, dismiss, dismissGroup, dismissAll, refresh, loadError, unreadable } = useNotifications()
   const [mounted, setMounted] = useState(false)
   const [panel, setPanel] = useState<Panel>('notifications')
   const [queue, setQueue] = useState<QueueItemView[]>([])
@@ -340,18 +343,23 @@ export default function NotificationDrawer() {
   if (!mounted || !isOpen) return null
 
   const groups = groupNotifications(list)
-  const occurrences = totalOccurrences(list)
 
   // The list, or nothing at all when there is nothing to be honest about.
   //
-  // The empty state is suppressed by `loadError` rather than sitting beside
-  // it, and that is the whole of MAJOR 3: rendering "No notifications." over
-  // a failed read is indistinguishable from the truth, and it is a lie
-  // exactly when the user most needs to be told — a crash record written by
-  // the main process is in the file, and a store that cannot be read is one
-  // way the user never finds out there was something there to find.
+  // Two different ways the list can be incomplete, and both suppress the
+  // empty state rather than sitting beside it, because "No notifications."
+  // over an incomplete list is indistinguishable from the truth and is a
+  // lie exactly when the user most needs to be told:
   //
-  // Rows the last successful read DID produce stay on screen below the
+  //   `loadError` — the read itself failed (a store that cannot be
+  //     decrypted, or an IPC channel that is gone).
+  //
+  //   `unreadable` — the read worked, but the store file holds entries the
+  //     migration had to discard because they were not rows. A store whose
+  //     only entry is the string `'not-an-object'` used to land here
+  //     indistinguishable from a centre that had genuinely never been used.
+  //
+  // Rows the last successful read DID produce stay on screen under the
   // banner. Blanking them would replace one lie with another, this time on
   // top of rows the user had already read, so the banner says they may be
   // stale instead.
@@ -369,7 +377,7 @@ export default function NotificationDrawer() {
         ))}
       </ul>
     )
-  } else if (!loadError) {
+  } else if (!loadError && unreadable === 0) {
     body = (
       <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 32, fontSize: 14 }}>
         No notifications.
@@ -514,6 +522,29 @@ export default function NotificationDrawer() {
                   </button>
                 </div>
               )}
+              {unreadable > 0 && (
+                <div
+                  data-testid="notif-unreadable"
+                  role="alert"
+                  style={{
+                    border: '1px solid var(--danger)',
+                    borderRadius: 6,
+                    padding: 12,
+                    marginBottom: 12,
+                    fontSize: 13,
+                    color: 'var(--text)',
+                  }}
+                >
+                  <div>
+                    {`${unreadable} ${unreadable === 1 ? 'entry' : 'entries'} in the notification store could not be read.`}
+                  </div>
+                  <div style={{ color: 'var(--text-muted)', marginTop: 4 }}>
+                    {list.length > 0
+                      ? 'What is shown below is everything else the store holds.'
+                      : 'Nothing could be shown.'}
+                  </div>
+                </div>
+              )}
               {body}
             </>
           ) : (
@@ -528,7 +559,7 @@ export default function NotificationDrawer() {
         </div>
         <footer style={{ padding: 12, borderTop: '1px solid var(--border)', color: 'var(--text-muted)', fontSize: 12, textAlign: 'center' }}>
           {panel === 'notifications'
-            ? notificationsFooter(occurrences, groups.length, list.length)
+            ? notificationsFooter(list.length, groups.length)
             : (queue.length === 0 ? '0 queued tasks' : `${queue.length} queued task${queue.length === 1 ? '' : 's'}`)}
         </footer>
       </aside>

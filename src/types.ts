@@ -516,14 +516,10 @@ export interface NotificationRow {
   created_at: number
   dismissed_at: number | null
   group_key: string
-  // How many times this fact actually happened. Required in
-  // electron/types.ts and backfilled to 1 by the store migration, but
-  // OPTIONAL here on purpose: this is the renderer's read contract, and it
-  // reads rows off an IPC boundary that a store file — or a build older
-  // than the migration — can shape differently from the type. Every reader
-  // goes through `rowOccurrences` in notifications/grouping.ts, which is
-  // the single place that decides what an absent one means, rather than
-  // each of them carrying a `?? 1` that could drift.
-  occurrences?: number
+  // No occurrence counter, deliberately. One row is one thing that went
+  // wrong, so a row has nothing to count: a repeat of the same thing is
+  // not folded into the row with a number on it, it simply does not become
+  // a row. Anything that summed a per-row count here would put the number
+  // of times the app spoke back on screen as the number of failures.
   job?: NotificationJobContext
 }

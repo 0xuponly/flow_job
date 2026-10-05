@@ -9,7 +9,7 @@
  * drawer must not depend on.
  */
 import { describe, it, expect } from 'vitest'
-import { groupCountLabel, groupNotifications, rowOccurrences, totalOccurrences } from './grouping'
+import { groupCountLabel, groupNotifications } from './grouping'
 import type { NotificationRow } from '../types'
 
 function row(over: Partial<NotificationRow> & { id: number; group_key: string }): NotificationRow {
@@ -108,74 +108,39 @@ describe('groupNotifications', () => {
 })
 
 /**
- * A row is the record of one thing having happened, unless the main
- * process folded a repeat into it. `count` is what the group badge reads,
- * so a row count used here would report the double-emission the fold exists
- * to remove — the number that made the badge a lie in the first place.
+ * What the number on a collapsed row means.
+ *
+ * There is no `count` field and no per-row counter, and that is the fix
+ * rather than a simplification of one: `electron/notifications.ts` refuses
+ * to write a second row for the same thing inside `DEDUPE_WINDOW_MS`, so a
+ * group's `occurrences.length` is already the number of things that went
+ * wrong. Summing a per-row emission counter on top of it would have put
+ * `× 12` back on screen for twelve emissions of one failure — the exact
+ * number that was filed as a lie, reached from better code.
  */
-describe('rowOccurrences', () => {
-  it('reads the row\'s own count', () => {
-    expect(rowOccurrences(row({ id: 1, group_key: A, occurrences: 7 }))).toBe(7)
-  })
-
-  it('reads a missing count as one, never as zero or NaN', () => {
-    // The field is optional on this side of the IPC boundary, so a row from
-    // a store file or a build older than the migration can lack it.
-    expect(rowOccurrences(row({ id: 1, group_key: A }))).toBe(1)
-  })
-
-  it('reads anything unusable as one rather than trusting it', () => {
-    for (const bad of [0, -3, NaN, Infinity]) {
-      expect(rowOccurrences(row({ id: 1, group_key: A, occurrences: bad }))).toBe(1)
-    }
-  })
-
-  it('truncates a fractional count, so a badge is never a decimal', () => {
-    expect(rowOccurrences(row({ id: 1, group_key: A, occurrences: 2.7 }))).toBe(2)
-  })
-})
-
-describe('groupNotifications().count', () => {
-  it('sums the rows\' own counts rather than counting the rows', () => {
+describe('the count a group reports', () => {
+  it('is the number of things that went wrong, which is the number of rows', () => {
     const groups = groupNotifications([
-      row({ id: 1, group_key: A, occurrences: 6 }),
-      row({ id: 2, group_key: A, occurrences: 4 }),
+      row({ id: 1, group_key: A }),
+      row({ id: 2, group_key: A }),
       row({ id: 3, group_key: A })
     ])
-    // Three rows, eleven occurrences.
+
     expect(groups[0].occurrences).toHaveLength(3)
-    expect(groups[0].count).toBe(11)
+    // Three failures. Not three emissions, because a row IS a failure: the
+    // store never writes a second one for the same thing inside its
+    // window, so there is nothing here that could inflate this.
+    expect(groupCountLabel(groups[0].occurrences.length)).toBe('× 3')
   })
 
-  it('is the row count when nothing was ever folded', () => {
-    const groups = groupNotifications([row({ id: 1, group_key: A }), row({ id: 2, group_key: A })])
-    expect(groups[0].count).toBe(2)
-  })
-})
-
-describe('totalOccurrences', () => {
-  it('adds up every row regardless of grouping', () => {
-    expect(totalOccurrences([
-      row({ id: 1, group_key: A, occurrences: 6 }),
-      row({ id: 2, group_key: B, occurrences: 4 })
-    ])).toBe(10)
-  })
-
-  it('is zero for an empty list', () => {
-    expect(totalOccurrences([])).toBe(0)
-  })
-})
-
-describe('groupCountLabel', () => {
-  it('shows nothing for one occurrence', () => {
-    // A single occurrence is not a repetition, and `× 1` would be the
-    // widest thing on every ordinary row.
-    expect(groupCountLabel(1)).toBeNull()
-  })
-
-  it('names the repetition for two or more', () => {
-    expect(groupCountLabel(2)).toBe('× 2')
-    expect(groupCountLabel(12)).toBe('× 12')
-    expect(groupCountLabel(500)).toBe('× 500')
+  it('does not grow when the rows are identical repeats of each other', () => {
+    // The store is what folds these — a byte-identical repeat inside the
+    // window never becomes a second row — so at the render layer the count
+    // is rows and only rows. Twelve emissions of one failure arrive as one
+    // row and therefore as no count at all.
+    const groups = groupNotifications([row({ id: 1, group_key: A })])
+    expect(groups[0].occurrences).toHaveLength(1)
+    // `× 1` would assert a repetition that did not happen.
+    expect(groupCountLabel(groups[0].occurrences.length)).toBeNull()
   })
 })

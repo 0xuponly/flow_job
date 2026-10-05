@@ -29,6 +29,21 @@ interface NotificationContextValue {
    * without the provider inventing a message the user then has to parse.
    */
   loadError: string | null
+  /**
+   * How many entries of the stored notification list the main process had
+   * to discard because they were not rows.
+   *
+   * The corrupt-row arm of the same problem `loadError` covers, and it
+   * needs a number rather than a flag because "something" cannot be acted
+   * on and "three entries" can be reasoned about. Zero on every read of a
+   * store that holds nothing but well-formed rows, which is every read in
+   * normal operation — the store migration in electron/database.ts has to
+   * drop them (`loadStore` is the accessor for the whole Store and a
+   * `null` in that array would take jobs and documents down with it), but
+   * dropping them quietly is what let a store containing one string report
+   * itself as empty.
+   */
+  unreadable: number
   open: () => void
   close: () => void
   dismiss: (id: number) => void
@@ -61,6 +76,7 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
   const [list, setList] = useState<NotificationRow[]>([])
   const [isOpen, setIsOpen] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [unreadable, setUnreadable] = useState(0)
 
   /**
  * Re-read the store into `list`.
@@ -80,8 +96,8 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
  *     float the promise.
  *
  * A failed read now RECORDS the failure instead of only swallowing it.
- * That is the change, and it is the whole of the "a record list that fails
- * to load must not render as silently empty" requirement: the previous
+ * That is the change, and it is the load-error half of "a record list that
+ * fails to load must not render as silently empty": the previous
  * arrangement returned quietly, which left `list` at whatever it was —
  * and at mount that is `[]` — so the drawer rendered its empty state and
  * the user was told there was nothing to see. Records that exist, including
@@ -92,6 +108,13 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
  * last successfully read, and `loadError` says the drawer is looking at a
  * possibly-stale copy. An error that blanked the list would be a second
  * lie, this time on top of rows the user had already read.
+ *
+ * `unreadable` is the other half and rides along on the same envelope. It
+ * is deliberately NOT folded into `loadError`: the read succeeded, and
+ * saying it failed would be its own kind of wrong. The drawer needs to
+ * distinguish "I could not read the store" from "I read the store and some
+ * of what is in it is not a record", because only the second one still has
+ * a usable list to show.
  */
 const refresh = useCallback(async () => {
   try {
@@ -101,6 +124,12 @@ const refresh = useCallback(async () => {
       return
     }
     setList(result.rows)
+    // Coerced rather than trusted. A main-process build older than the
+    // field omits it, and `NaN > 0` is false so a `?? 0` would not help
+    // anyway — the only failure mode worth worrying about is a count that
+    // is not a non-negative integer, and the drawer must never render one.
+    const dropped = Number(result.unreadable)
+    setUnreadable(Number.isFinite(dropped) && dropped > 0 ? Math.floor(dropped) : 0)
     setLoadError(null)
   } catch {
     // Leave the cache as it is, and say so. See the doc comment.
@@ -257,6 +286,7 @@ const refresh = useCallback(async () => {
     isOpen,
     hasUnread: list.length > 0,
     loadError,
+    unreadable,
     open,
     close,
     dismiss,
@@ -264,7 +294,7 @@ const refresh = useCallback(async () => {
     dismissAll,
     refresh,
     persistentNotify,
-  }), [list, isOpen, loadError, open, close, dismiss, dismissGroup, dismissAll, refresh, persistentNotify])
+  }), [list, isOpen, loadError, unreadable, open, close, dismiss, dismissGroup, dismissAll, refresh, persistentNotify])
 
   return <NotificationContext.Provider value={value}>{children}</NotificationContext.Provider>
 }

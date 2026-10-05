@@ -5,7 +5,7 @@ import type {
   NotificationJobContext
 } from './types'
 import { notificationDedupeKey, notificationGroupKey } from './notificationGroup'
-import { loadStore, saveStore } from './database'
+import { loadStore, saveStore, unreadableNotificationEntries } from './database'
 
 const MAX_FIELD_BYTES = 4096
 const ACTIVE_CAP = 500
@@ -16,22 +16,29 @@ const PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000
  * How long a repeat of the same fact is folded into the row that already
  * records it, rather than written as a second row.
  *
- * The reported bug was ten toasts from one click, and the toast funnel
- * fixed it by refusing to stack the same sentence on itself for the length
- * of a toast's TTL. The RECORD had no such guard, so the same
- * double-emission that used to produce ten toasts produced ten permanent
- * rows — and the `× 12` grouping badge then reported a multiple of what
- * happened rather than the number of things that went wrong.
+ * THE MODEL, in one sentence: **the notification centre holds one row per
+ * thing that went wrong.** A repeat of a thing is not another thing, so it
+ * does not become another row, and — this is the half that was wrong — it
+ * does not become another unit in the count either. The `× N` badge on a
+ * collapsed row is the number of things inside it, which is why the drawer
+ * counts rows and nothing else.
  *
- * Two seconds, and the number is a judgement with a stated reason rather
- * than a default:
+ * That is the answer to "which number does the user read": the number of
+ * failures, not the number of times the app said something. The reported
+ * bug was one click producing ten toasts; the durable half of it was ten
+ * permanent rows and a `× 12` badge that reported a multiple of what
+ * actually went wrong. Folding the rows fixes the storage; counting rows
+ * fixes the number. Keeping a counter and displaying it would have left the
+ * badge reading exactly what it read before, with better code behind it.
+ *
+ * Two seconds is a judgement, not a default:
  *
  *   - Long enough to cover every duplicate this app actually produces.
  *     Every one of them is either same-tick — a re-render, and the
  *     StrictMode double-mount that `src/main.tsx` causes on every mount in
  *     `npm run dev`, which is exactly where the reported ten came from —
  *     or the immediate retry after it. A second attempt at the same
- *     document with the same error is the same fact again.
+ *     document with the same error is the same thing going wrong again.
  *
  *   - Short enough that it cannot eat the user's history. Two occurrences
  *     of one failure minutes apart are two things that happened, and only
@@ -40,11 +47,31 @@ const PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000
  *     Any window long enough to swallow that would be inventing an
  *     "it keeps failing" that the store cannot actually support.
  *
- * It is deliberately NOT the toast's TTL. A toast TTL is how long a
- * sentence stays on screen; this is how long a repeat counts as a repeat.
- * Making them the same number would inherit the toast's own reasoning —
- * that a user who watched the first copy expire is seeing new information
- * — which is about visibility, not about how many times a thing happened.
+ * RELATION TO THE TOAST LAYER, which is the other half of the model and the
+ * reason 2000 is not 8000.
+ *
+ * `notify` refuses to stack the same sentence on itself for the length of
+ * the toast's TTL — 8000 ms for an error (src/components/Notifications.tsx).
+ * So the overlay and the record agree about a burst and disagree about a
+ * spaced repeat:
+ *
+ *   10 emissions inside 2 s  ->  overlay: one sentence, no count.
+ *                              centre:  one row, no badge.
+ *                              AGREE, and that is the reported bug fixed
+ *                              end to end rather than in storage only.
+ *
+ *   2 emissions 5 s apart    ->  overlay: one sentence (its 8 s window is
+ *                              still open), centre: two rows and `× 2`.
+ *                              The centre reports more.
+ *
+ * That asymmetry is the point, and it is only sound in one direction: the
+ * durable layer must never know about FEWER things than the transient one,
+ * or the user would be shown a permanent record of something the app had
+ * already decided not to bother them about. So the record window has to be
+ * the SHORTER of the two, which is what makes `DEDUPE_WINDOW_MS < 8000` a
+ * correctness property rather than a tuning choice. A window longer than the
+ * toast's would invert it: the overlay would report one failure and the
+ * centre would claim there was nothing at all.
  */
 const DEDUPE_WINDOW_MS = 2000
 
@@ -99,7 +126,14 @@ function cleanJobContext(job: NotificationJobContext | undefined): NotificationJ
  * `dismissed_at === null` is part of the match and not an optimisation.
  * A user who dismissed a failure and then hit the same failure again is
  * seeing something new: reviving the dismissed row would put back a
- * message they chose to remove, and would do it silently.
+ * message they chose to remove, and it would do it silently.
+ *
+ * A match means "this thing already went wrong and is already on record",
+ * and that is ALL it means. Nothing is incremented, because the number the
+ * centre shows is the number of things that went wrong — see
+ * `DEDUPE_WINDOW_MS` — and a repeat is not another thing that went wrong.
+ * That is the whole model in one function: inside the window it is the
+ * same fact, so it is one row, and the drawer reports one.
  */
 function findRepeatable(
   rows: NotificationRow[],
@@ -131,7 +165,7 @@ export function addNotification(input: {
    *  with a blank key and then silently rewritten on the next load. */
   group_key?: string
   job?: NotificationJobContext
-}): { id: number; occurrences: number } {
+}): { id: number } {
   const store = loadStore()
   const type = coerceType(input.type)
   const source = input.source ?? 'app'
@@ -141,21 +175,15 @@ export function addNotification(input: {
   const job = cleanJobContext(input.job)
   const now = Date.now()
 
+  // The repeat check happens BEFORE `nextId++`, so a folded repeat does not
+  // burn an id either. Nothing is written and nothing changes: the row that
+  // already records this thing is the record.
   const repeat = findRepeatable(
     store.notifications,
     notificationDedupeKey(groupKey, job, fullMessage),
     now
   )
-  if (repeat) {
-    // `> 0` rather than `|| 1`: a row whose `occurrences` never got
-    // backfilled would otherwise go NaN on the first repeat, and NaN is
-    // what the drawer would then render as a count. The store migration
-    // makes this unreachable; the guard costs nothing and the alternative
-    // is a permanently broken badge nobody can explain.
-    repeat.occurrences = (repeat.occurrences > 0 ? repeat.occurrences : 1) + 1
-    saveStore(store)
-    return { id: repeat.id, occurrences: repeat.occurrences }
-  }
+  if (repeat) return { id: repeat.id }
 
   const id = store.nextId++
   const row: NotificationRow = {
@@ -166,22 +194,41 @@ export function addNotification(input: {
     full_message: fullMessage,
     created_at: now,
     dismissed_at: null,
-    group_key: groupKey,
-    occurrences: 1
+    group_key: groupKey
   }
   if (job) row.job = job
   store.notifications.push(row)
   saveStore(store)
-  return { id, occurrences: 1 }
+  return { id }
 }
 
-export function listActiveNotifications(): { rows: NotificationRow[] } {
+/**
+ * The active rows, plus how many entries of the store's notification list
+ * could not be read at all.
+ *
+ * The second number is not decoration. The store migration drops anything
+ * in `notifications` that is not an object, because `loadStore` is the
+ * accessor for the WHOLE store and a `null` or a number in that array
+ * would throw out of it and take jobs, documents and settings down with
+ * it — for a notification list the user may not even have opened. Dropping
+ * them is the right call; dropping them SILENTLY is not, because the list
+ * then reads as empty. A store whose only entry is `'not-an-object'` loaded
+ * to `rows: []`, the renderer had no way to tell that from a genuinely
+ * empty centre, and the drawer said "No notifications." — the drawer
+ * asserting, confidently and wrongly, that there was nothing to see.
+ *
+ * So the count rides along with every read and the drawer can say what it
+ * could not show. It is a property of the store FILE, so it clears itself
+ * once the file no longer contains those entries: see the reset in
+ * `saveStore`.
+ */
+export function listActiveNotifications(): { rows: NotificationRow[]; unreadable: number } {
   const store = loadStore()
   const rows = store.notifications
     .filter((r) => r.dismissed_at === null)
     .sort((a, b) => b.created_at - a.created_at)
     .slice(0, ACTIVE_CAP)
-  return { rows }
+  return { rows, unreadable: unreadableNotificationEntries() }
 }
 
 export function dismissNotification(id: number): { ok: true } {

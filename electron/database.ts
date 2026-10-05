@@ -109,6 +109,28 @@ interface Store {
 let store: Store | null = null
 let storePath = ''
 
+/**
+ * How many entries of the stored notification list could not be read.
+ *
+ * A property of the store FILE, not of the store object: the migration in
+ * `loadStore` removes anything in `notifications` that is not an object,
+ * and the in-memory store no longer holds them — but the file still does
+ * until something writes it back. So the count lives beside `store` rather
+ * than on it (it must not be persisted, and there is nowhere on `Store` for
+ * something that describes the file's unreadable parts), and it is reset by
+ * `saveStore`, because a save writes the filtered list and the file stops
+ * containing the entries.
+ *
+ * Read by `listActiveNotifications` in electron/notifications.ts, which is
+ * the only thing that should: the drawer needs to be able to say it could
+ * not show everything, and nothing else in the app cares.
+ */
+let unreadableNotificationRows = 0
+
+export function unreadableNotificationEntries(): number {
+  return unreadableNotificationRows
+}
+
 export function getStorePath(): string {
   if (!storePath) {
     storePath = join(app.getPath('userData'), 'apply-assistant-data.json')
@@ -345,25 +367,14 @@ export function loadStore(): Store {
     if (!store.blacklisted_companies) {
       store.blacklisted_companies = []
     }
-    if (!Array.isArray(store.notifications)) {
-      // `Array.isArray`, not the truthiness check the guarded defaults
-      // above use: these fields are arrays in practice, but this one
-      // arrives from a file a user's build wrote, and `for..of` over a
-      // non-array below would throw out of `loadStore` — which is the
-      // accessor for the WHOLE store, so the damage would be every job,
-      // document and setting rather than the notification list.
-      store.notifications = []
-    }
-    // Rows written before the notification center learned to group, and
-    // before the record layer learned to fold a repeat into the row it
-    // already had. They carry neither `group_key` nor `occurrences`, and
-    // both are required on NotificationRow (see electron/types.ts), so
-    // without this a pre-existing store would hand the drawer rows it
-    // cannot collapse — every old notification reading as its own group of
-    // one — and a count it has nothing to add up. Backfilled here rather
-    // than defaulted at render time for the reason the fields are required:
-    // the derivation must exist in exactly one place, and the renderer
-    // reads both stored values verbatim.
+    // Rows written before the notification center learned to group. They
+    // carry no `group_key`, and `group_key` is required on NotificationRow
+    // (see electron/types.ts), so without this a pre-existing store would
+    // hand the drawer rows it cannot collapse and every old notification
+    // would read as its own group of one. Backfilled here rather than
+    // defaulted at render time for the reason the field is required: the
+    // derivation must exist in exactly one place, and the renderer groups
+    // on the stored key verbatim.
     //
     // The per-row guard rather than a wholesale reset is the same shape as
     // the guarded defaults above it: an upgrade adds the missing field and
@@ -376,23 +387,45 @@ export function loadStore(): Store {
     // number in that array would throw here and take jobs, documents and
     // settings down with it, for a notification list the user may not even
     // have opened.
+    //
+    // Dropping an entry is still not the same as dropping it SILENTLY, so
+    // the count is kept and `listActiveNotifications` reports it: a store
+    // whose only entry is `'not-an-object'` used to load to an empty list,
+    // which the renderer could not tell from a genuinely empty centre, and
+    // the drawer answered "No notifications." about records that existed.
+    unreadableNotificationRows = 0
+    if (store.notifications === undefined) {
+      // A store written before the notification center existed has no
+      // `notifications` key at all. That is an UPGRADE, not corruption:
+      // there is no list here that failed to be read, so counting it would
+      // put a permanent banner on every install that predates the centre.
+      store.notifications = []
+    } else if (!Array.isArray(store.notifications)) {
+      // Anything else present and not an array is the wrong shape. That is
+      // not "there is nothing in here" — it is "we could not read what is
+      // in here", and the drawer has to be able to tell the two apart.
+      //
+      // `Array.isArray`, not the truthiness check the guarded defaults
+      // above use: these fields are arrays in practice, but this one
+      // arrives from a file a user's build wrote, and `for..of` over a
+      // non-array below would throw out of `loadStore` — which is the
+      // accessor for the WHOLE store, so the damage would be every job,
+      // document and setting rather than the notification list.
+      //
+      // Counted as one unreadable thing, because one thing is what we
+      // failed to read: the list itself.
+      unreadableNotificationRows = 1
+      store.notifications = []
+    }
+    const notificationRowsBeforeFilter = store.notifications.length
     store.notifications = store.notifications.filter(
       (row): row is NotificationRow => !!row && typeof row === 'object'
     )
+    unreadableNotificationRows +=
+      notificationRowsBeforeFilter - store.notifications.length
     for (const row of store.notifications) {
       if (typeof row.group_key !== 'string' || row.group_key === '') {
         row.group_key = notificationGroupKey(row.type, row.source, row.message)
-      }
-      // Same story, same loop: `occurrences` is required on NotificationRow
-      // and was not on disk before the record layer learned to fold a
-      // repeat into the row it already had. A pre-existing store has no
-      // repeats in it — every row there is its own occurrence — so 1 is
-      // the truthful value, not a default that hides a count. Anything
-      // that is not a finite number >= 1 is treated as 1 rather than
-      // trusted: `occurrences` feeds the badge the user reads, and a
-      // NaN or a 0 there is worse than an honest one.
-      if (!Number.isFinite(row.occurrences) || row.occurrences < 1) {
-        row.occurrences = 1
       }
     }
     if (typeof store.settings.auto_scan_enabled !== 'boolean') {
@@ -558,6 +591,13 @@ export function loadStore(): Store {
 }
 
 export function saveStore(): void {
+  // The write replaces the file with the filtered list, so whatever the
+  // migration could not read is no longer IN the file and the drawer has
+  // nothing left to report. Cleared here rather than left to expire on a
+  // restart, because the honest answer depends on the file and the file is
+  // what just changed — and because a banner that outlives the condition it
+  // describes is its own kind of lie.
+  unreadableNotificationRows = 0
   persistStore()
 }
 

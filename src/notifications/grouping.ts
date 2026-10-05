@@ -25,38 +25,23 @@ export interface NotificationGroup {
   message: string
   type: NotificationType
   source: NotificationSource
-  /** Newest first. Never empty — a group with no rows is not a group. */
-  occurrences: NotificationRow[]
   /**
-   * How many times the thing this group describes actually happened.
+   * The things in this group, newest first. Never empty — a group with no
+   * rows is not a group.
    *
-   * The sum of each row's own `occurrences`, and NOT `occurrences.length`.
-   * Those differ because the main process folds a repeat it recognises —
-   * a re-render, a StrictMode double-mount, a retry with the same error —
-   * into the row that is already there instead of writing a second one
-   * (electron/notifications.ts). So a group can be three rows and a count
-   * of 12, and using the row count would report the double-emission the
-   * fold exists to remove, which is the number that made the badge a lie
-   * in the first place.
+   * THE COUNT IS `occurrences.length`, and that is the answer to "what
+   * number does the user read". Each row is one thing that went wrong, and
+   * `addNotification` refuses to write a second row for the same thing
+   * inside `DEDUPE_WINDOW_MS` (electron/notifications.ts) — so this length
+   * is the number of failures, not the number of times the app opened its
+   * mouth. A row carrying a counter of how many emissions folded into it,
+   * and a badge that summed those counters, would put "× 12" back on screen
+   * for twelve emissions of one failure: the exact number that was filed as
+   * a lie, arrived at from better code.
    */
-  count: number
+  occurrences: NotificationRow[]
   /** Newest occurrence's timestamp; the group's position in the list. */
   latestAt: number
-}
-
-/**
- * How many times one row's fact happened.
- *
- * The only place in the renderer that interprets the field, because it is
- * optional on this side of the IPC boundary (see src/types.ts) and the
- * store migration backfills it main-side. Anything that is not a finite
- * number >= 1 is read as 1: a row is the record of one thing having
- * happened, and the only failure mode available to a missing counter is
- * under-reporting, never inventing a count the store never asserted.
- */
-export function rowOccurrences(row: NotificationRow): number {
-  const n = row.occurrences
-  return typeof n === 'number' && Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1
 }
 
 export function groupNotifications(rows: NotificationRow[]): NotificationGroup[] {
@@ -76,27 +61,17 @@ export function groupNotifications(rows: NotificationRow[]): NotificationGroup[]
     // insert, so a later insert with an equal timestamp still sorts last.
     occurrences.sort((a, b) => b.created_at - a.created_at || b.id - a.id)
     const newest = occurrences[0]
-    let count = 0
-    for (const row of occurrences) count += rowOccurrences(row)
     groups.push({
       key,
       message: newest.message,
       type: newest.type,
       source: newest.source,
       occurrences,
-      count,
       latestAt: newest.created_at,
     })
   }
   groups.sort((a, b) => b.latestAt - a.latestAt)
   return groups
-}
-
-/** Every occurrence in a list, counting each row's own `occurrences`. */
-export function totalOccurrences(rows: NotificationRow[]): number {
-  let total = 0
-  for (const row of rows) total += rowOccurrences(row)
-  return total
 }
 
 /** How many occurrences a collapsed group row shows a count for. */

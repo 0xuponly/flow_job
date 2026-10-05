@@ -792,25 +792,5 @@ export interface NotificationRow {
    * main-process crash, a failed backup).
    */
   group_key: string
-  /**
-   * How many times this fact actually happened.
-   *
-   * 1 for an ordinary row. It goes above 1 when `addNotification`
-   * recognises a repeat inside `DEDUPE_WINDOW_MS` — a re-render, a
-   * StrictMode double-mount, a retry that produced the same error — and
-   * folds it into the row that is already there instead of writing a
-   * second one, so the count the center shows is the count of what
-   * happened rather than a multiple of it.
-   *
-   * Required, and backfilled to 1 by the same store migration that
-   * backfills `group_key`, for the same reason: there is no state in
-   * which a loaded row lacks one, so no reader carries a fallback that
-   * could disagree with the writer about how many times a thing happened.
-   *
-   * The row still holds ONE payload — the first occurrence's. A repeat is
-   * only ever folded in when it is the same fact, which includes carrying
-   * the same detail, so nothing is overwritten and nothing is lost.
-   */
-  occurrences: number
   job?: NotificationJobContext
 }

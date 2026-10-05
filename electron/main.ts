@@ -1342,6 +1342,12 @@ function registerIpc(): void {
 
   ipcMain.handle('notifications:notificationsList', async () => {
     try {
+      // `unreadable` rides along on the success arm. The store migration
+      // has to discard entries of `notifications` that are not rows —
+      // `loadStore` is the accessor for the whole Store, so it cannot throw
+      // here — and without the count the renderer had one shape to read and
+      // it was the shape that means "nothing in here". See
+      // `listActiveNotifications` in electron/notifications.ts.
       return listActiveNotifications()
     } catch (err) {
       logToNotifications(`listActiveNotifications failed: ${(err as Error).message}`)

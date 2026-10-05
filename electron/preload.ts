@@ -132,9 +132,16 @@ export interface Api {
   // record in the file, including a crash recorded while no renderer was
   // listening, was invisible. An empty answer to "what is in here?" is
   // the one thing a reader of this list is not allowed to fabricate.
+  //
+  // `unreadable` is the same argument one level in: the store migration
+  // has to discard entries of `notifications` that are not rows, and the
+  // list said nothing about it, so a store holding one unreadable string
+  // reported itself as empty. It rides on the success arm because the read
+  // genuinely succeeded — the drawer distinguishes "could not read it"
+  // from "read it, and some of it is not a record".
   notificationsAdd: (params: { type: string; source?: NotificationSource; message: string; full_message: string; group_key?: string; job?: NotificationJobContext }) =>
-    Promise<{ id: number; occurrences: number } | { error: 'INTERNAL' }>
-  notificationsList: () => Promise<{ rows: NotificationRow[] } | { error: 'INTERNAL' }>
+    Promise<{ id: number } | { error: 'INTERNAL' }>
+  notificationsList: () => Promise<{ rows: NotificationRow[]; unreadable: number } | { error: 'INTERNAL' }>
   notificationsDismiss: (params: { id: number }) => Promise<{ ok: true } | { error: 'INTERNAL' }>
   notificationsDismissMany: (params: { ids: number[] }) => Promise<{ updated: number } | { error: 'INTERNAL' }>
   notificationsDismissAll: () => Promise<{ updated: number } | { error: 'INTERNAL' }>

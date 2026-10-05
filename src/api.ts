@@ -139,12 +139,18 @@ export interface Api {
   // actual implementation in preload.ts is `window.api.X(params)`
   // dispatched via the contextBridge.
   notificationsAdd: (params: { type: string; source?: NotificationSource; message: string; full_message: string; group_key?: string; job?: NotificationJobContext }) =>
-    Promise<{ id: number; occurrences: number } | { error: 'INTERNAL' }>
+    Promise<{ id: number } | { error: 'INTERNAL' }>
   // The error arm is load-bearing, not decoration. `{ rows: [] }` is the
   // answer to "the store is empty", and a read that failed has to be able
   // to say so — otherwise the drawer cannot tell an empty center from one
   // it could not load, and it renders the empty one.
-  notificationsList: () => Promise<{ rows: NotificationRow[] } | { error: 'INTERNAL' }>
+  //
+  // `unreadable` is the other half of the same obligation: entries the
+  // store had to discard because they were not rows. Required rather than
+  // optional because the provider coerces it anyway — a main-process build
+  // older than this omits it, and one number the renderer has to defend
+  // against is one number fewer place for the two sides to disagree.
+  notificationsList: () => Promise<{ rows: NotificationRow[]; unreadable: number } | { error: 'INTERNAL' }>
   notificationsDismiss: (params: { id: number }) => Promise<{ ok: true } | { error: 'INTERNAL' }>
   // Bulk, because the center collapses rows into groups and "dismiss this
   // group" is one user action over N rows — not N actions.
