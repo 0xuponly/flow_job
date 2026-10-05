@@ -98,13 +98,16 @@ const DOC_UNITS = 2
  * it. `it(name, TIMEOUT, fn)` is silently accepted by the types and throws
  * the number away, falling back to the global 5s — verified, not assumed.
  *
- * Needed here for a real reason rather than a slow machine: parking a
- * provider refusal for free keeps a row on its own re-probe ladder instead
- * of ending it, so `thirtyDays` walks a much longer simulated wall-clock
- * for the same 80 requests. Measured 12.5s for the two-job case under
- * parallel load (was under 5s before either mechanism was free), so the
- * budget is 30s: enough headroom on a loaded box, and still nowhere near
- * loose enough to hide a hang. Matches `SIMULATION_TIMEOUT` in
+ * Unchanged at 30s, and no longer load-bearing. It used to be: the loop
+ * walked every simulated 30 seconds the virtual clock advanced (see
+ * `thirtyDays`), so the two-job case measured 15.8s / 16.9s / 16.8s solo
+ * and blew the budget in a full-suite run. Skipping the passes that cannot
+ * bill took it to 0.33s solo with every measured number identical —
+ * 160 attempts, 80 `cv` + 80 `cl` on the wire, `perDay` unchanged — so what
+ * is left here is hang headroom and nothing else. Deliberately not lowered
+ * with the cost: a tighter budget on a suite whose cost scales with the
+ * machine would trade a known-good number for an unmeasured one, and it
+ * would buy nothing about the bound. Matches `SIMULATION_TIMEOUT` in
  * rv2dupe.test.ts, which simulates the same 720 hours.
  */
 const SIMULATION_TIMEOUT = 30_000
@@ -279,6 +282,10 @@ async function thirtyDays(
   vi.useRealTimers()
   const calls = provider({ kill: ['cv', 'cl'] })
   const start = Date.now()
+  // Module-scope constants in practice: resolving them per step was pure
+  // overhead on a loop that runs thousands of times.
+  const { processQueue } = await import('./aiQueue')
+  const { nextProviderCapFreeAt, resetModelHealth } = await import('./ai')
   const attemptsOf = (): Map<number, number> =>
     new Map(getAIQueue().map((q) => [q.id, q.attempts]))
   let attempts = 0
@@ -296,8 +303,6 @@ async function thirtyDays(
     // counter only goes UP by one per attempt, or resets to 0 the moment
     // the tenth attempt parks the row on the revive cooldown.
     for (let step = 0; step < 200; step++) {
-      const { processQueue } = await import('./aiQueue')
-      const { resetModelHealth } = await import('./ai')
       resetModelHealth()
       const runnable = getAIQueue().filter(
         (q) => q.status === 'pending' || (q.status === 'failed' && (q.autoRevives ?? 0) < AUTO_REVIVE_MAX)
@@ -308,6 +313,34 @@ async function thirtyDays(
       if (next > Date.now()) {
         if (next > start + (hour + 1) * HOUR) break
         vi.setSystemTime(next)
+      }
+      // Then the clock's other event: a provider whose call cap is spent.
+      // `callAI` filters capped providers out BEFORE it builds a request, so
+      // the pass a capped provider gets spends nothing — the row keeps its
+      // status, its `attempts` and its `autoRevives`, and the only write is
+      // `parkOnProviderCap`'s `nextRetryAt`. A `pending` row therefore stays
+      // in `runnable` for the whole horizon: no attempt and no revival can
+      // ever exhaust it, and the loop went on re-probing it for 30 simulated
+      // days. Measured on the two-job case: 8,483 real `processQueue()`
+      // passes, 17,018 of them free cap refusals inside `processItem`, to
+      // observe 160 billed attempts — and 6,559 of those passes moved the
+      // clock exactly 30 seconds forward, `backoffMs` of a row sitting at
+      // `attempts` 0, which is what turned two rows' worth of retry ladder
+      // into 15.8s of wall-clock and needed 30s of timeout to survive a
+      // full-suite run.
+      //
+      // A free re-probe is not simulation work: this loop's subject is the
+      // retry/revive budget, and a pass that cannot bill cannot move it. So
+      // the clock jumps to the moment the budget frees — the queue's own
+      // `nextProviderCapFreeAt`, computed from the real call ledger rather
+      // than a constant invented here — and no pass that could have billed is
+      // skipped, because that IS the earliest such moment. Same 160 passes,
+      // same 160 attempts, same 80 `cv` + 80 `cl` on the wire: the only
+      // thing that changed is how long getting there takes.
+      const capFreeAt = nextProviderCapFreeAt()
+      if (capFreeAt !== null && capFreeAt > Date.now()) {
+        if (capFreeAt > start + (hour + 1) * HOUR) break
+        vi.setSystemTime(capFreeAt)
       }
       await processQueue()
       passes++
