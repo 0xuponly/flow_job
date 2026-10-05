@@ -478,7 +478,16 @@ describe('P1.7 sequential generation -> review per job', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockedGetQueue.mockReturnValue([])
-    mockedGetJob.mockReturnValue(undefined)
+    // A job that EXISTS, with no fit score. `undefined` used to read as
+    // "nothing to order by", which is all `pickOrder` ever asked this for
+    // — but `enqueue` asks the SAME question for a second, load-bearing
+    // reason (is this job still on the board?) and reads `undefined` as
+    // DELETED, so every review this block expects to be chained would be
+    // refused. A live job with a null score keeps the ordering assertions
+    // honest (null sorts last) while answering the existence check
+    // truthfully. The deleted-job half of the rule is covered against the
+    // real store in queueJobDeleteCascade.test.ts.
+    mockedGetJob.mockImplementation((id: number) => scoredJob({ id, score: null, fit_source: null }))
   })
 
   it('enqueues verify items for both docs only after generation completes', async () => {
@@ -639,7 +648,14 @@ describe('P1.7 review < 80 -> auto-regenerate (cap 5)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockedGetQueue.mockReturnValue([])
-    mockedGetJob.mockReturnValue(undefined)
+    // A job that EXISTS, with no fit score. `undefined` used to read as
+    // "nothing to order by", which is all `pickOrder` ever asked this
+    // for — but `enqueue` asks the SAME question for a second, load-
+    // bearing reason (is this job still on the board?) and reads
+    // `undefined` as DELETED. A live job with a null score keeps the
+    // ordering assertions honest (null sorts last) while answering the
+    // existence check truthfully.
+    mockedGetJob.mockImplementation((id: number) => scoredJob({ id, score: null, fit_source: null }))
     mockedGetRegen.mockReturnValue(0)
     mockedBumpRegen.mockReturnValue(1)
   })
@@ -791,7 +807,10 @@ describe('P1.7 regeneration rebuilds the failed document and re-queues its revie
   beforeEach(() => {
     vi.clearAllMocks()
     mockedGetQueue.mockReturnValue([])
-    mockedGetJob.mockReturnValue(undefined)
+    // A job that EXISTS — see the note on the same line in the block
+    // above: `enqueue` refuses work for a deleted job, so a bare
+    // `undefined` would make every regeneration here look like one.
+    mockedGetJob.mockImplementation((id: number) => scoredJob({ id, score: null, fit_source: null }))
     mockedUpdate.mockReset().mockReturnValue(true)
     // The default from the module mock, re-asserted because mockClear
     // does not remove implementations set by an earlier test.
@@ -868,6 +887,12 @@ describe('P1.7 regeneration rebuilds the failed document and re-queues its revie
 describe('P1.7 enqueue() duplicate suppression', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // A job that EXISTS. `enqueue` refuses work for a deleted job, so a
+    // bare `undefined` here would fail "creates the item" for a reason
+    // that has nothing to do with duplicate suppression. The
+    // deleted-job half of the rule is covered against the real store in
+    // queueJobDeleteCascade.test.ts.
+    mockedGetJob.mockImplementation((id: number) => scoredJob({ id, score: null, fit_source: null }))
   })
 
   it('returns null when an identical pending item already exists', () => {
