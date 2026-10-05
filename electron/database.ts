@@ -969,6 +969,56 @@ export function updateJob(
   return s.jobs[idx]
 }
 
+/**
+ * Drop every QUEUE row that belongs to a job that is going away, and say
+ * how many went.
+ *
+ * WHY THE JOB DELETION HAS TO REACH THE QUEUE AT ALL. A queue row is not a
+ * view of the job — it is a promise that the app will spend a provider
+ * request on this job's CV, cover letter, fit score or review later. The
+ * user deleting the job is the user retracting that promise. Left alone,
+ * the rows survive the delete and the queue keeps spending on a posting
+ * nobody is applying to: `score_fit` scores it against the base CV, a
+ * `generate_cv` builds a document row for a job that no longer exists,
+ * the review lands, and `recomputeJobStatusFromDocs` writes status onto
+ * an id that resolves to nothing. The Queue panel is the only place the
+ * user would ever see it, and there it renders as `Job <id>` — the
+ * `jobTitle`/`jobCompany` lookup is null, so the one signal that the row
+ * has no job is a label that reads like a bug.
+ *
+ * WHY IT IS IN THE STORE AND NOT AT A CALL SITE. `deleteJob`,
+ * `deleteJobs` and `dedupeJobs` are three separate implementations of
+ * "this job is gone", each with its own copy of the cascade for documents
+ * and applications. A queue cascade added at the renderer or the IPC layer
+ * would be a fourth rule that only the button that calls it obeys — and
+ * the queue has exactly one other door (`enqueue`, from four automatic
+ * producers) that would happily re-add the work afterwards. The store is
+ * the only place that knows the rows are gone for good, the same reason
+ * `clearAIQueue` writes its tombstone there rather than in `aiQueue`.
+ *
+ * IN-FLIGHT WORK IS NOT CANCELLED, and that is deliberate — the same
+ * choice `clearAIQueue` makes. The LLM call a `processItem` already has on
+ * the stack keeps running and its `removeAIQueueItem` afterwards is a
+ * no-op on a row that is no longer there. The alternative (a flag the
+ * processor checks) would throw away a request that has already been paid
+ * for, which is the more expensive direction to err. What this DOES close
+ * is the resurrection: a generation that completes after the delete
+ * enqueues its review through `enqueue`, and the guard in `enqueue` is
+ * what stops that review from joining a queue the user has already been
+ * shown the back of.
+ *
+ * `is_score_fit` rows for the job go too, and are not special-cased. A
+ * deleted job is never scored again by the automatic re-seeders (they walk
+ * the JOBS table, which no longer holds it), so keeping the row would
+ * leave work nothing would ever complete.
+ */
+function cascadeJobQueueRows(s: Store, idSet: Set<number>): number {
+  if (idSet.size === 0) return 0
+  const before = (s.ai_queue ?? []).length
+  s.ai_queue = (s.ai_queue ?? []).filter((q) => !idSet.has(q.jobId))
+  return before - s.ai_queue.length
+}
+
 export function deleteJob(id: number): void {
   const s = loadStore()
   const job = s.jobs.find((j) => j.id === id)
@@ -994,6 +1044,10 @@ export function deleteJob(id: number): void {
   s.applications = s.applications.filter((a) => a.job_id !== id)
   s.follow_ups = s.follow_ups.filter((f) => !appIds.includes(f.application_id))
   s.interviews = s.interviews.filter((i) => !appIds.includes(i.application_id))
+  // Queued work for this job goes with it. See cascadeJobQueueRows —
+  // the single writer of this rule, shared with deleteJobs and
+  // dedupeJobs so no third copy can exist to drift from these two.
+  cascadeJobQueueRows(s, new Set([id]))
   persistStore()
 }
 
@@ -1043,6 +1097,13 @@ export function deleteJobs(ids: number[]): { requested: number; deleted: number;
   s.applications = s.applications.filter((a) => !idSet.has(a.job_id))
   s.follow_ups = s.follow_ups.filter((f) => !appIds.includes(f.application_id))
   s.interviews = s.interviews.filter((i) => !appIds.includes(i.application_id))
+  // Queued work for the deleted jobs, in the SAME store write as the
+  // deletion itself. Not a separate call: `deleteJobs` exists precisely
+  // so one selection is one load and one persist, and a second write here
+  // would reintroduce the interleave-with-other-writers race this
+  // function was written to remove — with the queue as the thing that
+  // gets half-deleted instead.
+  cascadeJobQueueRows(s, idSet)
   persistStore()
   // Verify: which of the requested IDs are still in s.jobs after the
   // filter? If any are still present, the filter didn't catch them
@@ -1077,6 +1138,12 @@ export function dedupeJobs(): { removedIds: number[]; remaining: number } {
   s.applications = s.applications.filter((a) => !idSet.has(a.job_id))
   s.follow_ups = s.follow_ups.filter((f) => !appIds.includes(f.application_id))
   s.interviews = s.interviews.filter((i) => !appIds.includes(i.application_id))
+  // Queued work for the dropped duplicates, same rule as a user delete
+  // (cascadeJobQueueRows). Same reasoning as the deleted-jobs blacklist
+  // above being skipped here: the job is gone either way, and a queue row
+  // pointing at an id that no longer resolves is work the app would
+  // spend on and the user could never see or cancel.
+  cascadeJobQueueRows(s, idSet)
   persistStore()
   return { removedIds: idsToDelete, remaining: s.jobs.length }
 }

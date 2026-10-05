@@ -1658,6 +1658,32 @@ export function enqueue(
   // gated. Checked before the duplicate scan so a suppressed automatic
   // enqueue cannot even revive a failed row.
   if (!opts?.manual && !autoQueueAllows(item)) return null
+  // THE JOB HAS TO EXIST. Checked before the duplicate scan for the same
+  // reason the auto-queue gate is: a refusal must not revive anything on
+  // its way past.
+  //
+  // `deleteJob` / `deleteJobs` / `dedupeJobs` drop the job's queue rows in
+  // the same store write as the job itself, which is the half that stops
+  // the queue from spending on a posting the user retracted. This is the
+  // other half, and it is a different problem: the row being created now
+  // would be one the delete had already removed. The processor's own
+  // follow-up chaining is where it happens — a `generate_cv` in flight
+  // when the user deletes the job finishes its LLM call and enqueues the
+  // review of the document it just built, and a `tailor_job_docs` row
+  // fans out one `verify` per document the same way. Those rows describe
+  // a job that no longer exists, so they are refused here rather than
+  // re-inserted into a queue the user has been shown the back of.
+  //
+  // Deliberately NOT keyed on `opts.manual`. Every manual entry point is
+  // the user naming a job that is on their board (Verify, Regenerate,
+  // Tailor / Quick Apply, Generate), and an id that no longer resolves is
+  // not something a person can be asking for. Refusing the manual lane
+  // here would turn a stale renderer's click into a rejected action
+  // rather than a silent no-op, which is a worse failure than the one
+  // this prevents — and it would refuse work the user DID ask for in the
+  // one race where the job is deleted between them reading the board and
+  // pressing the button, on a document that is still in the store.
+  if (!getJob(item.jobId)) return null
   const norm = (v: number | string | undefined | null): number | string | null => v ?? null
   // Matches PENDING, PROCESSING AND FAILED.
   //
