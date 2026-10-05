@@ -407,7 +407,14 @@ describe('a rotation cannot spend past the cap', () => {
     // are unaffected, because "the app is broken" is the reading they would
     // otherwise take.
     expect(err.message).toContain('openrouter.ai')
-    expect(err.message).toMatch(/2 automated of 2 in the last 24h/)
+    // The TOTAL is what meets the cap, and the split hangs off it as a
+    // parenthetical. The old wording put "50 automated, 579 manual" in front
+    // of "of 50", which reads as 579 manual calls against a cap of 50 — the
+    // exact pairing the assessment's §4.3 complained about, reproduced on a
+    // real 629-call ledger.
+    expect(err.message).toMatch(/2 calls in the last 24h against a cap of 2/)
+    expect(err.message).toMatch(/\(2 automated\)/)
+    expect(err.message).not.toMatch(/automated of \d+ in the last 24h/)
     expect(err.message).toMatch(/frees at/i)
     expect(err.message).toMatch(/Generate, Regenerate, Verify and Tailor still run/)
     // No key, and no provider id, in the message the queue panel shows.

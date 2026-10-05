@@ -68,7 +68,8 @@ import {
   providerBudget,
   providerKey,
   resetModelHealth,
-  resetProviderSpend
+  resetProviderSpend,
+  type ProviderBudget
 } from './ai'
 
 const HOUR = 60 * 60 * 1000
@@ -270,23 +271,31 @@ describe('the sentence about a capped provider never tells the user to come back
     expect(err).not.toBeNull()
     const message = err!.message
     expect(message).toMatch(/call cap/i)
-    expect(message).toMatch(/tomorrow/i)
-    // And the instant behind the words is a real one, in the future.
-    const key = bucketOf(OPENROUTER, KEY_A)
-    expect(providerBudget(key).freeAt!).toBeGreaterThan(Date.now())
+    // The calendar date, not a relative word — computed the same way the
+    // formatter computes it, so the assertion is about WHICH day is named
+    // rather than about the host's locale format.
+    const freeAt = providerBudget(bucketOf(OPENROUTER, KEY_A)).freeAt!
+    expect(message).toContain(
+      new Date(freeAt).toLocaleDateString([], { day: 'numeric', month: 'short' })
+    )
+    // ...and the instant behind the words is a real one, in the future.
+    expect(freeAt).toBeGreaterThan(Date.now())
   })
 
-  it('a free time far enough out to be misread still names its day', async () => {
-    // `today` rather than a bare time, so a copy of this sentence that is
-    // read back later — it is persisted as the row's `lastError`, and the
-    // Queue panel re-renders it on every poll — cannot be read as a moment
-    // that has passed.
+  it('never names the day relative to the reader, so a stored copy cannot rot', async () => {
+    // "today" and "tomorrow" were the intermediate fix and they fail by the
+    // same reasoning that motivated naming the day at all: this string is
+    // persisted as the row's `lastError` and the Queue panel re-renders it on
+    // every poll, so a copy outlives the moment it describes. "06:09 a.m.
+    // tomorrow" read back the day after that is 24 hours in the past, with
+    // nothing in it to say so. A date that has gone by is plainly a date that
+    // has gone by; a relative word is not.
     const t0 = new Date(2026, 2, 10, 0, 30, 0).getTime()
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(t0)
 
     const key = bucketOf(OPENROUTER, KEY_A)
-    // Exactly at the cap, first call at 00:30, so it frees 00:30 tomorrow.
+    // Exactly at the cap, first call at 00:30, so it frees 00:30 the NEXT day.
     for (let i = 0; i < 50; i++) recordProviderCall(key, false, t0 + i * 1000)
     addModels(OPENROUTER, KEY_A, 1)
     stubTransport()
@@ -295,7 +304,70 @@ describe('the sentence about a capped provider never tells the user to come back
       () => null,
       (e: Error) => e
     )
-    expect(err!.message).toMatch(/tomorrow/i)
+    const freeAt = providerBudget(key).freeAt!
+    // The day is the 11th, and it says WHICH one.
+    expect(new Date(freeAt).getDate()).toBe(11)
+    expect(err!.message).toContain(
+      new Date(freeAt).toLocaleDateString([], { day: 'numeric', month: 'short' })
+    )
+    expect(err!.message).not.toMatch(/\b(today|tomorrow)\b/i)
+    // The bare time is always paired with that date, so there is no version of
+    // this sentence a reader can resolve to the wrong day.
+    expect(err!.message).toMatch(/Budget frees at \d{1,2}[:.]\d{2}.* on /)
+  })
+
+  it('a free time an hour away is not dressed up with a date it does not need', () => {
+    // The one case that keeps the bare time: a moment minutes away cannot be
+    // stale, so naming its date would only make the sentence longer.
+    const t0 = new Date(2026, 2, 10, 12, 0, 0).getTime()
+    const budget: ProviderBudget = {
+      key: 'k',
+      label: 'openrouter.ai',
+      used: 50,
+      automated: 50,
+      manual: 0,
+      cap: 50,
+      freeAt: t0 + 20 * 60_000,
+      clockSkewed: false
+    }
+    const said = describeProviderCap(budget, t0)
+    expect(said).toMatch(/Budget frees at \d/)
+    expect(said).not.toMatch(/Budget frees at \d.* on /)
+  })
+
+  it('the day is judged against the `now` it is handed, not a second clock', () => {
+    // m1. `clockTime` used to read `Date.now()` internally while this
+    // function's freshness test was made against the `now` argument — two
+    // clocks, so a caller passing a stale `now` got a sentence that had
+    // already passed its own guard: with the wall clock an hour past
+    // `freeAt` and a stale `now` in hand, it rendered a bare PAST time, which
+    // is the original defect in miniature. One reading now decides both
+    // questions, so they cannot disagree.
+    const t0 = new Date(2026, 2, 10, 12, 0, 0).getTime()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(t0 + 2 * HOUR)
+
+    const budget: ProviderBudget = {
+      key: 'k',
+      label: 'openrouter.ai',
+      used: 50,
+      automated: 50,
+      manual: 0,
+      cap: 50,
+      freeAt: t0 + 60 * 60 * 1000,
+      clockSkewed: false
+    }
+    // Read through a stale `now`, so the instant really is in the future as
+    // far as this call is concerned...
+    const said = describeProviderCap(budget, t0)
+    expect(said).toMatch(/Budget frees at/)
+    // ...and it must not read as a moment that has gone by, even though the
+    // wall clock says it has.
+    expect(said).not.toMatch(/not known yet/)
+    expect(said).toContain(new Date(budget.freeAt!).toLocaleDateString([], {
+      day: 'numeric',
+      month: 'short'
+    }))
   })
 
   it('a budget that is already free is described as available now, with no timestamp', async () => {
@@ -379,7 +451,9 @@ describe('the sentence about a capped provider never tells the user to come back
     expect(err).not.toBeNull()
     // A future instant, and named as one — not the stale-time fallback.
     expect(err!.message).not.toMatch(/not known yet/)
-    expect(err!.message).toMatch(/tomorrow/i)
+    expect(err!.message).toContain(
+      new Date(budget.freeAt!).toLocaleDateString([], { day: 'numeric', month: 'short' })
+    )
   })
 })
 

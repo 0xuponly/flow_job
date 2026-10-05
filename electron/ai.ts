@@ -718,28 +718,50 @@ function startOfLocalDay(at: number): number {
  * window, never corrected. The value was in the future every single time;
  * the sentence put it in the past.
  *
- * So the day is named whenever it is not the next few minutes: `today`,
- * `tomorrow`, or an explicit date. Long enough that a stale copy read back
- * later still cannot be misread as a time that has gone by, which matters
- * because this string is persisted as the row's `lastError` and rendered
- * again every time the Queue panel polls.
+* So the DAY IS ALWAYS NAMED, and it is always the calendar date rather than
+ * a relative word. "Today" and "tomorrow" were tried and are wrong by the same
+ * reasoning that motivated the change: this string is persisted as a queue
+ * row's `lastError` and re-rendered on every poll of the Queue panel, so a
+ * copy outlives the moment it describes. "06:09 a.m. tomorrow" read back the
+ * day after tomorrow is 24 hours in the past, with nothing in it to say so —
+ * only an explicit date survives being read back at all, because a date that
+ * has gone by is plainly a date that has gone by. Only a time minutes away
+ * skips the date, and that is not a stale-copy case: it is about to happen
+ * either way, so the words cannot be out of date.
+ *
+ * `now` is a PARAMETER, and it has to be. This used to read `Date.now()`
+ * internally while the freshness test in `describeProviderCap` was made
+ * against the `now` it was handed — two clocks, so a caller passing a stale
+ * `now` got a sentence that had already passed its own guard: with the wall
+ * clock an hour past `freeAt` and a stale `now` in hand, it rendered a bare
+ * past time, which is the exact defect above. One clock reading now decides
+ * both "is this still in the future" and "which day is it", so the two cannot
+ * disagree. (Unreachable from today's call sites, where the only `now` read
+ * far from its use is microseconds away — and the doc comment on
+ * `describeProviderCap` claims an invariant, and a claim the code does not
+ * hold for the next caller is not one.)
+ *
+ * The year is named whenever it is not the reader's own, because "7 Oct" is
+ * ambiguous across a year boundary and this is the one function whose whole
+ * job is not being ambiguous.
  *
  * Local midnight, not a fixed 24h span: across a DST change two local
- * midnights are 23 or 25 hours apart, and `Math.round` over that is still
+ * midnidays are 23 or 25 hours apart, and `Math.round` over that is still
  * exactly the whole number of calendar days it is counting.
  */
-function clockTime(at: number): string {
+function clockTime(at: number, now: number): string {
   const when = new Date(at)
   const time = when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   const days = Math.round(
-    (startOfLocalDay(at) - startOfLocalDay(Date.now())) / PROVIDER_SPEND_WINDOW_MS
+    (startOfLocalDay(at) - startOfLocalDay(now)) / PROVIDER_SPEND_WINDOW_MS
   )
-  if (days <= 0) {
+  if (days <= 0 && at - now < 60 * 60 * 1000) {
     // Only a time minutes away is unambiguous without naming the day.
-    return at - Date.now() < 60 * 60 * 1000 ? `${time}` : `${time} today`
+    return time
   }
-  if (days === 1) return `${time} tomorrow`
-  return `${time} on ${when.toLocaleDateString([], { day: 'numeric', month: 'short' })}`
+  const date = when.toLocaleDateString([], { day: 'numeric', month: 'short' })
+  const year = when.getFullYear() === new Date(now).getFullYear() ? '' : ` ${when.getFullYear()}`
+  return `${time} on ${date}${year}`
 }
 
 /**
@@ -778,7 +800,18 @@ function clockTime(at: number): string {
  * a pure function of its arguments and nothing in production calls it.
  */
 export function describeProviderCap(budget: ProviderBudget, now: number = Date.now()): string {
-  const spend = budget.manual > 0
+  // THE TOTAL IS WHAT MEETS THE CAP, AND THE SPLIT IS A PARENTHESIS.
+  //
+  // The old wording ran "… — 50 automated, 579 manual of 50 in the last 24h",
+  // which reads as 579 manual calls against a cap of 50. Both numbers are
+  // true and the sentence arranged them so a reader could not tell which was
+  // which: reproduced verbatim on a real 629-call ledger, 629 requests
+  // described as sitting under a single "of 50". So the total is the thing
+  // compared with the cap, and the split — which is the part worth keeping
+  // legible, because it is what tells a user whether the app or their own
+  // clicking did the spending — hangs off it as a parenthetical rather than
+  // standing between the two.
+  const split = budget.manual > 0
     ? `${budget.automated} automated, ${budget.manual} manual`
     : `${budget.automated} automated`
   let frees: string
@@ -787,11 +820,11 @@ export function describeProviderCap(budget: ProviderBudget, now: number = Date.n
   } else if (budget.freeAt <= now) {
     frees = 'The window is still rolling, so the exact wait is not known yet — it is re-checked every pass.'
   } else {
-    frees = `Budget frees at ${clockTime(budget.freeAt)}.`
+    frees = `Budget frees at ${clockTime(budget.freeAt, now)}.`
   }
   return (
-    `${budget.label} is at its call cap — ${spend} of ${budget.cap} in the last 24h. ` +
-    `${frees} Automated work is paused; Generate, Regenerate, Verify and Tailor still run.`
+    `${budget.label} is at its call cap — ${budget.used} calls in the last 24h against a cap of ${budget.cap} ` +
+    `(${split}). ${frees} Automated work is paused; Generate, Regenerate, Verify and Tailor still run.`
   )
 }
 
