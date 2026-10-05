@@ -1202,26 +1202,43 @@ describe('5. the five previously-fixed defects are still fixed', () => {
       // structure preserved), then line by line: stripping per line would
       // let a `/** ... enqueue() ... */` block read as a call site, which is
       // exactly the class of false positive this audit must not have.
-      code(readFileSync(file, 'utf8')).split('\n').forEach((line, i) => {
+      const lines = code(readFileSync(file, 'utf8')).split('\n')
+      lines.forEach((line, i) => {
         if (!/(?<![\w$.])enqueue\s*\(/.test(line)) return
         if (line.includes('function enqueue')) return
-        rows.push({ where: file, line: i + 1, manual: /\{\s*manual\s*:\s*true\s*\}/.test(line) })
+        // The call's arguments can wrap, and a flag on the fourth line of
+        // a call is still that call's flag — so the window is read rather
+        // than the line. Four lines is what the widest call in the tree
+        // needs, and a stray `manual:` that far from an `enqueue(` would
+        // over-classify this row and fail the expectation below, which is
+        // the direction that errs loudly.
+        const window = lines.slice(i, i + 4).join('\n')
+        // "Carries a manual flag", not "passes the literal `manual: true`":
+        // a processor finishing a person's row passes that row's own
+        // origin (`manual: item.manualQueued === true`), and filing that
+        // as automatic is the misclassification this audit exists to
+        // prevent. `manual: false` / `manual: undefined` stay automatic.
+        rows.push({ where: file, line: i + 1, manual: /\{\s*manual\s*:\s*(?!false\b|undefined\b)/.test(window) })
       })
     }
 
-    // Four manual sites, all in main.ts, all inside an IPC handler whose
-    // channel is a user action; six automatic sites, none of them — the
-    // scan-time auto-tailor that was the seventh is retired.
+    // Four manual sites in main.ts, all inside an IPC handler whose channel
+    // is a user action; TWO more in the processor, and those two do not
+    // assert the flag — they read it off the row they are finishing, which
+    // is checked below rather than assumed; six automatic sites, none of
+    // them — the scan-time auto-tailor that was the seventh is retired.
     expect(rows.filter((r) => r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
+      'electron/aiQueue.ts:825',
+      'electron/aiQueue.ts:827',
       'electron/main.ts:540',
       'electron/main.ts:557',
       'electron/main.ts:744',
       'electron/main.ts:760'
     ])
     expect(rows.filter((r) => !r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
-'electron/aiQueue.ts:637',
-      'electron/aiQueue.ts:694',
-      'electron/aiQueue.ts:768',
+      'electron/aiQueue.ts:644',
+      'electron/aiQueue.ts:701',
+      'electron/aiQueue.ts:801',
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:136'
@@ -1231,7 +1248,7 @@ describe('5. the five previously-fixed defects are still fixed', () => {
     // manual site is reached from an `ipcMain.handle` whose channel is a
     // user action, and each automatic site is not.
     const main = code(readFileSync('electron/main.ts', 'utf8')).split('\n')
-    for (const r of rows.filter((x) => x.manual)) {
+    for (const r of rows.filter((x) => x.manual && x.where === 'electron/main.ts')) {
       // Wide enough to reach the enclosing `ipcMain.handle` even when the
       // handler carries a long explanatory comment above the work. The
       // intent is "reachable from a user action", not "is 12 lines away".
@@ -1239,6 +1256,20 @@ describe('5. the five previously-fixed defects are still fixed', () => {
       const channel = [...window.matchAll(/ipcMain\.handle\('([^']+)'/g)].pop()?.[1]
       expect(channel, `main.ts:${r.line}`).toBeTruthy()
       expect(channel, `main.ts:${r.line}`).not.toMatch(/^(jobs|scan|queue:list)/)
+    }
+    // The two manual sites that are NOT entry points must therefore be
+    // inheriting the flag from the row they are finishing, never asserting
+    // it: a literal `manual: true` inside the processor would promote an
+    // automatic row to a manual one, which is the whole thing the manual
+    // flag is trusted not to do.
+    for (const r of rows.filter((x) => x.manual && x.where !== 'electron/main.ts')) {
+      const call = code(readFileSync(r.where, 'utf8')).split('\n').slice(r.line - 1, r.line + 3).join('\n')
+      expect(call, `${r.where}:${r.line} must take its flag from the row, not assert it`).toMatch(
+        /manualQueued/
+      )
+      expect(call, `${r.where}:${r.line} must not assert the flag outright`).not.toMatch(
+        /manual\s*:\s*true/
+      )
     }
     // The one ungated type has no automatic producer, which is what makes
     // `autoQueueAllows`'s `default: return true` safe for it.

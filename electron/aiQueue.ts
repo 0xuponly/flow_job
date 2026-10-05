@@ -8,7 +8,14 @@ import { withAiOperation } from './ai'
 import { tailorDocument, regenerateSection, verifyDocumentContent, nextProviderCapFreeAt, ProviderCapError, ProviderCooldownError, providerAvailability, RateLimitError, type AiCallOptions } from './ai'
 import { PROVIDERS_COOLING_DOWN_MESSAGE } from './cooldownBlock'
 import type { AIQueueItem, Job, QueueItemView } from './types'
-import { AUTO_REGEN_MAX, AUTO_REVIVE_COOLDOWN_MS, AUTO_REVIVE_MAX, PASSING_REVIEW_SCORE } from './types'
+import {
+  AUTO_REGEN_MAX,
+  AUTO_REVIVE_COOLDOWN_MS,
+  AUTO_REVIVE_MAX,
+  PASSING_REVIEW_SCORE,
+  RATE_LIMIT_ATTEMPTS,
+  SCORE_FIT_ATTEMPTS
+} from './types'
 
 function backoffMs(item: AIQueueItem): number {
   // exponential backoff: 30s, 60s, 2m, 4m, 8m, 16s, 30m cap
@@ -711,10 +718,8 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
         // function a stable home — main.ts's heavy import-time side
         // effects make it hard to test scoreOneJobInBackground directly.
         // scoreOneJobInBackground returns the updated job, or null when
-        // the job was deleted mid-run. score === null means the LLM
-        // scorer failed and the heuristic fallback stamped no score —
-        // throw so the caller's backoff path retries it later.
-        const { scoreOneJobInBackground } = await import('./fitScorer')
+        // the job was deleted mid-run.
+        const { scoreOneJobInBackground, hasCurrentFitVerdict } = await import('./fitScorer')
         // `maybeAutoEnqueueDocs` runs *inside* the call below, so a
         // check after the await would be too late to stop it queueing
         // document generation into a queue the user just cleared.
@@ -727,7 +732,35 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
           removeAIQueueItem(item.id)
           return
         }
-        if (updated.score == null) {
+        // "Did this row leave the job with a real score for the CV in
+        // force", asked of the row's own verdict fields and NOT of
+        // `score == null`.
+        //
+        // The difference is a laundering channel. `score` is a property of
+        // the JOB, so on any job that had already been scored once, every
+        // pass that produced nothing read back non-null — a genuine 429
+        // among them, which `scoreJobFit` deliberately answers with its
+        // heuristic fallback (a real verdict is still derivable) and which
+        // `scoreOneJobInBackground` therefore records as `fit_source:
+        // 'heuristic'` rather than throwing. The row was then deleted as
+        // though the scoring had happened, the score on the job was left at
+        // whatever the earlier pass wrote, and the bounded score_fit ladder
+        // — the mechanism that exists to retry exactly this — was never
+        // given the chance. It is the same defect the two rethrows above
+        // were added for, reached through the job row instead of through a
+        // thrown type.
+        //
+        // Throwing is what puts the row back on that ladder: the
+        // `score_fit` branch of the catch below gives it an attempt and a
+        // backoff, and `SCORE_FIT_ATTEMPTS` of those retire the row rather
+        // than loop.
+        //
+        // The cast is the pre-existing hole in `Settings`, which has never
+        // declared `cv_version` although the store has always carried it
+        // and four other call sites read it the same way
+        // (`fitAutoScore.ts:89`, `fitScorer.ts:190`, `jobSearch.ts:744`).
+        const cvVersion = (getSettings() as { cv_version?: number }).cv_version ?? 0
+        if (!hasCurrentFitVerdict(updated, cvVersion)) {
           throw new Error(
             updated.fit_last_error || 'LLM scorer fell back to heuristic (no score).'
           )
@@ -741,7 +774,7 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
         // call path) until the case actually fires. Mirrors the
         // lazy-load pattern other optional call sites already use.
         const { tailorJobDocsForJob } = await import('./tailorJobDocs')
-        await tailorJobDocsForJob(item.jobId, opts)
+        const { refused } = await tailorJobDocsForJob(item.jobId, opts)
         // Generation no longer sets status itself; refresh the
         // doc-derived status (sourced <-> reviewing) after both docs land.
         const { recomputeJobStatusFromDocs } = await import('./database')
@@ -766,6 +799,35 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
         if (epoch !== clearEpoch) return
         for (const doc of listJobDocuments(item.jobId)) {
           enqueue({ type: 'verify', jobId: item.jobId, documentId: doc.id })
+        }
+
+        // A lane the PROVIDER refused, when its sibling built. The row is
+        // retired either way — this one is the BOTH-documents unit and the
+        // document that landed is stored and, above, reviewed — so the
+        // refused lane is handed to the row that owns that single document.
+        // `generate_cv` / `generate_cover_letter` is what `ai:tailor` does
+        // with the same refusal from the renderer's Generate button, and
+        // the child's budget is its own (`RATE_LIMIT_ATTEMPTS` plus the
+        // `AUTO_REVIVE_MAX` revivals in `planDocUnit`), so this cannot
+        // become the unbounded lane the old swallowing was.
+        //
+        // `manual` is inherited, never invented: this row is a person's
+        // Quick Apply, and the child finishes the request they made, so it
+        // must keep every restart right that row had — including being
+        // ungated by `auto_queue_cv` / `auto_queue_cover_letter`, which is
+        // the whole meaning of `manual` in `enqueue`.
+        //
+        // Only a REFUSAL is handed on. An ordinary failure is not owed
+        // anything here: it gets the ladder this row's own removal would
+        // have given it, and re-queueing it would spend on a posting the
+        // model has already refused.
+        if (refused === 'cv') {
+          enqueue({ type: 'generate_cv', jobId: item.jobId }, { manual: item.manualQueued === true })
+        } else if (refused === 'cover_letter') {
+          enqueue(
+            { type: 'generate_cover_letter', jobId: item.jobId },
+            { manual: item.manualQueued === true }
+          )
         }
         break
       }
@@ -876,14 +938,14 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
     // step is decided by the budget, not by the retry ladder.
     if (isCap) {
       parkOnProviderCap(item, msg)
-    } else if (isRateLimit && attempts < 10) {
+    } else if (isRateLimit && attempts < RATE_LIMIT_ATTEMPTS) {
       updateAIQueueItem(item.id, {
         status: 'pending',
         attempts,
         lastError: msg,
         nextRetryAt: Date.now() + backoffMs({ ...item, attempts })
       })
-    } else if (item.type === 'score_fit' && !isRateLimit && attempts < 5) {
+    } else if (item.type === 'score_fit' && !isRateLimit && attempts < SCORE_FIT_ATTEMPTS) {
       // A score_fit miss (LLM error / heuristic fallback) is usually
       // transient — network hiccup, per-request 429 vs rate-limiter,
       // provider blip. Retry a bounded number of times instead of
@@ -1216,8 +1278,8 @@ function reviveInMemory(item: AIQueueItem): AIQueueItem {
  *
  * `attempts` MUST be reset alongside `status` / `nextRetryAt`. The
  * catch block in processItem gates its retry on `attempts < N`
- * (5 for score_fit, 10 for rate limits), so an item that has already
- * exhausted its budget would otherwise be re-run exactly once and then
+ * (`SCORE_FIT_ATTEMPTS` / `RATE_LIMIT_ATTEMPTS`), so an item that has
+ * already exhausted its budget would otherwise be re-run exactly once and
  * fail again immediately — the user's Retry would look like it worked
  * while changing nothing. Resetting the counter is what makes Retry
  * grant a full fresh budget rather than the single attempt the
@@ -1438,7 +1500,12 @@ export function clearQueue(): { removed: number; queue: QueueItemView[] } {
  *     re-seeder in fitAutoScore, and the documents backlog sweep in
  *     docsAutoQueue) and more arrive with every feature
  *     that queues work. A per-call-site check is a rule that only holds
- *     for the callers that remembered it.
+ *     for the callers that remembered it. (The processor's fifth call
+ *     site — handing a REFUSED lane of a `tailor_job_docs` row to the
+ *     per-unit row that owns that one document — is deliberately not one
+ *     of the six: it carries the parent row's own `manualQueued`, so
+ *     the manual flag arrives from a row rather than being invented at a
+ *     call site.)
  *  2. A refusal has to be uniform. If two callers disagreed about
  *     whether a type was gated, "is this queued?" would have two
  *     answers and no test could pin it down.
@@ -1455,11 +1522,17 @@ export function clearQueue(): { removed: number; queue: QueueItemView[] } {
  *   main.ts  ai:tailor                   → generate_cv /     (Tailor /
  *                                          generate_cover_letter  Generate)
  *   main.ts  tailor:quickApply           → tailor_job_docs   (Quick Apply)
+ *   this file  a lane a provider         → generate_cv /      (finishing a
+ *              REFUSED, with the         generate_cover_letter  Quick Apply)
+ *              parent row's manualQueued
  *
- * All four are rate-limit fallbacks: the handler tries the AI call
+ * The first four are rate-limit fallbacks: the handler tries the AI call
  * directly first and only queues when the provider is throttling, at
  * which point "a person asked for this" is the whole truth of the
- * matter. There are no others — `rg -n "enqueue\(" electron src` is the
+ * matter. The fifth creates no request of its own — it finishes one whose
+ * other half the provider refused — so it READS the flag off the row
+ * rather than asserting it, and an automatic parent row stays automatic.
+ * There are no others — `rg -n "enqueue\(" electron src` is the
  * check, and aiQueue.autoQueue.test.ts pins both halves of every row of
  * that table.
  *

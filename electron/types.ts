@@ -552,6 +552,29 @@ export const AUTO_REVIVE_COOLDOWN_MS = 4 * 60 * 60 * 1000
 export const AUTO_REVIVE_MAX = 3
 
 /**
+ * The two per-row ATTEMPT ladders `processItem` charges, exported so the
+ * bound they imply can be derived rather than re-typed wherever it is
+ * measured.
+ *
+ * `RATE_LIMIT_ATTEMPTS` is the ladder for everything else: a row that
+ * failed on a rate limit gets this many tries before it is parked on the
+ * revive cooldown. `SCORE_FIT_ATTEMPTS` is deliberately shorter, because
+ * a `score_fit` miss is usually transient (a network hiccup, one 429
+ * against a per-request limit rather than the rate limiter, a provider
+ * blip) and retrying it a few times is cheaper than abandoning a job's
+ * fit score forever. A provider BLOCK is on neither ladder — it costs no
+ * attempt at all (see `parkBlockedRow`).
+ *
+ * They live here, beside `AUTO_REVIVE_MAX`, because together those three
+ * are the whole cost bound of one row and the tests that measure it have
+ * to be able to say so without copying a digit. A bound written as
+ * `10 * (AUTO_REVIVE_MAX + 1)` in a test and `attempts < 10` in the
+ * processor is two numbers that agree until one of them is edited.
+ */
+export const RATE_LIMIT_ATTEMPTS = 10
+export const SCORE_FIT_ATTEMPTS = 5
+
+/**
  * A queue row as the Queue panel consumes it: the stored item plus the
  * job's title and company, resolved at list time.
  *

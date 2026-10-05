@@ -29,6 +29,9 @@ vi.mock('./database', () => ({
   // switches themselves are covered against the real store in
   // aiQueue.autoQueue.test.ts.
   getSettings: () => ({
+    // Read by the `score_fit` case to ask whether a verdict was computed
+    // against the CV in force; 1 matches the stubbed scorer above.
+    cv_version: 1,
     auto_queue_fit: true,
     auto_queue_cv: true,
     auto_queue_cover_letter: true,
@@ -119,11 +122,22 @@ vi.mock('./ai', () => {
 })
 
 vi.mock('./fitScorer', () => ({
-  scoreOneJobInBackground: vi.fn(async () => ({ id: 1, score: 0.8 }) as unknown as Job)
+  // The three verdict fields travel together because the store only ever
+  // writes them together, and `score_fit` retires its row only when the job
+  // carries all three (see `hasCurrentFitVerdict`). `cv_version: 1` in the
+  // settings stub below is the other half of that pair.
+  scoreOneJobInBackground: vi.fn(async () => ({
+    id: 1, score: 0.8, fit_source: 'llm', fit_score_version: 1
+  }) as unknown as Job),
+  // The case's own question, re-implemented rather than imported: the real
+  // module drags its own database / queue imports into a file that stubs
+  // both. Unit-tested against the real function in fitScorer.test.ts.
+  hasCurrentFitVerdict: (job: Job, cvVersion: number): boolean =>
+    job.score != null && job.fit_source === 'llm' && job.fit_score_version === cvVersion
 }))
 
 vi.mock('./tailorJobDocs', () => ({
-  tailorJobDocsForJob: vi.fn(async () => ({ cvId: 1, clId: 2, ms_cv: 0, ms_cl: 0 }))
+  tailorJobDocsForJob: vi.fn(async () => ({ cvId: 1, clId: 2, ms_cv: 0, ms_cl: 0, refused: null }))
 }))
 
 vi.mock('./logger', () => ({
@@ -162,7 +176,9 @@ beforeEach(() => {
   store.nextId = 1
   store.fit.clear()
   store.writes = []
-  mockedScore.mockReset().mockResolvedValue({ id: 1, score: 0.8 } as unknown as Job)
+  mockedScore.mockReset().mockResolvedValue({
+    id: 1, score: 0.8, fit_source: 'llm', fit_score_version: 1
+  } as unknown as Job)
 })
 
 describe('one row per piece of work, whatever status the existing row is in', () => {
@@ -525,7 +541,7 @@ describe('the processing guard still prevents a double-add during an in-flight c
       resultDuringCall = enqueue({ type: 'score_fit', jobId: 42 })
       rowsDuringCall = store.rows.length
       await new Promise((r) => setTimeout(r, 5))
-      return { id: 42, score: 0.8 } as unknown as Job
+      return { id: 42, score: 0.8, fit_source: 'llm', fit_score_version: 1 } as unknown as Job
     })
 
     await processQueue()
