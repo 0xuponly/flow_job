@@ -148,7 +148,9 @@ function findRepeatable(
     // machine ahead of this one). Treated as inside the window: the
     // conservative direction is to collapse, never to lose a payload.
     if (age > DEDUPE_WINDOW_MS || age < 0) continue
-    if (notificationDedupeKey(row.group_key, row.job, row.full_message) === dedupeKey) return row
+    if (
+      notificationDedupeKey(row.type, row.source, row.group_key, row.job, row.full_message) === dedupeKey
+    ) return row
   }
   return null
 }
@@ -180,7 +182,7 @@ export function addNotification(input: {
   // already records this thing is the record.
   const repeat = findRepeatable(
     store.notifications,
-    notificationDedupeKey(groupKey, job, fullMessage),
+    notificationDedupeKey(type, source, groupKey, job, fullMessage),
     now
   )
   if (repeat) return { id: repeat.id }

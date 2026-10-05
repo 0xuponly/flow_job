@@ -460,6 +460,66 @@ describe('the record layer refuses to multiply a fact it has already recorded', 
       expect(listActiveNotifications().rows).toHaveLength(1)
     })
   })
+
+  /**
+   * MINOR 3. `group_key` is overridable, and a caller-supplied key carries no
+   * type or source of its own — `electron/main.ts` passes
+   * `error|app|internal error: ${err.name}` for a crash, which happens to
+   * agree with the row, but nothing made it. So the dedupe key was taking
+   * `group_key` wholesale and leaving the row's own `type`/`source` out of
+   * its identity, which made an `error` and a `warning` sharing one explicit
+   * key fold into a single row.
+   *
+   * That is two defects in one. A payload is erased — and unlike the fold this
+   * module exists to perform, nothing about the two rows said they were the
+   * same fact except the string the caller passed. And the surviving row's
+   * `type` is now whatever arrived first, so the centre shows a severity
+   * nobody recorded and the store's own row contradicts its own key.
+   */
+  it('a caller-supplied key cannot fold two severities into one row', () => {
+    const shared = 'error|app|internal error: Error'
+    addNotification({ type: 'error', source: 'app', message: 'Internal error: a', full_message: 'x', group_key: shared })
+    addNotification({ type: 'warning', source: 'app', message: 'Internal error: a', full_message: 'x', group_key: shared })
+
+    const { rows } = listActiveNotifications()
+    expect(rows).toHaveLength(2)
+    expect(new Set(rows.map((r) => r.type))).toEqual(new Set(['error', 'warning']))
+  })
+
+  it('nor two sources, and an unknown type is judged after coercion', () => {
+    const shared = 'error|app|internal error: Error'
+    addNotification({ type: 'error', source: 'app', message: 'Internal error: a', full_message: 'x', group_key: shared })
+    addNotification({ type: 'error', source: 'scanner', message: 'Internal error: a', full_message: 'x', group_key: shared })
+
+    // The type is coerced to a known value before it reaches the key, so an
+    // unrecognised string and the value it coerces to are one fact rather
+    // than two -- and neither of them can be distinguished from a severity
+    // the row does not actually carry. So this is a THIRD row: `info`, not
+    // `error`, and not a fold into either of the two above it.
+    addNotification({ type: 'nonsense', source: 'app', message: 'Internal error: a', full_message: 'x', group_key: shared })
+
+    const { rows } = listActiveNotifications()
+    expect(rows).toHaveLength(3)
+    expect(new Set(rows.map((r) => r.source))).toEqual(new Set(['app', 'scanner']))
+    expect(new Set(rows.map((r) => r.type))).toEqual(new Set(['error', 'info']))
+  })
+
+  it('and it still folds a genuine repeat, key and all', () => {
+    // The other direction, because a fix that made the key stricter than the
+    // duplicate it exists to catch would be its own regression: the whole
+    // point of the explicit key is that two differently-worded notifications
+    // can be one thing. Byte-identical payload, so it really is the same
+    // fact said again -- `full_message` is in the dedupe key precisely so
+    // that a genuinely different one is not eaten with it.
+    const shared = 'error|app|internal error: TypeError'
+    addNotification({ type: 'error', source: 'app', message: 'Internal error: a', full_message: 'stack', group_key: shared })
+    addNotification({ type: 'error', source: 'app', message: 'Internal error: b', full_message: 'stack', group_key: shared })
+
+    const { rows } = listActiveNotifications()
+    expect(rows).toHaveLength(1)
+    // One group on screen, as the caller asked for, from one row.
+    expect(new Set(rows.map((r) => r.group_key))).toEqual(new Set([shared]))
+  })
 })
 
 describe('the grouping key collapses the flood and separates the rest', () => {

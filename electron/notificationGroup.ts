@@ -109,14 +109,14 @@ const MAX_GROUP_KEY_CHARS = 512
  *     job: twelve rate-limited jobs are one thing to think about.
  *
  *   de-duplication decides what the STORE may DESTROY. A repeat inside
- *     the window increments a counter on the row that is already there;
- *     the second payload is not written at all. Nothing is reversible, so
- *     it has to be at least as strict as the thing it erases, and two
+ *     the window is not written at all — the row that is already there is
+ *     the record — so the second payload is gone. Nothing is reversible,
+ *     so it has to be at least as strict as the thing it erases, and three
  *     fields earn their place here by exactly that standard:
  *
  *     the job — "generation failed" on job 1 and on job 2 are rows the
  *       user acts on separately, and merging them would leave one row
- *       citing one job while its count claimed two.
+ *       citing one job while the other silently disappeared.
  *
  *     `full_message` — the per-document detail. `announceSweep` puts
  *       `docLabel(doc)` in front of every one of them, so six documents
@@ -128,6 +128,18 @@ const MAX_GROUP_KEY_CHARS = 512
  *       this is here for: a StrictMode double-mount re-runs the sweep over
  *       the same documents with the same provider error, so it produces
  *       byte-identical payloads.
+ *
+ *     the row's OWN type and source, and not merely whatever the group key
+ *       happens to say. `group_key` is overridable — `addNotification`
+ *       takes one, for a caller that knows two differently-worded
+ *       notifications are one thing — and a caller-supplied key carries no
+ *       type or source of its own. So a key passed in wholesale left the
+ *       row's own `type`/`source` out of its identity, and an `error` and a
+ *       `warning` sharing one explicit key would fold into a single row
+ *       whose stored `type` was whichever arrived first: a payload erased,
+ *       and a row now claiming a severity nobody recorded. The values used
+ *       here are the ones already coerced onto the row and read back off it,
+ *       so the key cannot disagree with the record it identifies.
  *
  * So "the same fact" is one message, one job and one payload inside the
  * window — which is the strongest claim available without knowing what the
@@ -145,12 +157,16 @@ const MAX_GROUP_KEY_CHARS = 512
  * written once and re-read verbatim, so no reader re-derives this.
  */
 export function notificationDedupeKey(
+  type: NotificationType,
+  source: NotificationSource,
   groupKey: string,
   job: NotificationJobContext | undefined,
   fullMessage: string
 ): string {
   const id = job?.job_id
   return [
+    part(type),
+    part(source),
     part(groupKey),
     id === null || id === undefined ? part('') : part(String(id)),
     part(job?.job_title),
