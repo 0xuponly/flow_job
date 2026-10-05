@@ -295,12 +295,25 @@ describe('a stall past the ceiling is one row, however many refusals it contains
     // The detail carries the provider's own sentence, so the user can act on
     // it rather than being told only that something is wrong.
     expect(row.full_message).toContain('openrouter.ai/api/v1 is at its call cap')
-    // ...and what has NOT happened, because "no attempts spent" is the part
-    // that tells the user this is not their work being destroyed.
-    expect(row.full_message).toMatch(/No attempts have been spent/)
-    expect(row.full_message).toMatch(/no provider requests made/i)
+    // ...and what has NOT happened to them, because "no attempt spent, not
+    // failed" is the part that tells the user this is work waiting rather
+    // than work being thrown away.
+    expect(row.full_message).toMatch(/no attempt and no revival/)
+    expect(row.full_message).toMatch(/none of them has been marked failed/)
     // The waited time is derived from when this stall began, not invented.
     expect(row.full_message).toMatch(/11 minutes/)
+  })
+
+  it('does not claim no requests were made, because sometimes they are', () => {
+    // The claim a lazier version of this record would make, and cannot: a
+    // lapsing cooldown lets a pass claim a row and the provider refuse it, so
+    // requests really do happen while the queue is stuck. Everything the
+    // detail says has to be something the parks guarantee.
+    capParked(3)
+    reportAfter(PROVIDER_REPROBE_CAP_MS + 60_000)
+    const [row] = rows()
+    expect(row.full_message).not.toMatch(/no provider requests/i)
+    expect(row.full_message).not.toMatch(/nothing has failed/i)
   })
 
   it('a cooldown stall and a cap stall are told apart', () => {

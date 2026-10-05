@@ -147,7 +147,14 @@ export function reportStalledQueue(now: number, stallAfterMs: number): void {
     const detail = [
       `${blocked.length} of your queued tasks have been unable to run for ${minutes(waitedMs)} minutes.`,
       '',
-      'No attempts have been spent, no revivals charged, and no provider requests made. Nothing has failed — the work is still queued and will run as soon as a provider can answer. This is not a retry countdown.',
+      // Scoped to what the parks themselves guarantee, because the queue
+      // does NOT guarantee it for the whole stall: a lapsing cooldown lets a
+      // pass claim a row and the provider refuse it, so requests can and do
+      // happen while this is true. What parking always guarantees is that
+      // the row spent no attempt, was charged no revival, and was not marked
+      // failed — which is the part the user needs, since it is the
+      // difference between work waiting and work being thrown away.
+      'Waiting on a provider costs a task no attempt and no revival, and none of them has been marked failed — this work is still queued and will run as soon as a provider can answer. It is not a retry countdown.',
       '',
       `Waiting on the daily call cap (${capped.length}):`,
       ...distinctErrors(capped, 3).map((t) => `  · ${t}`),
