@@ -199,12 +199,12 @@ const INVENTORY: Record<string, { line: number; manual: boolean; present?: boole
   // of the audit being that both columns are read off the tree rather than
   // promised in prose.
   'electron/main.ts': [
-    { line: 652, manual: true, present: true, why: 'documents:verify — the Review button, queued when the direct call was throttled' },
-    { line: 669, manual: false, why: 'documents:autoVerify — the job page\'s MOUNT SWEEP. The app\'s own review work: no provenance, no grant, and gated by auto_queue_verify_* like any other automatic review' },
-    { line: 694, manual: true, present: true, why: 'documents:regenerateSection — the Regenerate button, likewise' },
-    { line: 909, manual: true, present: true, why: 'ai:tailor — Tailor / Generate, likewise' },
-    { line: 924, manual: false, why: 'ai:autoTailor — the same sweep\'s regeneration loop. Automatic for both halves of the misclassification' },
-    { line: 955, manual: true, present: true, why: 'tailor:quickApply — Quick Apply, which has NO direct call at all' }
+    { line: 653, manual: true, present: true, why: 'documents:verify — the Review button, queued when the direct call was throttled' },
+    { line: 670, manual: false, why: 'documents:autoVerify — the job page\'s MOUNT SWEEP. The app\'s own review work: no provenance, no grant, and gated by auto_queue_verify_* like any other automatic review' },
+    { line: 695, manual: true, present: true, why: 'documents:regenerateSection — the Regenerate button, likewise' },
+    { line: 910, manual: true, present: true, why: 'ai:tailor — Tailor / Generate, likewise' },
+    { line: 925, manual: false, why: 'ai:autoTailor — the same sweep\'s regeneration loop. Automatic for both halves of the misclassification' },
+    { line: 956, manual: true, present: true, why: 'tailor:quickApply — Quick Apply, which has NO direct call at all' }
   ],
   'electron/aiQueue.ts': [
     { line: 803, manual: false, why: 'processor: generation finished, chain the review' },
@@ -334,10 +334,10 @@ it('leaves the ungated type with no automatic producer at all', () => {
     // about who may call them.
     const granted = sites.filter((s) => s.present)
     expect(granted.map((s) => `${s.where}:${s.line}`).sort()).toEqual([
-      'electron/main.ts:652',
-      'electron/main.ts:694',
-      'electron/main.ts:909',
-      'electron/main.ts:955'
+      'electron/main.ts:653',
+      'electron/main.ts:695',
+      'electron/main.ts:910',
+      'electron/main.ts:956'
     ])
     for (const site of granted) {
       const entry = INVENTORY[site.where]?.find((e) => e.line === site.line)
@@ -384,7 +384,7 @@ it('leaves the ungated type with no automatic producer at all', () => {
         `${channel} must still be registered — the sweep needs a channel of its own`
       ).toBe(true)
     }
-    const sweepRows = ['electron/main.ts:669', 'electron/main.ts:924']
+    const sweepRows = ['electron/main.ts:670', 'electron/main.ts:925']
     for (const at of sweepRows) {
       const [where, line] = at.split(':')
       const site = sites.find((s) => s.where === where && s.line === Number(line))
@@ -396,7 +396,7 @@ it('leaves the ungated type with no automatic producer at all', () => {
     // (the four `present` sites above) plus exactly these two.
     expect(
       sites.filter((s) => s.where === 'electron/main.ts').map((s) => s.line).sort((a, b) => a - b)
-    ).toEqual([652, 669, 694, 909, 924, 955])
+    ).toEqual([653, 670, 695, 910, 925, 956])
   })
 
   it('never lets the refused-lane handoff inherit a grant', () => {
@@ -1104,8 +1104,8 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:136',
-      'electron/main.ts:669',
-      'electron/main.ts:924'
+      'electron/main.ts:670',
+      'electron/main.ts:925'
     ])
 
     const src = readFileSync('electron/aiQueue.ts', 'utf8')

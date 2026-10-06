@@ -1,6 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import type { ApiModelConfig, Settings } from '../types'
+import {
+  PROVIDER_SPEND_POLL_MS,
+  providerSpendAsOf,
+  providerSpendLines,
+  type ProviderSpend
+} from '../providerSpend'
 import { notify } from '../components/Notifications'
 import { LocationPicker } from '../components/LocationPicker'
 import { parseLocationPicks } from '../utils'
@@ -136,6 +142,67 @@ export default function SettingsPage() {
   // Falls back to the documented default when a store predates the key, which
   // is the same value the main process normalises it to.
   const [providerCallCap, setProviderCallCap] = useState(50)
+  // What the AI providers have ACTUALLY spent in the rolling 24h window, one
+  // row per provider, read from the same ledger the cap is measured against.
+  //
+  // This tab's cap input is the number the user SET, and for six hours and
+  // forty-four minutes on 2026-10-05 it was also the only number shown — 629
+  // requests issued against a cap of 50, rendered as "50", with the 629
+  // nowhere in the UI. So the spend sits directly under the input it is being
+  // compared against.
+  //
+  // The rows and the moment they were read are ONE value, not two. That is
+  // the whole freshness contract: a snapshot with nothing on it saying when it
+  // was taken is how "4 calls in the last 24h against a cap of 50" sat on
+  // screen for hours while the ledger was at 200, and how a row naming a
+  // budget that "frees at 01:20" survived past 01:20 into a sentence the app
+  // would no longer agree with. Held separately they could not drift — one
+  // `setProviderSpend(rows)` and one `setProviderSpendNow(now)` are two
+  // chances to paint a number next to a moment that belongs to a different
+  // read. There is nothing to reconcile because there is one object, and
+  // `readAt` is the instant the READ was issued, never the render.
+  //
+  // A failed read clears it entirely: the rows AND the marker go, because a
+  // timestamp with no numbers beside it is a freshness claim about nothing,
+  // and a number with a timestamp from a read that worked is worse.
+  const [providerSpendRead, setProviderSpendRead] = useState<{
+    rows: ProviderSpend[]
+    readAt: number
+  } | null>(null)
+  const [providerSpendState, setProviderSpendState] = useState<'loading' | 'loaded' | 'failed'>('loading')
+  // Counts reads so two of them in flight at once cannot land out of order.
+  // A poll that starts while an earlier read is still waiting on the main
+  // process would otherwise resolve second and be overwritten by the stale
+  // one — which is the refresh itself becoming the lie. A read is only
+  // discarded when a LATER one has been started, so the newest read of the
+  // ledger is always the one on screen and `readAt` always belongs to it.
+  const providerSpendReads = useRef(0)
+
+  /**
+   * Read the provider spend for this tab.
+   *
+   * A read that failed renders NO numbers and says it failed. `0` against the
+   * cap would be a claim — "this provider has spent nothing in the last 24
+   * hours" — that nothing here knows, and it is indistinguishable on screen
+   * from the truth. A bridge without this method (an older preload, or a test
+   * mock that predates it) throws on the call and lands in the same branch,
+   * which is the right answer for the same reason.
+   */
+  async function loadProviderSpend(showLoading: boolean) {
+    if (showLoading) setProviderSpendState('loading')
+    const readAt = Date.now()
+    const read = ++providerSpendReads.current
+    try {
+      const rows = await api.providerSpend()
+      if (read !== providerSpendReads.current) return
+      setProviderSpendRead({ rows, readAt })
+      setProviderSpendState('loaded')
+    } catch {
+      if (read !== providerSpendReads.current) return
+      setProviderSpendRead(null)
+      setProviderSpendState('failed')
+    }
+  }
 
   // Lazy-load the boards list the first time the user opens the
   // Boards tab. Cheaper than loading on every Settings mount, and
@@ -246,8 +313,19 @@ export default function SettingsPage() {
    * and silently discard every unsaved batch edit the user has made on
    * another tab. So the response is merged for the ONE key that was written,
    * and a failure rolls back that key alone.
+   *
+   * Returns whether the store took the write. The call cap needs it: that
+   * input holds its own state (`providerCallCap`, so a half-typed value is not
+   * written on every keystroke), and nothing rolled THAT back when the write
+   * failed — the page went on showing a cap the store never accepted, which
+   * is the same "shows what was asked for rather than what is stored"
+   * failure the merge below exists to prevent, one field over.
    */
-  async function saveAutoQueueValue<K extends keyof Settings>(key: K, value: Settings[K], errorPrefix: string) {
+  async function saveAutoQueueValue<K extends keyof Settings>(
+    key: K,
+    value: Settings[K],
+    errorPrefix: string
+  ): Promise<boolean> {
     setAutoQueueSaving(true)
     const previous = settings
     setSettings((prev) => (prev ? { ...prev, [key]: value } : prev))
@@ -262,6 +340,7 @@ export default function SettingsPage() {
       // like it worked. The response stays authoritative for the one key it
       // just wrote.
       setSettings((prev) => (prev ? { ...prev, [key]: updated[key] } : updated))
+      return true
     } catch (err) {
       reportFailure({
         source: 'app',
@@ -277,6 +356,7 @@ export default function SettingsPage() {
       // the updater rather than outside it, so it cannot come from a stale
       // closure.
       setSettings((prev) => (prev ? { ...prev, [key]: previous?.[key] } : previous))
+      return false
     } finally {
       setAutoQueueSaving(false)
     }
@@ -535,6 +615,44 @@ export default function SettingsPage() {
   useEffect(() => {
     loadSettings()
   }, [])
+
+  // The provider spend is read when this tab is opened, on a sidebar refresh,
+  // after a cap write, and on a poll — and the poll is the one that matters.
+  //
+  // It used to be the first three only, and nothing else: `app:refresh` has
+  // one dispatcher in the tree (Sidebar.tsx, a manual click) and the tab open
+  // is a click. So an Auto-queue tab left open through a busy sweep went on
+  // rendering a 09:00 snapshot of a ledger the background queue was spending
+  // the whole time — which is the entire reason to have the panel open. Worse,
+  // the copy went stale rather than merely old: a row naming a budget that
+  // frees at 01:20 was still on screen at 00:30, describing a provider that
+  // had room again.
+  //
+  // Polling fixes the number; the as-of marker fixes the trust in it. Polling
+  // alone leaves whatever the last tick read on screen until the next one, so
+  // a user who glances at the panel can be reading a row that is up to
+  // PROVIDER_SPEND_POLL_MS old, and nothing on it says so. A marker alone
+  // fixes nothing and only reports the staleness. Both, and the marker is the
+  // instant of the read (`readAt` above), never the render — a timestamp
+  // invented now would be the same defect class in a new place: a
+  // fresh-looking time bolted to a number that is not fresh.
+  //
+  // The same cadence as the Queue panel, because it is the same question —
+  // "what is the background queue doing to my budget" — and the ledger is
+  // shared. Lazily: a Settings page sitting on Profile or Models must not be
+  // reading a ledger, so the interval exists only while this tab is on
+  // screen and is cleared when the tab is left.
+  useEffect(() => {
+    if (tab !== 'autoqueue') return
+    void loadProviderSpend(true)
+    const id = setInterval(() => { void loadProviderSpend(false) }, PROVIDER_SPEND_POLL_MS)
+    const onRefresh = () => { void loadProviderSpend(false) }
+    window.addEventListener('app:refresh', onRefresh)
+    return () => {
+      clearInterval(id)
+      window.removeEventListener('app:refresh', onRefresh)
+    }
+  }, [tab])
 
   // Sidebar refresh button
   useEffect(() => {
@@ -896,12 +1014,99 @@ export default function SettingsPage() {
                   onChange={(e) => {
                     const n = parseInt(e.target.value, 10)
                     if (!Number.isNaN(n) && n >= 1 && n <= 5000) {
+                      const previous = providerCallCap
                       setProviderCallCap(n)
                       void saveAutoQueueValue('provider_call_cap', n, 'Failed to save the AI provider budget: ')
+                        .then((saved) => {
+                          // Put the input back when the store refused the
+                          // value, so it never claims a cap the app is not
+                          // enforcing — this input holds its own state, and
+                          // nothing else rolls it back.
+                          if (!saved) setProviderCallCap(previous)
+                          // Re-read either way, because the rows below compare
+                          // the spend against the cap the app is ENFORCING.
+                          // Leaving yesterday's cap on screen beside a new
+                          // input is the same disagreement this section
+                          // exists to end.
+                          return loadProviderSpend(false)
+                        })
                     }
                   }}
                 />
                 <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>requests per 24 hours</span>
+              </div>
+
+              {/* THE SPEND, NEXT TO THE CAP. Three states on purpose: a read
+                  in flight, a read that failed, and a ledger with nothing in
+                  it all say different things, because "0 of 50" is a claim
+                  about the third and a lie about the other two. */}
+              <div style={{ marginTop: 8 }}>
+                {providerSpendState === 'loading' && (
+                  <p data-testid="provider-spend-loading" style={{ fontSize: 11, color: 'var(--text-muted)', margin: 0 }}>
+                    Reading what the AI providers have spent in the last 24 hours…
+                  </p>
+                )}
+                {providerSpendState === 'failed' && (
+                  <p data-testid="provider-spend-failed" style={{ fontSize: 11, color: 'var(--text-muted)', margin: 0 }}>
+                    Could not read what the AI providers have spent in the last 24 hours, so no
+                    usage is shown here.
+                  </p>
+                )}
+                {providerSpendState === 'loaded' && providerSpendRead && providerSpendRead.rows.length === 0 && (
+                  <p data-testid="provider-spend-empty" style={{ fontSize: 11, color: 'var(--text-muted)', margin: 0 }}>
+                    No AI provider is configured yet, so there is no spend to show.
+                  </p>
+                )}
+                {providerSpendState === 'loaded' && providerSpendRead && providerSpendRead.rows.length > 0 && (
+                  <>
+                    {/* WHEN THESE NUMBERS WERE TRUE, which is the only thing
+                        that makes a row a measurement rather than a claim
+                        about the present. The read's own instant — the same
+                        object the rows came in — so it cannot name a fresher
+                        moment than the numbers it is sitting above, and there
+                        is nothing here at all until a read has succeeded. */}
+                    <p
+                      data-testid="provider-spend-asof"
+                      style={{ fontSize: 11, color: 'var(--text-muted)', margin: '0 0 8px' }}
+                    >
+                      {providerSpendAsOf(providerSpendRead.readAt, Date.now())}
+                    </p>
+                    {providerSpendRead.rows.map((row, i) => {
+                      // `now` is taken here, at render, and not from the read
+                      // — deliberately, and only for the sentences' FRESHNESS
+                      // test. The sentences above this one describe what was
+                      // true at `readAt`, which the marker discloses; what they
+                      // must never do is keep asserting something that has
+                      // since stopped being true, and a clock that moves only
+                      // forward can retire a claim sooner, never invent a
+                      // later one. So the "never name a moment that has
+                      // already gone by" guard is judged against the latest
+                      // reading, and every moment this section prints is the
+                      // ledger's or the read's — never this one. With a poll
+                      // behind it, the gap between the two clocks is one tick
+                      // at most.
+                      const lines = providerSpendLines(row, Date.now())
+                      return (
+                        <div
+                          key={`${row.label}-${i}`}
+                          data-testid="provider-spend-row"
+                          style={{ marginBottom: 8 }}
+                        >
+                          <div style={{ fontSize: 12 }}>{row.label}</div>
+                          {lines.map((line) => (
+                            <div
+                              key={line.id}
+                              data-testid={`provider-spend-${line.id}`}
+                              style={{ fontSize: 11, color: 'var(--text-muted)' }}
+                            >
+                              {line.text}
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    })}
+                  </>
+                )}
               </div>
               <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
                 A provider's budget covers every model sharing one API key with it, not each model
