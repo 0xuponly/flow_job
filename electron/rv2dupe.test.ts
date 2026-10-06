@@ -1234,18 +1234,23 @@ describe('5. the five previously-fixed defects are still fixed', () => {
     // call site was added, removed or reclassified, and this list is the
     // independent cross-check that says so — `review.enqueueCallSites.test.ts`
     // carries the same inventory with a `present` column beside `manual`.
+    //
+    // They moved again (+42) when the Queue banner's count was re-derived
+    // from the shared waiting predicate: the import and the documented
+    // `pausedCapRows` sit above every one of these sites. Same cross-check,
+    // same answer — no call site added, removed or reclassified.
     expect(rows.filter((r) => r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:993',
-      'electron/aiQueue.ts:995',
+      'electron/aiQueue.ts:1035',
+      'electron/aiQueue.ts:1037',
       'electron/main.ts:652',
       'electron/main.ts:694',
       'electron/main.ts:909',
       'electron/main.ts:955'
     ])
     expect(rows.filter((r) => !r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:803',
-      'electron/aiQueue.ts:860',
-      'electron/aiQueue.ts:960',
+      'electron/aiQueue.ts:1002',
+      'electron/aiQueue.ts:845',
+      'electron/aiQueue.ts:902',
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:136',

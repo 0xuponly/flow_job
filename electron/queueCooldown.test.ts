@@ -105,9 +105,14 @@ import {
   getSettings,
   clearProviderSpend
 } from './database'
-import { ProviderCooldownError, providerAvailability, resetModelHealth } from './ai'
-import { PROVIDER_REPROBE_CAP_MS, aiQueueBlockedState, processQueue } from './aiQueue'
+import { ProviderCooldownError, nextProviderCapFreeAt, providerAvailability, resetModelHealth } from './ai'
+import { PROVIDER_REPROBE_CAP_MS, aiQueueBlockedState, listQueueInPickOrder, processQueue } from './aiQueue'
 import { scoreOneJobInBackground } from './fitScorer'
+// The panel's own reader of this state, imported so the count is compared
+// against the labels it ships beside rather than against a second copy of
+// either rule.
+import { BLOCKED_ROW_STATUS, blockedBannerLines, queueRowStatusText } from '../src/queueBlocked'
+import { queueItemStatusText } from '../src/fitQueue'
 import type { AIQueueItem } from './types'
 
 const MODEL_COUNT = 3
@@ -538,6 +543,168 @@ describe('the app-wide blocked state the Queue panel renders', () => {
 
     resetModelHealth()
     expect(aiQueueBlockedState().blocked).toBe(false)
+  })
+})
+
+/**
+ * The row the count and the label disagreed about.
+ *
+ * `parkOnProviderCap` writes `parkedReason`; `parkBlockedRow` writes
+ * `blockedSince` and leaves `parkedReason` alone; the claim clears both in
+ * one patch. A cap row that comes due while every model is cooling is
+ * parked again by the blocked pass WITHOUT being claimed, so it comes out
+ * carrying both — and the overlap is the normal case rather than an edge
+ * one: 49 of the 51 rows the cap refused were also in the cooldown-park log
+ * over the 6h44m window measured on 2026-10-05.
+ *
+ * That row is the whole defect. The banner counted it (every `pending` row
+ * carrying `blockedSince`) and the panel labelled it with the cap's wording
+ * instead, on one screen: "4 queued tasks are waiting" above one "Waiting
+ * for an AI provider" and three "Paused — provider at its call cap".
+ *
+ * Everything below builds that row through the REAL parks against the REAL
+ * store, and then asks the question through the REAL renderer functions —
+ * `aiQueueBlockedState`, `listQueueInPickOrder`, `queueRowStatusText`,
+ * `queueItemStatusText`, `blockedBannerLines`. Nothing here reimplements
+ * either rule, because a reimplementation would be a fourth definition and
+ * would agree with whichever one it copied.
+ */
+describe('a row parked on a spent cap is not a row waiting for a provider', () => {
+  /** One real rotation, to fill the ledger and heat the pool at once. */
+  async function spendOneCallPerModel(): Promise<void> {
+    const { callAI } = await import('./ai')
+    await expect(callAI('sys', 'user')).rejects.toThrow()
+  }
+
+  /**
+   * Three rows and one blocked pool, in the shape the review reproduced:
+   * one cooling-only row, two cap rows, one of them also cooling.
+   */
+  async function mixedQueue(): Promise<{ cooling: number; capped: number; both: number }> {
+    // Heat the pool with one real rotation AND exhaust the budget with the
+    // same three calls: the harness models share a base URL, so they share
+    // one ledger bucket, and a 429 rotation spends exactly MODEL_COUNT of
+    // it. A cap of MODEL_COUNT is therefore a full bucket with a pool that
+    // is cooling, which is the state a later row is refused in.
+    updateSettings({ provider_call_cap: MODEL_COUNT })
+    stubProvider(429)
+    await spendOneCallPerModel()
+    expect(fetchCalls, 'the rotation walked the whole pool').toBe(MODEL_COUNT)
+    expect(providerAvailability(Date.now()).blocked, 'and left every model cooling').toBe(true)
+    resetModelHealth()
+
+    const cooling = queueVerify().rowId
+    const capped = queueVerify().rowId
+    const both = queueVerify().rowId
+    // Not due, so this pass cannot claim it: it must end up cooling-only,
+    // which is the row the banner IS allowed to call waiting.
+    updateAIQueueItem(cooling, { nextRetryAt: Date.now() + 3600_000 })
+
+    await processQueue()
+    // Both due rows reached a provider that had no budget left, so both are
+    // parked on the cap — with no attempt spent and no revival charged.
+    expect(row(capped).parkedReason).toBe('provider_cap')
+    expect(row(both).parkedReason).toBe('provider_cap')
+    expect(row(capped).attempts).toBe(0)
+    expect(row(cooling).parkedReason).toBeUndefined()
+
+    // The budget frees. The provider does not: heat the pool again on 429s,
+    // which the emptied ledger allows, and make the two rows due so the
+    // blocked pass parks them on the provider clock. Asserted, because a
+    // rotation that stopped at the cap would leave the pool free and this
+    // test would quietly measure nothing.
+    clearProviderSpend()
+    stubProvider(429)
+    await spendOneCallPerModel()
+    expect(providerAvailability(Date.now()).blocked, 'the pool is cooling again').toBe(true)
+    makeDue(cooling)
+    makeDue(both)
+    await processQueue()
+
+    // The overlap, produced by the two parks and not by a fixture: this row
+    // was refused by the cap and then parked again on the provider clock.
+    expect(row(both).blockedSince).toBeGreaterThan(0)
+    expect(row(both).parkedReason).toBe('provider_cap')
+    expect(row(cooling).blockedSince).toBeGreaterThan(0)
+    expect(row(cooling).parkedReason).toBeUndefined()
+    return { cooling, capped, both }
+  }
+
+  beforeEach(() => {
+    clearProviderSpend()
+    updateSettings({ provider_call_cap: 50 })
+  })
+
+  afterEach(() => {
+    clearProviderSpend()
+    updateSettings({ provider_call_cap: 50 })
+  })
+
+  it('excludes it from the waiting count and reports it under the cap', async () => {
+    const { cooling, both } = await mixedQueue()
+
+    const state = aiQueueBlockedState()
+    expect(state.blocked).toBe(true)
+    // ONE row is waiting for a provider: the cooling-only one. The doubly
+    // marked row is not, because the provider would answer right now — the
+    // budget is the only thing stopping it.
+    expect(state.waitingRows).toBe(1)
+    expect(state.blockedRowIds).toEqual([cooling])
+    expect(state.blockedRowIds).not.toContain(both)
+    // ...and both cap rows, the doubly marked one included, are reported as
+    // cap-parked rather than going uncounted in both halves.
+    expect(state.pausedCapRows).toBe(2)
+  })
+
+  it('counts exactly the rows the panel labels as waiting', async () => {
+    await mixedQueue()
+
+    // The equality itself, asked through the renderer: the rows the panel
+    // would show, labelled the way it would label them, against the number
+    // the banner prints. No reimplementation on either side.
+    const state = aiQueueBlockedState()
+    const rows = listQueueInPickOrder()
+    const labels = rows.map((r) => queueRowStatusText(r, state, () => queueItemStatusText(r)))
+    const markedWaiting = labels.filter((l) => l === BLOCKED_ROW_STATUS).length
+    const markedCapped = labels.filter((l) => l.startsWith('Paused — provider at its call cap')).length
+
+    expect(markedWaiting).toBe(1)
+    expect(markedCapped).toBe(2)
+    expect(state.waitingRows).toBe(markedWaiting)
+    expect(state.pausedCapRows).toBe(markedCapped)
+    // And the badge is the same two numbers, in words, above the list.
+    const lines = blockedBannerLines(state, rows.length === 0, Date.now())
+    expect(lines!.detail).toContain('1 queued task is waiting for an available AI provider')
+    expect(lines!.detail).toContain('2 queued tasks are paused on a provider\'s daily call cap')
+  })
+
+  it('still tells the two apart after the budget frees but the provider has not', async () => {
+    // The case where a sentence with a time in it would go false. The heat
+    // above refilled the ledger on its way, so emptying it here is exactly
+    // the ordering that makes it dangerous: the budget is gone, the provider
+    // is still cooling, and the doubly-marked row's cap park survives because
+    // nothing clears it but a claim. The app must keep saying those rows are
+    // stopped — without dating a budget that no longer exists.
+    await mixedQueue()
+    clearProviderSpend()
+    expect(nextProviderCapFreeAt(), 'the budget really is free').toBeNull()
+    expect(providerAvailability(Date.now()).blocked, 'the provider really is not').toBe(true)
+
+    const state = aiQueueBlockedState()
+    const rows = listQueueInPickOrder()
+    const labels = rows.map((r) => queueRowStatusText(r, state, () => queueItemStatusText(r)))
+    expect(labels.filter((l) => l === BLOCKED_ROW_STATUS)).toHaveLength(state.waitingRows)
+    expect(labels.filter((l) => l.startsWith('Paused — provider at its call cap')))
+      .toHaveLength(state.pausedCapRows)
+
+    const detail = blockedBannerLines(state, false, Date.now())!.detail
+    expect(detail).toContain('2 queued tasks are paused on a provider\'s daily call cap')
+    // Exactly one moment on screen, and it is the app's own re-probe: the
+    // cap clause carries no time at all, so no budget can be dated here.
+    const moments = detail.match(/\d+[smh]\b/g) ?? []
+    expect(moments).toHaveLength(1)
+    expect(detail).toContain(`Checking again in ${moments[0]}`)
+    expect(detail).not.toMatch(/frees|until|resets/i)
   })
 })
 

@@ -74,6 +74,7 @@ function blocked(overrides: Partial<AIQueueBlockedState> = {}): AIQueueBlockedSt
     retryAt: Date.now() + 600_000,
     waitingRows: 1,
     blockedRowIds: [1],
+    pausedCapRows: 0,
     ...overrides
   }
 }
@@ -89,7 +90,8 @@ const NOT_BLOCKED_NOW: AIQueueBlockedState = {
   providerFreeAt: null,
   retryAt: null,
   waitingRows: 0,
-  blockedRowIds: []
+  blockedRowIds: [],
+  pausedCapRows: 0
 }
 
 function renderPanel(rows: QueueItemView[], state: AIQueueBlockedState | null = null) {
@@ -122,7 +124,7 @@ const INTERNAL_TERMS = [
 ]
 
 describe('the blocked banner', () => {
-  it('says plainly that no provider is available and the queue is waiting', () => {
+  it('says plainly that no provider is available, and what that means for the rows', () => {
     const now = 1_700_000_000_000
     // A fixture where the two numbers AGREE, on purpose: this test is
     // about the wording, so its numbers cannot distinguish a banner that
@@ -130,12 +132,14 @@ describe('the blocked banner', () => {
     // are where the count is pinned.
     const lines = blockedBannerLines(
       blocked({ providerFreeAt: now + 600_000, retryAt: now + 600_000, waitingRows: 265 }),
-      265,
+      false,
       now
     )
     expect(lines).not.toBeNull()
-    expect(lines!.headline).toBe('No AI provider is available right now, so the queue is waiting.')
-    expect(lines!.detail).toBe('265 queued tasks are waiting. Checking again in 10m (best effort).')
+    expect(lines!.headline).toBe('No AI provider is available right now.')
+    expect(lines!.detail).toBe(
+      '265 queued tasks are waiting for an available AI provider. Checking again in 10m (best effort).'
+    )
   })
 
   /**
@@ -152,8 +156,10 @@ describe('the blocked banner', () => {
   it('counts the rows the provider is holding, not every row in the queue', () => {
     const now = 1_700_000_000_000
     const state = blocked({ retryAt: now + 600_000, waitingRows: 1, blockedRowIds: [7] })
-    const lines = blockedBannerLines(state, 241, now)
-    expect(lines!.detail).toBe('1 queued task is waiting. Checking again in 10m (best effort).')
+    const lines = blockedBannerLines(state, false, now)
+    expect(lines!.detail).toBe(
+      '1 queued task is waiting for an available AI provider. Checking again in 10m (best effort).'
+    )
     // The queue length is nowhere in the banner: not in the detail, not in
     // the headline, not anywhere a reader could take it for the count.
     expect(`${lines!.headline} ${lines!.detail}`).not.toContain('241')
@@ -166,25 +172,29 @@ describe('the blocked banner', () => {
     const now = 1_700_000_000_000
     const lines = blockedBannerLines(
       blocked({ retryAt: now + 600_000, waitingRows: 176 }),
-      241,
+      false,
       now
     )
-    expect(lines!.detail).toBe('176 queued tasks are waiting. Checking again in 10m (best effort).')
+    expect(lines!.detail).toBe(
+      '176 queued tasks are waiting for an available AI provider. Checking again in 10m (best effort).'
+    )
     expect(lines!.detail).not.toContain('241')
   })
 
   it('does not answer a count of nothing with a number', () => {
     // Blocked, tasks queued, and none of them parked on the provider clock
-    // yet. "0 queued tasks are waiting" is a measurement of nothing and
-    // reads as a bug; the sentence below is the answer to the question the
-    // banner actually raises.
+    // or on a cap. "0 queued tasks are waiting" is a measurement of nothing
+    // and reads as a bug; the sentence below is the answer to the question
+    // the banner actually raises.
     const now = 1_700_000_000_000
     const lines = blockedBannerLines(
-      blocked({ retryAt: now + 600_000, waitingRows: 0, blockedRowIds: [] }),
-      241,
+      blocked({ retryAt: now + 600_000, waitingRows: 0, blockedRowIds: [], pausedCapRows: 0 }),
+      false,
       now
     )
-    expect(lines!.detail).toBe('No queued task is waiting for an AI provider right now. Checking again in 10m (best effort).')
+    expect(lines!.detail).toBe(
+      'No queued task is waiting for an available AI provider. Checking again in 10m (best effort).'
+    )
     expect(lines!.detail).not.toContain('0 queued tasks')
   })
 
@@ -193,27 +203,34 @@ describe('the blocked banner', () => {
     // It is reachable from a caller holding the wrong shape, and a negative
     // or fractional count is the one thing this function must never put on
     // screen — it would be the clearest possible statement that the number
-    // was never measured.
+    // was never measured. Both counts, because one trustworthy number is no
+    // reason to trust the other: a mixed sentence with an invented half is
+    // worse than either half alone.
     const now = 1_700_000_000_000
-    for (const waitingRows of [-1, 1.5, Number.NaN]) {
-      const lines = blockedBannerLines(
-        blocked({ retryAt: now + 600_000, waitingRows }),
-        241,
-        now
-      )
-      expect(lines!.detail, `waitingRows: ${waitingRows}`).toBe(
-        'No queued task is waiting for an AI provider right now. Checking again in 10m (best effort).'
-      )
+    for (const bad of [-1, 1.5, Number.NaN]) {
+      for (const field of ['waitingRows', 'pausedCapRows'] as const) {
+        // The other count pinned at zero, so the bad one is the only thing
+        // under test and the expected sentence is the same for all six.
+        const state = blocked({
+          retryAt: now + 600_000,
+          waitingRows: field === 'waitingRows' ? bad : 0,
+          pausedCapRows: field === 'pausedCapRows' ? bad : 0
+        })
+        const lines = blockedBannerLines(state, false, now)
+        expect(lines!.detail, `${field}: ${bad}`).toBe(
+          'No queued task is waiting for an available AI provider. Checking again in 10m (best effort).'
+        )
+      }
     }
   })
 
-  it('counts the queue it was given, and says so when there is nothing queued', () => {
+  it('rounds a wait up, and says what an empty queue needs instead', () => {
     const now = 1_700_000_000_000
     // 90s reads as 2m: the wait is rounded up, never down, so the time
     // shown is never earlier than the time promised.
-    expect(blockedBannerLines(blocked({ retryAt: now + 90_000, waitingRows: 1 }), 1, now)!.detail)
-      .toBe('1 queued task is waiting. Checking again in 2m (best effort).')
-    expect(blockedBannerLines(blocked({ retryAt: now + 45_000, waitingRows: 0, blockedRowIds: [] }), 0, now)!.detail)
+    expect(blockedBannerLines(blocked({ retryAt: now + 90_000, waitingRows: 1 }), false, now)!.detail)
+      .toBe('1 queued task is waiting for an available AI provider. Checking again in 2m (best effort).')
+    expect(blockedBannerLines(blocked({ retryAt: now + 45_000, waitingRows: 0, blockedRowIds: [] }), true, now)!.detail)
       .toBe('Tasks will run once a provider is available. Checking again in 45s (best effort).')
   })
 
@@ -231,8 +248,8 @@ describe('the blocked banner', () => {
   it('counts nothing above an empty panel, whatever the state says', () => {
     const now = 1_700_000_000_000
     const lines = blockedBannerLines(
-      blocked({ retryAt: now + 600_000, waitingRows: 3, blockedRowIds: [1, 2, 3] }),
-      0,
+      blocked({ retryAt: now + 600_000, waitingRows: 3, blockedRowIds: [1, 2, 3], pausedCapRows: 2 }),
+      true,
       now
     )
     expect(lines!.detail).toBe('Tasks will run once a provider is available. Checking again in 10m (best effort).')
@@ -243,13 +260,101 @@ describe('the blocked banner', () => {
     // Better no promise than a wrong one: the queue's own wake time can
     // pass between the fetch and the render.
     const now = 1_700_000_000_000
-    expect(blockedBannerLines(blocked({ retryAt: now - 1, waitingRows: 3 }), 3, now)!.detail)
-      .toBe('3 queued tasks are waiting.')
+    expect(blockedBannerLines(blocked({ retryAt: now - 1, waitingRows: 3 }), false, now)!.detail)
+      .toBe('3 queued tasks are waiting for an available AI provider.')
   })
 
   it('has nothing to say when the app is not blocked', () => {
-    expect(blockedBannerLines(null, 265)).toBeNull()
-    expect(blockedBannerLines(blocked({ blocked: false }), 265)).toBeNull()
+    expect(blockedBannerLines(null, false)).toBeNull()
+    expect(blockedBannerLines(blocked({ blocked: false }), false)).toBeNull()
+  })
+})
+
+/**
+ * Two kinds of wait, one screen, and one sentence each.
+ *
+ * A row held by an unavailable pool and a row held by its own provider's
+ * spent budget are stopped for different reasons and clear on different
+ * clocks. Only the first is fixed by a provider coming back — per
+ * `electron/queueStalls.ts`, in the second case "the provider would answer
+ * RIGHT NOW, because the budget is the only thing stopping the row".
+ *
+ * So a banner that says all of its rows are waiting for a provider is
+ * lying about the cap rows, and a banner that says nothing is waiting is
+ * contradicted by the list directly beneath it. Both were reachable: the
+ * count used to include every cap row, and with the count corrected the
+ * "nothing is waiting" sentence was left standing over a full screen of
+ * paused rows.
+ *
+ * The two numbers are two label sets rather than a partition — a row
+ * carrying both marks is counted under the cap, because that is the label
+ * it gets — so these fixtures never add up to the list, and none of them
+ * should.
+ */
+describe('a mixed queue is reported as a mixed queue', () => {
+  const now = 1_700_000_000_000
+  const waiting = (waitingRows: number, pausedCapRows: number) =>
+    blocked({ retryAt: now + 600_000, waitingRows, blockedRowIds: [], pausedCapRows })
+
+  it('names both causes, and counts each of them', () => {
+    const lines = blockedBannerLines(waiting(1, 3), false, now)
+    expect(lines!.detail).toBe(
+      '1 queued task is waiting for an available AI provider, and 3 queued tasks are paused on a provider\'s daily call cap. Checking again in 10m (best effort).'
+    )
+  })
+
+  it('reports the cap rows rather than claiming nothing is waiting', () => {
+    // The state the review reproduced: blocked, five rows parked on a cap,
+    // none of them parked on the pool. "No queued task is waiting for an
+    // AI provider right now" used to sit directly above those five rows.
+    const lines = blockedBannerLines(waiting(0, 5), false, now)
+    expect(lines!.detail).toBe(
+      '5 queued tasks are paused on a provider\'s daily call cap. Checking again in 10m (best effort).'
+    )
+    expect(lines!.detail).not.toMatch(/no queued task/i)
+  })
+
+  it('pluralises both halves from their own counts', () => {
+    expect(blockedBannerLines(waiting(3, 1), false, now)!.detail).toBe(
+      '3 queued tasks are waiting for an available AI provider, and 1 queued task is paused on a provider\'s daily call cap. Checking again in 10m (best effort).'
+    )
+    expect(blockedBannerLines(waiting(1, 1), false, now)!.detail).toContain('1 queued task is waiting')
+  })
+
+  /**
+   * The one case where a sentence with a time in it would become false.
+   *
+   * A cap row that comes due while every model is cooling is parked again
+   * on the provider clock without being claimed, so it carries both marks
+   * and nothing clears the cap one until it runs. If the budget frees
+   * before the provider does, anything of the form "the cap frees in 10m"
+   * is a lie the moment after it was printed.
+   *
+   * So the cap clause names no moment. The only time on screen is the
+   * app's own re-probe, which is a schedule the queue keeps and hedges as
+   * best effort — never a claim about the budget.
+   */
+  it('never dates the call cap', () => {
+    for (const pausedCapRows of [1, 5]) {
+      const detail = blockedBannerLines(waiting(0, pausedCapRows), false, now)!.detail
+      expect(detail, `${pausedCapRows} cap rows`).toBe(
+        `${pausedCapRows} queued task${pausedCapRows === 1 ? ' is' : 's are'} paused on a provider's daily call cap. Checking again in 10m (best effort).`
+      )
+      // Every <number><unit> on screen is the re-probe, so there is no
+      // other moment a reader could date the budget by.
+      expect(detail.match(/\d+[smh]\b/g)).toEqual(['10m'])
+    }
+  })
+
+  it('attributes nothing to the outage that is not holding the rows', () => {
+    // The headline used to end "so the queue is waiting", which is a claim
+    // about the rows: for a cap row the provider would answer right now, so
+    // the outage is not what is holding it. The pool fact stays; the causal
+    // clause does not.
+    for (const counts of [[1, 3], [0, 5], [2, 0]] as const) {
+      expect(blockedBannerLines(waiting(counts[0], counts[1]), false, now)!.headline)
+        .toBe('No AI provider is available right now.')
+    }
   })
 })
 
@@ -301,7 +406,7 @@ describe('a row parked on the provider clock keeps its label after the app-wide 
   it('still reads it once nothing is blocked any more', () => {
     // The lapse: the flag has cleared and the main process's list is empty,
     // because it is rebuilt from the flag on every call. The row has not
-    // been claimed — nothing clears the mark but a claim — so it is still
+    // been claimed, revived, retried or repaired at boot, so it is still
     // waiting on the provider clock, and saying "Pending" here is the defect
     // this describe exists to pin.
     expect(queueRowStatusText(row, NOT_BLOCKED_NOW, () => 'Pending')).toBe(BLOCKED_ROW_STATUS)
@@ -407,7 +512,7 @@ describe('QueuePanel with a blocked app', () => {
     )
 
     const notice = screen.getByTestId('queue-provider-blocked')
-    expect(notice).toHaveTextContent('No AI provider is available right now, so the queue is waiting.')
+    expect(notice).toHaveTextContent('No AI provider is available right now.')
     // One row is waiting on a provider, one is waiting its turn.
     const statuses = screen.getAllByTestId('queue-task-status').map((el) => el.textContent)
     expect(statuses).toEqual(['Pending', BLOCKED_ROW_STATUS])
@@ -431,7 +536,7 @@ describe('QueuePanel with a blocked app', () => {
     )
 
     const notice = screen.getByTestId('queue-provider-blocked')
-    expect(notice).toHaveTextContent('1 queued task is waiting.')
+    expect(notice).toHaveTextContent('1 queued task is waiting for an available AI provider.')
     expect(notice.textContent, 'the queue length is not a measurement of anything').not.toContain('241')
     // The rows are still there underneath — the count replaced a number, not
     // the list.
@@ -447,7 +552,54 @@ describe('QueuePanel with a blocked app', () => {
 
     const statuses = screen.getAllByTestId('queue-task-status').map((el) => el.textContent)
     expect(statuses).toEqual([BLOCKED_ROW_STATUS, BLOCKED_ROW_STATUS, 'Pending'])
-    expect(screen.getByTestId('queue-provider-blocked')).toHaveTextContent('2 queued tasks are waiting.')
+    expect(screen.getByTestId('queue-provider-blocked'))
+      .toHaveTextContent('2 queued tasks are waiting for an available AI provider.')
+  })
+
+  /**
+   * The count against the labels, with a cap row in the list.
+   *
+   * The fixture above could not catch the defect this file exists for: it
+   * has no cap row, so a banner counting every `pending` row carrying
+   * `blockedSince` would agree with it. Row 3 carries BOTH marks here —
+   * the shape the queue produces whenever a cap row comes due while every
+   * model is cooling, which was 49 of 51 cap rows over the measured window —
+   * so the count has to exclude it, and the banner has to say where it went.
+   *
+   * Asserted as an equality rather than as a string, because the string is
+   * the thing under test: whatever the copy says, the number it prints is
+   * the number of rows the list marks as waiting.
+   */
+  it('counts exactly the rows it marks as waiting, with a capped row in the list', () => {
+    const now = Date.now()
+    renderPanel(
+      [parked({ id: 1 }), parked({ id: 2, parkedReason: 'provider_cap', lastError: CAP_ERROR }), parked({ id: 3, parkedReason: 'provider_cap' })],
+      blocked({
+        providerFreeAt: now + 600_000,
+        retryAt: now + 600_000,
+        waitingRows: 1,
+        blockedRowIds: [1],
+        pausedCapRows: 2
+      })
+    )
+
+    const statuses = screen.getAllByTestId('queue-task-status').map((el) => el.textContent)
+    const marked = statuses.filter((s) => s === BLOCKED_ROW_STATUS).length
+    expect(statuses).toEqual([
+      BLOCKED_ROW_STATUS,
+      'Paused — provider at its call cap, checks again in 10m',
+      'Paused — provider at its call cap, checks again in 10m'
+    ])
+    const notice = screen.getByTestId('queue-provider-blocked')
+    // Both numbers are read off the list the panel is rendering, so this is
+    // the agreement the qt-r3 rule asks for: every number in the badge is a
+    // number of rows in the thing it expands.
+    expect(notice).toHaveTextContent('1 queued task is waiting for an available AI provider')
+    expect(notice).toHaveTextContent('2 queued tasks are paused on a provider\'s daily call cap')
+    expect(marked).toBe(1)
+    // Neither clause claims the cap rows are waiting for a provider, which
+    // is the sentence that made the old count wrong.
+    expect(notice.textContent).not.toContain('3 queued tasks are waiting')
   })
 
   it('keeps the block\'s own plumbing out of the panel', () => {
@@ -521,15 +673,24 @@ describe('QueuePanel with a blocked app', () => {
     // provider to become available while the line directly under it said the
     // provider's daily budget was spent. Both are real, so the row has to
     // pick the one that will still be true after the next re-probe.
+    //
+    // The state is the one the main process now builds for this row: NOT in
+    // the waiting count, and in the cap count. A state that counted it as
+    // waiting is the desynchronisation, so it is not a fixture worth
+    // keeping here.
     renderPanel(
       [parked({ id: 1, parkedReason: 'provider_cap', lastError: CAP_ERROR })],
-      blocked({ waitingRows: 1, blockedRowIds: [1] })
+      blocked({ waitingRows: 0, blockedRowIds: [], pausedCapRows: 1 })
     )
 
     const status = screen.getByTestId('queue-task-status')
     expect(status).toHaveTextContent('Paused — provider at its call cap')
     expect(status).not.toHaveTextContent(BLOCKED_ROW_STATUS)
     expect(screen.getByText(CAP_ERROR)).toBeInTheDocument()
+    // ...and the banner agrees with it, rather than counting it and
+    // attributing it to a provider that is not the reason it is stopped.
+    expect(screen.getByTestId('queue-provider-blocked'))
+      .toHaveTextContent('1 queued task is paused on a provider\'s daily call cap')
   })
 
   it('does not call a capped row a cooled one when the cooldown is the app-wide news', () => {
@@ -538,7 +699,7 @@ describe('QueuePanel with a blocked app', () => {
     // other's label.
     renderPanel(
       [item({ id: 1 }), parked({ id: 2, parkedReason: 'provider_cap', lastError: CAP_ERROR })],
-      blocked({ waitingRows: 1, blockedRowIds: [2] })
+      blocked({ waitingRows: 0, blockedRowIds: [], pausedCapRows: 1 })
     )
 
     expect(screen.getAllByTestId('queue-task-status').map((el) => el.textContent)).toEqual([

@@ -8,6 +8,9 @@ import { withAiOperation } from './ai'
 import { tailorDocument, regenerateSection, verifyDocumentContent, nextProviderCapFreeAt, ProviderCapError, ProviderCooldownError, providerAvailability, RateLimitError, type AiCallOptions } from './ai'
 import { PROVIDERS_COOLING_DOWN_MESSAGE } from './cooldownBlock'
 import { reportStalledQueue } from './queueStalls'
+// The one definition of "what is holding this row", shared with the panel's
+// row labels so the banner's count cannot drift from the words under it.
+import { pausedOnCallCap, waitingOnAvailableProvider } from '../src/queueWaiting'
 import type { AIQueueItem, Job, QueueItemView } from './types'
 import {
   AUTO_REGEN_MAX,
@@ -186,6 +189,25 @@ function parkBlockedRow(item: AIQueueItem, providerFreeAt: number, now: number):
  * in QueuePanel. `blockedRowIds` is only the ids of rows the queue has
  * actually parked, so a row is distinguished from one merely queued
  * behind other work without exposing why any particular model is out.
+ *
+ * The two counts are TWO label sets, not a partition of the queue, and
+ * that is deliberate. `waitingRows` is what the panel labels "Waiting
+ * for an AI provider"; `pausedCapRows` is what it labels with the cap's
+ * own wording. A row carrying both marks appears in the second and not
+ * the first, because one label has to win — the cap's, which is the one
+ * that survives the next re-probe and the one that agrees with the
+ * provider's message printed under the row. So a doubly-marked row makes
+ * the two counts overlap, and a reader adding them up sees more rows
+ * than exist. Adding them up is the wrong reading: each number answers
+ * "how many rows say this", which is the question the banner's number is
+ * allowed to be about.
+ *
+ * Both counts are zero unless `blocked`, because both are about what a
+ * blocked app is holding and the banner does not render otherwise. That
+ * is also why they cannot be trusted as a description of the queue
+ * outside a block — `waitingRows` in particular reads 0 with the pool
+ * free even when rows are still parked on the clock, which is sound
+ * because nothing on screen is making a claim at that moment.
  */
 export interface AIQueueBlockedState {
   blocked: boolean
@@ -193,24 +215,44 @@ export interface AIQueueBlockedState {
   providerFreeAt: number | null
   /** Epoch ms the queue will actually wake, i.e. providerFreeAt clamped. */
   retryAt: number | null
-  /** Rows parked on the provider clock right now. */
+  /**
+   * Rows parked on the provider clock and nothing else — the banner's
+   * count, and exactly the rows the panel labels as waiting for a
+   * provider. A row parked on a spent call cap is NOT one of these even
+   * when a cooldown park is stacked on top of it: the provider would
+   * answer right now in that case, so calling it waiting for a provider
+   * to become available is false. See `waitingOnAvailableProvider`.
+   */
   waitingRows: number
   /** Their ids, so the panel can mark them apart from ordinary pending rows. */
   blockedRowIds: number[]
+  /**
+   * Rows held by a spent call cap, including the ones a cooldown is also
+   * holding. Reported separately rather than folded into `waitingRows`
+   * because the banner has to be honest about the two kinds of wait in
+   * one state: counted as one, the banner says nothing is waiting above
+   * a list of rows that are visibly not running.
+   */
+  pausedCapRows: number
 }
 
 export function aiQueueBlockedState(now: number = Date.now()): AIQueueBlockedState {
   const availability = providerAvailability(now)
-  const parked = availability.blocked
-    ? getAIQueue().filter((q) => q.status === 'pending' && q.blockedSince !== undefined)
-    : []
+  const held = availability.blocked ? getAIQueue() : []
   const freeAt = availability.nextAvailableAt
+  // ONE definition of each, shared with the panel's row labels — see
+  // src/queueWaiting.ts. Deriving them here separately from
+  // `queueRowStatusText` is what let the banner's number and the rows it
+  // expands disagree about a doubly-marked row.
+  const waiting = held.filter(waitingOnAvailableProvider)
+  const capped = held.filter(pausedOnCallCap)
   return {
     blocked: availability.blocked,
     providerFreeAt: freeAt,
     retryAt: freeAt === null ? null : now + providerBlockedWaitMs(freeAt, now, 1),
-    waitingRows: parked.length,
-    blockedRowIds: parked.map((q) => q.id)
+    waitingRows: waiting.length,
+    blockedRowIds: waiting.map((q) => q.id),
+    pausedCapRows: capped.length
   }
 }
 

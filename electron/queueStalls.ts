@@ -3,6 +3,9 @@ import { providerAvailability } from './ai'
 import { addNotification } from './notifications'
 import { notifyStoreChanged } from './notifyStoreChanged'
 import { log } from './logger'
+// The one definition of "a provider is holding this row", shared with the
+// Queue panel's row labels and the banner's counts.
+import { pausedOnCallCap, waitingOnAvailableProvider } from '../src/queueWaiting'
 import type { AIQueueItem } from './types'
 
 /**
@@ -101,20 +104,27 @@ let reportedForStall = false
 /**
  * The rows a provider, rather than the user's own turn, is holding.
  *
- * Read straight off the two fields the park writes and the claim clears:
- * `parkedReason` for a spend cap and `blockedSince` for a cooldown. Both are
- * set when the app parks a row and removed in the same write that claims it,
- * so membership here means "the app has tried and the provider stopped it" —
- * and nothing about the row's own backoff, which is what distinguishes a row
- * that is genuinely waiting its turn. `nextRetryAt` is deliberately not
- * consulted: a cap park pushes it up to a full window out, and a row waiting
- * a day for a budget is the most stuck row in the queue, not the least.
+ * Read straight off the two fields the park writes: `parkedReason` for a
+ * spend cap and `blockedSince` for a cooldown. Both are set when the app
+ * parks a row, and both are removed in the write that claims it — though
+ * `blockedSince` has three other clearers besides (the automatic revival,
+ * `revivePatch`, and the startup cooldown migration). Membership here means
+ * "the app has tried and the provider stopped it", and nothing about the
+ * row's own backoff, which is what distinguishes a row that is genuinely
+ * waiting its turn. `nextRetryAt` is deliberately not consulted: a cap park
+ * pushes it up to a full window out, and a row waiting a day for a budget is
+ * the most stuck row in the queue, not the least.
+ *
+ * The predicate is `src/queueWaiting.ts`'s, which the panel's row labels and
+ * the banner's counts also read. This set is deliberately the union of the
+ * two causes — a stall record wants every row a provider stopped, whoever
+ * stopped it — while the panel needs them apart, which is why the split
+ * happens here and not in the predicate. Three copies of the marks was how
+ * the banner's number and the panel's labels came to disagree about a row
+ * carrying both.
  */
 function providerBlockedRows(): AIQueueItem[] {
-  return getAIQueue().filter(
-    (q) =>
-      q.status === 'pending' && (q.blockedSince !== undefined || q.parkedReason === 'provider_cap')
-  )
+  return getAIQueue().filter((q) => waitingOnAvailableProvider(q) || pausedOnCallCap(q))
 }
 
 function minutes(ms: number): number {
@@ -153,8 +163,11 @@ export function reportStalledQueue(now: number, stallAfterMs: number): void {
     // just stopped trying harder, which is the patience, not the defect.
 if (reportedForStall || now - stalledSince <= stallAfterMs) return
 
-    const capped = blocked.filter((q) => q.parkedReason === 'provider_cap')
-    const cooling = blocked.filter((q) => q.parkedReason !== 'provider_cap')
+    // The split, from the same predicate, so the record and the panel cannot
+    // disagree about a doubly-marked row either. It goes under the cap for
+    // the same reason the panel's label does.
+    const capped = blocked.filter(pausedOnCallCap)
+    const cooling = blocked.filter(waitingOnAvailableProvider)
     const waitedMs = now - stalledSince
 
     // One sentence a user can act on, with no provider name in it: the group
