@@ -1237,10 +1237,10 @@ describe('5. the five previously-fixed defects are still fixed', () => {
     expect(rows.filter((r) => r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
       'electron/aiQueue.ts:993',
       'electron/aiQueue.ts:995',
-      'electron/main.ts:652',
-      'electron/main.ts:694',
-      'electron/main.ts:909',
-      'electron/main.ts:955'
+      'electron/main.ts:653',
+      'electron/main.ts:695',
+      'electron/main.ts:910',
+      'electron/main.ts:956'
     ])
     expect(rows.filter((r) => !r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
       'electron/aiQueue.ts:803',
@@ -1249,8 +1249,8 @@ describe('5. the five previously-fixed defects are still fixed', () => {
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:136',
-      'electron/main.ts:669',
-      'electron/main.ts:924'
+      'electron/main.ts:670',
+      'electron/main.ts:925'
     ])
 
     // Polarity, checked against the source rather than the table: each

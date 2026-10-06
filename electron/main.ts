@@ -13,6 +13,7 @@ import {
   wrapDekWithPassphrase
 } from './backupCrypto'
 import { tailorDocument, generateFollowUpMessage, regenerateSection, verifyDocumentContent, scoreJobFit, extractJobKeywordsV3, RateLimitError, resetModelHealthByIds, withAiOperation, type AiCallOptions } from './ai'
+import { providerSpendRows, type ProviderSpend } from './providerSpend'
 import { sanitizeDocument } from './tailorJobDocs'
 import { scoreOneJobInBackground } from './fitScorer'
 import { countPdfPages } from '../src/cvOnePage'
@@ -1434,6 +1435,22 @@ function registerIpc(): void {
   // panel cannot say "waiting" while the queue is running. Carries no
   // model names, statuses or health internals — see QueuePanel's copy.
   ipcMain.handle('aiQueue:blocked', (): AIQueueBlockedState => aiQueueBlockedState())
+
+  // What the AI providers have ACTUALLY spent in the rolling 24h window,
+  // per provider, read from the ledger the cap itself reads.
+  //
+  // This exists because the number was computed and never shipped: the
+  // Auto-queue tab showed the cap a user typed beside nothing at all, so a
+  // ledger holding 629 requests against a cap of 50 rendered as "50" and
+  // nowhere as 629 (measured on 2026-10-05, a 6h44m window). One row per
+  // provider bucket, because the cap is per credential — see
+  // `providerSpendRows` for which providers get a row and which do not.
+  //
+  // Carries `label`, never `key`: the bucket identity is `endpoint#hash` and
+  // the app's rule is that ids and credentials stay in this process. The
+  // return type is `ProviderSpend[]` for the same reason — the view type
+  // cannot grow a field the renderer must not have.
+  ipcMain.handle('ai:providerSpend', (): ProviderSpend[] => providerSpendRows())
 
   ipcMain.handle('boards:list', () => {
     // Per-board enabled flag, sourced from settings.disabled_boards.

@@ -1,4 +1,5 @@
 import type { AIQueueBlockedState } from './queueBlocked'
+import type { ProviderSpend } from './providerSpend'
 import type {
   ApiModelConfig,
   Application,
@@ -115,6 +116,13 @@ export interface Api {
   // per-row flag: no provider being available is a property of the model
   // pool. See src/queueBlocked.ts for what it may and may not display.
   aiQueueBlocked: () => Promise<AIQueueBlockedState>
+  // What each AI provider has spent in the rolling 24h window, against the
+  // cap the user set. One row per provider credential, because the cap is
+  // applied per credential; the count is the ledger the cap itself reads, and
+  // it is the number the Auto-queue tab renders beside the cap input. Rejects
+  // rather than answering with zeros: a read that failed must not render as a
+  // provider that has spent nothing.
+  providerSpend: () => Promise<ProviderSpend[]>
   listBoards: () => Promise<{ name: string; useBrowser: boolean; enabled: boolean }[]>
   getBoardHealth: () => Promise<Record<string, number[]>>
   retryAIQueueItem: (id: number) => Promise<QueueItemView[]>
