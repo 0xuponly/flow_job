@@ -484,17 +484,45 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
     }
   }
 
+  // The AUTOMATIC half of this page's document work, and it is worth being
+  // precise about why, because this function used to be the reason opening a
+  // job page spent the user's budget.
+  //
+  // It is not a gesture. It runs on mount (`useEffect(() => { load() },
+  // [job.id])`), on the sidebar's Refresh, and after every Generate / Apply /
+  // status change — nobody pressed anything for any of those. So it asks for
+  // the review through `autoVerifyDocument` / `autoTailorDocument` rather than
+  // `verifyDocument` / `tailorDocument`, which are the buttons' channels. The
+  // main process runs the same work for both pairs through one shared
+  // function per intent; what the CHANNEL decides is everything else. The
+  // buttons' calls skip the daily spend cap and their queue rows carry a
+  // one-shot grant, while these spend the app's budget and their rows obey
+  // the `auto_queue_verify_*` / `auto_queue_cv` switches. Sharing a channel
+  // meant every page open armed a grant nobody asked for — five opens, five
+  // uncapped requests on a ledger already over its cap, on the reviewer's
+  // measurement.
+  //
+  // Nothing a person was waiting on is lost by this: the Review and
+  // Regenerate buttons keep their own uncapped path, and a document nobody
+  // asked to review is the app's own business. It is also more truthful
+  // about the setting: "auto-queue reviews" off now really does stop the app
+  // reviewing on its own, instead of being overruled by a page load.
   async function ensureDocVerified(doc: Document): Promise<{ doc: Document | null; queued: boolean }> {
     const topKeywords = extractJobKeywords(job.description ?? '').slice(0, 10)
     let queued = false
-    const v = await api.verifyDocument(job.id, doc.id, doc.type)
+    const v = await api.autoVerifyDocument(job.id, doc.id, doc.type)
     if ('queued' in v) {
       // Reported by the caller, once for the whole sweep, instead of from
       // here. This function used to `notify` directly, which is how two
       // documents in one tick produced '…verification added to queue.' AND
       // '…regeneration added to queue.' — two visible toasts from one mount
       // with nothing for the dedupe to collapse.
-      queued = true
+      //
+      // Counted only when this sweep ADDED the row: `queued` is false when
+      // the `auto_queue_verify_*` switch refused it or when the work was
+      // already queued, and announcing either as "added to the queue" would
+      // be the app telling the user about work it did not do.
+      queued = v.queued === true
       return { doc: null, queued }
     }
     if (v.kind === 'skip') {
@@ -514,7 +542,10 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
     const MAX_ATTEMPTS = 5
     while (attempts < MAX_ATTEMPTS) {
       attempts++
-      const r = await api.tailorDocument({
+      // The automatic channel, like the review above: this loop is the
+      // sweep's own repair ladder, reached because a review scored under 70,
+      // and nobody pressed Regenerate. Same five-rounds shape, app's budget.
+      const r = await api.autoTailorDocument({
         job_id: job.id,
         document_type: doc.type,
         base_content: `Previous version had these issues: ${prevFeedback}\n\n---\n${prevContent}`,
@@ -523,8 +554,9 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
       if ('queued' in r) {
         // AI is rate-limited; bail with the best score we've seen so far.
         // The previous document keeps whatever score was last persisted.
-        // Counted, not announced: see `announceSweep`.
-        queued = true
+        // Counted, not announced: see `announceSweep`. Counted only if this
+        // call added the row, for the reason given above.
+        queued = r.queued === true
         break
       }
       prevContent = r.content
@@ -533,9 +565,9 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
       await api.updateApplication(app.id, {
         [doc.type === 'cv' ? 'cv_document_id' : 'cover_letter_document_id']: bestId
       })
-      const v2 = await api.verifyDocument(job.id, bestId, doc.type)
+      const v2 = await api.autoVerifyDocument(job.id, bestId, doc.type)
       if ('queued' in v2) {
-        queued = true
+        queued = v2.queued === true
         break
       }
       if (v2.kind === 'skip') {
@@ -554,6 +586,10 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
     }
   }
 
+  // A BUTTON, which is what makes `api.tailorDocument` the right channel here:
+  // it is the one whose handler may spend the user's daily budget and whose
+  // queue row may carry the one-shot grant. The sweep above deliberately does
+  // not come through here, and why is a comment on THAT function.
   async function handleTailor(type: 'cv' | 'cover_letter') {
     setTailoring(type)
     const topKeywords = extractJobKeywords(job.description ?? '').slice(0, 10)
@@ -656,6 +692,9 @@ export default function JobDetail({ job, onBack, onUpdate, onDelete, filteredJob
     if (!target) return
     setReviewing(type)
     try {
+      // The button's channel, for the reason `handleTailor` gives: a press may
+      // spend the user's budget and its queue row may carry the grant. The
+      // mount sweep reaches `autoVerifyDocument` instead.
       const result = await api.verifyDocument(job.id, target.id, type)
       if ('queued' in result) {
         notify('AI is rate-limited — review added to queue. Will retry automatically.', 'info')

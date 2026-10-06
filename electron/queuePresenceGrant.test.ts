@@ -24,18 +24,33 @@
  * processor.
  *
  * The fix is a GRANT, not a flag. `userPresentAt` on the row, armed only by a
- * click, spent by `processItem` in the same write that claims the row. So a
- * gesture buys exactly one request the cap cannot refuse, and the leak bound
- * is a consequence of WHERE the field is cleared rather than a promise about
- * it. THIS FILE IS THE PROOF OF THE BOUND, from both sides:
+ * press, spent by `processItem` in the same write that claims the row. So a
+ * gesture buys one CLAIM the cap cannot refuse, and the leak bound is a
+ * consequence of WHERE the field is cleared rather than a promise about it.
+ * THIS FILE IS THE PROOF OF THE BOUND, from all four sides:
  *
  *   - every user path gets its request out while the budget is spent
- *     (§ "a click is never refused by the daily budget");
+ *     (§ 1, "a click is never refused by the daily budget");
+ *   - the job page's AUTOMATIC sweep gets nothing, however many pages are
+ *     opened (§ 0 — the reviewer's MAJOR 1, which was that two of the five
+ *     "user paths" above were also reached by a mount sweep, so opening a page
+ *     armed a grant and five page opens bought five uncapped requests on a
+ *     ledger already 7 calls into a cap of 1);
  *   - a row that is merely provenance-manual gets nothing, however long it
- *     waits, and a granted row gets exactly ONE request and no more
- *     (§ "the grant cannot be spent twice");
+ *     waits, and a granted row gets exactly ONE claim and no more
+ *     (§ 2, "the grant cannot be spent twice"), whose SIZE is measured rather
+ *     than asserted (§ 2b — the reviewer's MAJOR 2, which was that the branch
+ *     published "at most one `callAI`" and the real figure was 2-3 on one
+ *     healthy model);
+ *   - a press that lands MID-PASS is the one that claim spends, and a stale
+ *     clear cannot revoke it (§ 2, the reviewer's MAJOR 3);
  *   - a chain of work a click starts cannot inherit the grant
- *     (§ "work a click starts cannot cascade into uncapped work").
+ *     (§ 3, "work a click starts cannot cascade into uncapped work").
+ *
+ * WHO may arm the grant is not settled here — it is a property of the
+ * renderer's call graph, so it lives in review.enqueueCallSites.test.ts, which
+ * walks every renderer call site of the six channels and refuses one that is
+ * reachable from a mount effect, a timer or the refresh listener.
  *
  * Instrument, as in `providerSpendCap.test.ts` and for the same reason: a real
  * store, the real `ai.ts`, the real processor, the real `ipcMain` handlers.
@@ -135,6 +150,7 @@ import {
   getAIQueue,
   getProviderSpend,
   reloadStore,
+  saveApiModels,
   updateAIQueueItem,
   updateSettings
 } from './database'
@@ -165,6 +181,12 @@ function stubTransport(status: number, content = 'A perfectly ordinary answer.')
 }
 
 function addModel(n = 1): void {
+  // The list is REPLACED, not appended to. Each case gets a fresh store from
+  // `beforeEach`, but a case that measures two fixtures in a row calls this
+  // twice — and an appended pool would make the second measurement count
+  // requests against a rotation the reader cannot see. `spentBy` below is
+  // where that matters.
+  saveApiModels([])
   for (let i = 0; i < n; i++) {
     addApiModel({
       name: `m${i}`,
@@ -263,6 +285,34 @@ async function handler(channel: string, ...args: unknown[]): Promise<unknown> {
   return fn!({}, ...args)
 }
 
+/**
+ * A granted row of any shape, for the cases that are about the SIZE of what a
+ * grant buys rather than about how it was armed.
+ *
+ * Written through `addAIQueueItem` rather than through `enqueue` so the row's
+ * `type` can be chosen: the point of these cases is that the grant's cost is a
+ * property of the UNIT the claim runs, and the unit is what the row's type
+ * selects.
+ */
+function grantedRow(
+  type: 'verify' | 'generate_cv' | 'generate_cover_letter' | 'tailor_job_docs' | 'regenerate_section',
+  jobId: number,
+  documentId: number,
+  extra: Record<string, unknown> = {}
+): number {
+  const row = addAIQueueItem({
+    type,
+    jobId,
+    ...(type === 'verify' || type === 'regenerate_section' ? { documentId } : {}),
+    ...(type === 'regenerate_section' ? { sectionName: 'summary' } : {}),
+    manualQueued: true,
+    userPresentAt: Date.now(),
+    ...extra
+  } as never)
+  expect(row.userPresentAt).toBeTypeOf('number')
+  return row.id
+}
+
 function wipe(): void {
   if (!existsSync(STORE_DIR)) mkdirSync(STORE_DIR, { recursive: true })
   for (const f of [
@@ -300,6 +350,142 @@ afterEach(() => {
   resetModelHealth()
   resetProviderSpend()
   clearAIQueue()
+})
+
+// ---------------------------------------------------------------------------
+// 0. A SWEEP IS NOT A PERSON. Opening a page must not buy anything.
+// ---------------------------------------------------------------------------
+
+describe('the job page\'s automatic sweep buys nothing', () => {
+  // The regression this section exists for, and it is the reviewer's MAJOR 1.
+  // The job page reviews every document that has no verification score on
+  // mount (`useEffect(() => { load() }, [job.id])`), on the sidebar's Refresh,
+  // and after every Generate / Apply / status change. It did that through the
+  // same two IPC channels the Review and Generate buttons use, so every page
+  // open armed a presence grant nobody asked for. The probe, on a store whose
+  // budget was already spent (cap = 1, drained by a real manual call):
+  //
+  //   5x documents:verify on an unreviewed document -> { queued: true } each time
+  //   then five passes, each preceded by the same press:
+  //   PROBE five automatic sweeps bought 5 uncapped request(s); ledger 7
+  //
+  // Five automatic sweeps, five requests on the wire, on a ledger already 7
+  // calls into a cap of 1. So the sweep now has channels of its own
+  // (`documents:autoVerify`, `ai:autoTailor`), each running the same direct
+  // call with `byPress` false, and the difference is everything: an
+  // AUTOMATED call, and a fallback row carrying neither flag.
+  //
+  // The calls below are the ones `ensureDocVerified` makes, in the order it
+  // makes them. Which function calls them is pinned in
+  // review.enqueueCallSites.test.ts, transitively from the mount effect down;
+  // what they cost is pinned here.
+
+  it('a page open arms no grant, claims no provenance and is not promoted', async () => {
+    addModel()
+    stubTransport(200)
+    await drainTheBudget()
+    // No 429 stub: with the budget spent, an AUTOMATIC direct call is refused
+    // by the cap before it reaches the provider. `ProviderCapError` extends
+    // `RateLimitError`, so that IS the fallback branch — which is why the
+    // row exists at all, and it is a row of the app's own making.
+    const sweep = jobWithDoc()
+    expect(await handler('documents:autoVerify', sweep.jobId, sweep.documentId, 'cv')).toEqual({
+      queued: true
+    })
+    const reviewed = rowFor(sweep.jobId)
+    expect(reviewed?.type, 'the fallback row is a review').toBe('verify')
+    expect(reviewed?.userPresentAt, 'a page open must not arm a grant').toBeUndefined()
+    expect(reviewed?.manualQueued, 'nor claim provenance — nobody asked for this review').toBe(false)
+    expect(reviewed?.promotedAt, 'nor be promoted to the top of the queue').toBeUndefined()
+
+    // The regeneration loop's half of the same sweep (`ensureDocVerified`'s
+    // `autoTailorDocument`, after a review scored under 70).
+    const regen = jobWithDoc()
+    expect(await handler('ai:autoTailor', { job_id: regen.jobId, document_type: 'cv' })).toEqual({
+      queued: true
+    })
+    const generated = rowFor(regen.jobId)
+    expect(generated?.type).toBe('generate_cv')
+    expect(generated?.userPresentAt, 'a page open must not arm a grant').toBeUndefined()
+    expect(generated?.manualQueued).toBe(false)
+
+    // And neither row may be run past the app's own budget.
+    const before = wire
+    await processQueue()
+    expect(wire, "the app's own review waits for the app's own budget").toBe(before)
+    expect(rowFor(sweep.jobId)?.parkedReason).toBe('provider_cap')
+    expect(rowFor(regen.jobId)?.parkedReason).toBe('provider_cap')
+  })
+
+  it('five page opens buy nothing — no request, no grant, no provenance', async () => {
+    // The probe, reproduced. Five job pages with an unreviewed document each,
+    // opened and passed in turn — which is what a user comparing five
+    // postings does — and the assertion is on the wire, not on the row.
+    addModel()
+    stubTransport(200)
+    await drainTheBudget()
+    stubTransport(429)
+
+    for (let open = 1; open <= 5; open++) {
+      const page = jobWithDoc()
+      expect(await handler('documents:autoVerify', page.jobId, page.documentId, 'cv')).toEqual({
+        queued: true
+      })
+      const before = wire
+      await processQueue()
+      expect(wire - before, `page open ${open} spent uncapped budget`).toBe(0)
+      // Nothing on the row is a person's request, at any point in that
+      // sequence: no grant, no provenance, no promotion.
+      const row = rowFor(page.jobId)
+      expect(row?.userPresentAt, `page open ${open} armed a grant`).toBeUndefined()
+      expect(row?.manualQueued, `page open ${open} claimed provenance`).toBe(false)
+      expect(row?.promotedAt, `page open ${open} promoted the row`).toBeUndefined()
+      // Cleared between opens, so the next pass has a queue of its own to
+      // refuse rather than five parked rows to sort.
+      clearAIQueue()
+    }
+
+    // The drain is the only request that ever left the app.
+    expect(wire).toBe(1)
+  })
+
+  it('obeys the auto_queue switches, so "off" is finally true of a page load', async () => {
+    // The provenance half of the same fix. While the sweep shared a channel
+    // with the buttons, its rows were `manualQueued: true` and therefore
+    // ungated by `auto_queue_verify_*` — so switching automatic review off
+    // was overruled by opening a page.
+    addModel()
+    stubTransport(200)
+    await drainTheBudget()
+    updateSettings({ auto_queue_verify_cv: false })
+
+    const off = jobWithDoc()
+    // `queued: false` is the honest answer here: the work was refused, so the
+    // sweep must not tell anyone a row was added.
+    expect(await handler('documents:autoVerify', off.jobId, off.documentId, 'cv')).toEqual({
+      queued: false
+    })
+    expect(getAIQueue(), 'a switch the user turned off means no row').toHaveLength(0)
+
+    // ...and the same switch, with the same spent budget, does not stop the
+    // person. This is the pairing the whole design rests on, so both halves
+    // are asserted in one place rather than in two that could drift.
+    stubTransport(429)
+    const press = jobWithDoc()
+    expect(await handler('documents:verify', press.jobId, press.documentId, 'cv')).toEqual({
+      queued: true
+    })
+    const row = rowFor(press.jobId)
+    expect(row, "a person's request is queued whatever the switches say").toBeTruthy()
+    expect(row!.userPresentAt, 'and it is a press, so it carries the grant').toBeTypeOf('number')
+    expect(row!.manualQueued).toBe(true)
+
+    const before = wire
+    resetModelHealth()
+    await processQueue()
+    expect(wire, "the press reaches the provider; the sweep's work does not").toBe(before + 1)
+    expectNotCapParked(rowFor(press.jobId), "the press, with auto_queue_verify_cv off")
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -596,42 +782,286 @@ describe('the grant cannot be spent twice', () => {
     expectNotCapParked(rowFor(jobId), 'the late pass')
   })
 
-  it('a press made DURING a pass is not clobbered by that pass\'s claim', async () => {
-    // The snapshot race. A pass reads the queue and then works through it; the
-    // user presses Quick Apply while it is mid-backlog. An unconditional clear
-    // in the claim write would delete a grant the pass never consumed and
-    // leave the press with a capped row — the bug, one click later. The clear
-    // is conditional on having consumed one for exactly this reason.
+  it('a press made DURING a pass is honoured BY that pass, not lost to its clear', async () => {
+    // The interleaving, and the direction that actually loses a request.
+    //
+    // A pass reads the queue and works through a snapshot. `item` is that
+    // snapshot's row, and `updateAIQueueItem` REPLACES the store element, so
+    // `item.userPresentAt` is whatever the row held when the pass STARTED. A
+    // press that lands while the pass is mid-backlog therefore exists in the
+    // store and not in `item`, which is the whole race.
+    //
+    // The press here is made from inside the transport stub, i.e. genuinely
+    // between one claim and the next rather than before the snapshot: row A's
+    // request is in flight when the user presses on row B. That is reachable
+    // in the app — `JobDetail` re-runs `load()` right after a Generate, and
+    // the sweep then reviews the document the processor has just chained a
+    // review for, so the press lands while that row is `processing`.
+    //
+    // What the previous version did: it asked the SNAPSHOT whether it had
+    // consumed a grant and cleared only then — so it read "no" here, built
+    // `opts` from the snapshot, let the cap refuse the request the press was
+    // waiting for, and (by not clearing) left the grant for a later pass. The
+    // user's press became a row parked on the budget. What it does now: the
+    // claim re-reads the row, sees the grant the press just armed, spends it,
+    // and the request the press asked for goes out on THIS pass.
+    addModel()
+    stubTransport(200)
+    await drainTheBudget()
+    // A's review passes, so A's row is retired and B is reached; everything
+    // after the first request throttles, so B's row SURVIVES the pass and
+    // what it went on to is observable. The press is made from inside the
+    // first request, which is what puts it between one claim and the next.
+    let served = 0
+    let armed = false
+    const queued = { id: 0 }
+    vi.mocked(globalThis.fetch).mockImplementation(async () => {
+      wire++
+      served++
+      if (served === 1 && !armed) {
+        armed = true
+        // Armed the way `enqueue`'s duplicate path and `retryQueueItem` arm
+        // it: mid-pass, while a request is in flight and before this row's
+        // claim has been written.
+        updateAIQueueItem(queued.id, {
+          manualQueued: true,
+          promotedAt: Date.now(),
+          userPresentAt: Date.now()
+        })
+      }
+      const ok = served === 1
+      return {
+        ok,
+        status: ok ? 200 : 429,
+        headers: new Map<string, string>(),
+        json: async () => ({
+          choices: [{ message: { content: '{"score":90,"passed":true,"feedback":"good"}' } }]
+        }),
+        text: async () => 'rate limited'
+      } as never
+    })
+
+    const first = jobWithDoc()
+    const mine = jobWithDoc()
+    // A is first and is granted, so it makes the request whose stub arms B.
+    grantedRow('verify', first.jobId, first.documentId, { promotedAt: Date.now() })
+    queued.id = addAIQueueItem({
+      type: 'verify',
+      jobId: mine.jobId,
+      documentId: mine.documentId
+    }).id
+
+    const before = wire
+    await processQueue()
+
+    // Two requests: A's, and the one the press bought. Before the fix this was
+    // 1 — B's was refused by the cap and parked.
+    expect(wire - before, 'both rows made their request: the press bought its own').toBe(2)
+    const row = rowFor(mine.jobId)
+    expect(row, 'the pressed row survives (its request was throttled)').toBeTruthy()
+    // Not parked on the budget — throttled, which is a different refusal and
+    // one the user is told about in the row's own `lastError`.
+    expectNotCapParked(row, 'the mid-pass press')
+    expect(row!.lastError ?? '', 'refused by the provider, not by the cap').toMatch(/rate|429|too many/i)
+    // And the grant that press armed was SPENT by this claim, not left alive
+    // on the row — which is the other direction of the same race, and the one
+    // that would let a claim's clear leave a grant behind.
+    expect(row!.userPresentAt, 'the grant the press armed was consumed').toBeUndefined()
+    expect(rows().filter((q) => q.userPresentAt !== undefined), 'no grant survives a claim').toHaveLength(0)
+  })
+
+  it('and a press that re-arms a row already holding a grant is still spent once', async () => {
+    // The other interleaving, for completeness rather than for teeth: the row
+    // already held a grant when the pass snapshotted it, and the press
+    // RE-armed it mid-pass. Both versions consume exactly one grant, so this
+    // asserts the property rather than a difference: one claim, one grant
+    // spent, no grant left on the row and no second claim out of it.
     addModel()
     stubTransport(200)
     await drainTheBudget()
     stubTransport(429)
 
-    const slow = jobWithDoc()
     const mine = jobWithDoc()
-    addAIQueueItem({
-      type: 'verify',
-      jobId: slow.jobId,
-      documentId: slow.documentId,
-      manualQueued: true
-    })
-    const queued = addAIQueueItem({
-      type: 'verify',
-      jobId: mine.jobId,
-      documentId: mine.documentId
-    })
-    // Armed the way `enqueue`'s duplicate path arms it, between one pass's
-    // snapshot and the next claim.
-    updateAIQueueItem(queued.id, { manualQueued: true, userPresentAt: Date.now() })
+    const rowId = grantedRow('verify', mine.jobId, mine.documentId, { promotedAt: Date.now() })
+    // The re-arm, with a timestamp a millisecond later than the first.
+    vi.setSystemTime(Date.now() + 5)
+    updateAIQueueItem(rowId, { userPresentAt: Date.now() })
 
+    const before = wire
     await processQueue()
 
-    // The press was not thrown away: either it was honoured on this pass, or
-    // it is still on the row for the next one. Never "claimed and discarded".
-    const row = rowFor(mine.jobId)
-    expect(row, 'the row a person pressed for must survive the pass').toBeTruthy()
-    expect(wire, 'a press made during a pass still reaches the provider').toBeGreaterThan(1)
-    expectNotCapParked(row, 'the mid-pass press')
+    expect(wire - before, 'one claim, and the work it runs').toBe(1)
+    expect(rowFor(mine.jobId)?.userPresentAt, 'no grant survives the claim that spent one').toBeUndefined()
+    const spent = wire
+    await processQueue()
+    expect(wire - spent, 'and nothing is uncapped on the next pass').toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 2b. WHAT ONE GRANT ACTUALLY BUYS. The bound, measured rather than claimed.
+// ---------------------------------------------------------------------------
+
+describe('the size of one grant, measured', () => {
+  // The reviewer's MAJOR 2, and it is a defect in a SENTENCE rather than in
+  // the mechanism: `aiQueue.processItem` used to publish "one grant buys
+  // exactly one claim, hence at most one `callAI` the cap cannot refuse", and
+  // that was wrong by 2-3x on the floor. A unit is not one provider request:
+  // `tailorDocument` derives keywords with one `callAI` and writes the
+  // document with another, `tailorJobDocsForJob` runs that for both
+  // documents, `verifyDocumentContent` wraps its `callAI` in a bounded
+  // parse-retry ladder, and each call walks the user's model rotation.
+  //
+  // So the honest bound is a PRODUCT, and the only way to publish a product is
+  // to measure it. Which is what these cases do — through the real handlers,
+  // the real processor and the real `ai.ts`, on a fixture with a pinned model
+  // count, with the budget genuinely drained so every request counted here is
+  // one the cap could not have refused.
+  //
+  // What they buy is still bounded, and bounded by things the user chose: the
+  // shape of the unit and the model list in Settings. It is also the SAME
+  // product the button's own direct call already spends, because `MANUAL`
+  // lifts the cap for that rotation too — pressing Generate has always walked
+  // the pool on a spent budget. The grant replaces the CAP and nothing else.
+
+  /** A CV that passes `looksLikeHarvardCv`, so a generation lane SUCCEEDS. */
+  const CV =
+    'Ada Lovelace\nCambridge, UK\n\nSummary\nBuilt the first program.\n\n' +
+    'Experience\n2020 - 2024\tEngineer, Acme\nShipped a thing\tLondon\n\n' +
+    'Education\n2016 - 2020\tCambridge\n'
+  const PASSING_REVIEW = '{"score":90,"passed":true,"feedback":"good"}'
+  const COVER_LETTER = 'Dear Team,\n\nA paragraph about the role.\n\nRegards,\nAda\n'
+  const SECTION = 'A regenerated summary line, in prose.\n'
+
+  /**
+   * One grant on one row, one pass, and how many requests it bought.
+   *
+   * Each half gets its own budget and its own pass, because a unit that
+   * chains follow-up work would otherwise let the parent's requests cool the
+   * provider and the measurement would be about cooldowns instead.
+   */
+  async function spentBy(
+    shape: Parameters<typeof grantedRow>[0],
+    models: number,
+    status: number,
+    content: string
+  ): Promise<number> {
+    clearAIQueue()
+    resetProviderSpend()
+    resetModelHealth()
+    addModel(models)
+    stubTransport(200)
+    await drainTheBudget()
+    stubTransport(status, content)
+    const who = jobWithDoc()
+    grantedRow(shape, who.jobId, who.documentId)
+    const before = wire
+    await processQueue()
+    return wire - before
+  }
+
+  it('is ONE request for a review and a regeneration, and TWO for a document', async () => {
+    // One healthy model, content that validates first time. The product
+    // reduces to (lanes) x (callAI per lane):
+    //
+    //   verify              1  a single callAI, and its parse ladder does not
+    //                           run because the review parsed
+    //   regenerate_section  1  same shape
+    //   generate_cv         2  keywords (`extractJobKeywordsV3`) + the document
+    //   generate_cover_letter 2  the same two
+    //   tailor_job_docs     3  both lanes, and the second lane's KEYWORD call
+    //                           coalesces onto the first's in-flight promise
+    //                           (`coalesceKey` is the prompts, and both lanes
+    //                           are handed the same job description), so it is
+    //                           2 documents + 1 keyword extraction
+    //
+    // The keyword call is inside `tailorDocument`'s own try/catch, so a
+    // refused extraction degrades to the rule pipeline rather than failing the
+    // unit — which is why "2 for a document" is a floor in practice and not a
+    // liability.
+    expect(await spentBy('verify', 1, 200, PASSING_REVIEW)).toBe(1)
+    expect(await spentBy('regenerate_section', 1, 200, SECTION)).toBe(1)
+    expect(await spentBy('generate_cv', 1, 200, CV)).toBe(2)
+    expect(await spentBy('generate_cover_letter', 1, 200, COVER_LETTER)).toBe(2)
+    expect(await spentBy('tailor_job_docs', 1, 200, CV)).toBe(3)
+  })
+
+  it('is the model rotation, once per model — so a dead pool multiplies it and nothing else does', async () => {
+    // The second term of the product, and the reason the bound is stated as a
+    // product rather than as a number. Three models that all refuse: a single
+    // `callAI` walks all three, so one claim buys three requests and no more.
+    // A FOURTH model would make it four, and that is the user's own Settings
+    // list talking — the same multiplier the direct Generate button has always
+    // had, because `MANUAL` skips the cap for the whole rotation.
+    //
+    // 429 rather than 5xx so the refusal is a throttle the queue understands
+    // and the row survives the pass, so what is left behind is a row and not a
+    // deleted one.
+    //
+    // The two shapes here are the ones whose unit is a SINGLE `callAI`, so the
+    // rotation is the only term left and each number says exactly one thing.
+    // The 3 and the 4 are the linearity claim: exactly one request per enabled
+    // model, no more and no fewer.
+    //
+    // A generation lane is deliberately NOT in this case. Its keyword call
+    // (inside `tailorDocument`, and degrading to the rule pipeline when it
+    // fails) walks the pool on the way to the document call and cools it as it
+    // goes, so the total is "the pool, then whatever is still warm" — a fact
+    // about cooldowns rather than about the bound. The healthy-pool numbers
+    // above already account for both of its calls.
+    expect(await spentBy('regenerate_section', 3, 429, 'rate limited')).toBe(3)
+    expect(await spentBy('regenerate_section', 4, 429, 'rate limited')).toBe(4)
+    expect(await spentBy('verify', 3, 429, 'rate limited')).toBe(3)
+  })
+
+  it('is the lane\'s own bounded ladder when the answers will not parse', async () => {
+    // The third term, and the one that made the old sentence wrong in the
+    // other direction: `verifyDocumentContent` retries on a parse failure with
+    // every model that produced the bad answer excluded, up to
+    // `MAX_RETRIES = 2` extra times — so a review unit is at most THREE
+    // `callAI`s, and that "3" is a constant in ai.ts rather than a function of
+    // anything the user chose.
+    //
+    // Each rung walks whatever is left of the rotation, which is why the
+    // three-model fixture lands on three rather than nine: the model that
+    // answered badly is not asked again. And one model is not three requests
+    // either — with a single model there is nothing left for the second rung
+    // to try, so the ladder gives up after one and the unit reports a skip.
+    // Both halves matter: the first is the ceiling, the second is why the
+    // ceiling is never reached by accident.
+    expect(await spentBy('verify', 1, 200, 'not json at all')).toBe(1)
+    expect(await spentBy('verify', 3, 200, 'not json at all')).toBe(3)
+  })
+
+  it('and a provenance-only row buys NONE of it, whatever the unit', async () => {
+    // The control that makes the numbers above mean something. Identical rows,
+    // identical spent budget, identical pass, differing only in the grant.
+    for (const [shape, content] of [
+      ['verify', PASSING_REVIEW],
+      ['generate_cv', CV],
+      ['tailor_job_docs', CV]
+    ] as const) {
+      clearAIQueue()
+      resetProviderSpend()
+      resetModelHealth()
+      addModel(3)
+      stubTransport(200)
+      await drainTheBudget()
+      stubTransport(429)
+      const who = jobWithDoc()
+      addAIQueueItem({
+        type: shape,
+        jobId: who.jobId,
+        ...(shape === 'verify' ? { documentId: who.documentId } : {}),
+        manualQueued: true
+      } as never)
+      const before = wire
+      await processQueue()
+      expect(wire - before, `${shape}: provenance alone must buy no request`).toBe(0)
+      expect(rowFor(who.jobId)?.parkedReason, `${shape}: and is parked on the budget`).toBe(
+        'provider_cap'
+      )
+    }
   })
 })
 

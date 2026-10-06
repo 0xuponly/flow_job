@@ -509,20 +509,73 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
   // and the cap needs a GRANT.
   //
   // SO `userPresentAt` IS SPENT HERE, IN THE CLAIM WRITE BELOW, AND NOWHERE
-  // ELSE. One grant buys exactly one claim, so at most one `callAI` the cap
-  // cannot refuse; after that claim this row is automated again for good,
-  // whatever happens to it next — a cap refusal, an ordinary failure, a
-  // cooldown, the auto-revival ladder, a restart, three more days in the
-  // panel. That is what "cannot leak" means here, and it is a consequence of
-  // WHERE the field is cleared, not a promise about it:
+  // ELSE. One grant buys exactly ONE CLAIM. What that claim then spends is
+  // the unit's own work, and a unit is not one provider request — an earlier
+  // version of this comment said it was ("at most one `callAI` the cap cannot
+  // refuse") and that was wrong by 2-3x on the floor:
   //
-  //   1. Only a click arms it. It is written by `enqueue`'s `present`
-  //      option (four `ipcMain` entry points) and by `retryQueueItem` (the
-  //      Queue panel's Retry). The processor, the backlog sweeps, the
-  //      re-seeders and the revival lanes can reach it through none of them,
-  //      so a row the APP chose can never buy itself exemption. The
-  //      inventory is pinned against the source tree in
-  //      review.enqueueCallSites.test.ts.
+  //   · `tailorDocument` calls `extractJobKeywordsV3` and THEN `callAI`
+  //     (ai.ts:1722, :1795), so one generate_* unit is two uncapped requests.
+  //   · `tailorJobDocsForJob` runs `Promise.all` over the CV and the cover
+  //     letter, so a `tailor_job_docs` unit is two of those.
+  //   · `verifyDocumentContent` wraps `callAI` in a `MAX_RETRIES = 2`
+  //     parse-failure ladder (ai.ts:2044), so a `verify` unit can be three.
+  //   · and every one of those calls walks `tryModels` over the user's own
+  //     enabled pool, so N models multiply the whole product.
+  //
+  // THE BOUND IS THEREFORE A PRODUCT, AND THE PRODUCT IS THE SAME ONE THE
+  // BUTTON SPENDS ANYWAY:
+  //
+  //     lanes in the unit x callAI per lane x models in the rotation
+  //                       x the lane's own bounded parse ladder
+  //
+  // Measured on the pinned fixture in queuePresenceGrant.test.ts, which is
+  // where the numbers are asserted rather than promised: with ONE healthy
+  // model, one grant buys 1 request for `verify`, 2 for `generate_cv` and 3
+  // for `tailor_job_docs` (the second lane's keyword call coalesces onto the
+  // first's in-flight promise). With three dead models a `regenerate_section`
+  // buys 3; with a three-model pool Quick Apply buys 4-5.
+  //
+  // That is bounded, and it is bounded by things the user chose: the shape of
+  // the unit, and the model list in Settings. It is ALSO the same product the
+  // direct button spends, because `MANUAL` lifts the cap for the whole
+  // rotation there too — pressing Generate has always walked the pool on a
+  // spent budget. So the grant replaces the CAP and nothing else: it does not
+  // replace the rotation, it does not outlive the claim, and it does not reach
+  // any row this claim did not run. Everything after that one claim — the row's
+  // own follow-up work, its retries, its revivals, its restarts — is the app's
+  // own again and is capped like any other. That is what "cannot leak" means
+  // here, and it is a consequence of WHERE the field is cleared:
+  //
+  //   1. Only a PRESS arms it. It is written by `enqueue`'s `present` option
+  //      and by `retryQueueItem` (the Queue panel's Retry), and `present` is
+  //      passed at exactly five places: the four `ipcMain` handlers a person
+  //      reaches (`documents:verify`, `documents:regenerateSection`,
+  //      `ai:tailor`, `tailor:quickApply`) and the Retry button.
+  //
+  //      Which was NOT the same as "only a click", and the difference was the
+  //      whole of MAJOR 1. Two of those four handlers were also reached by the
+  //      job page's automatic verification sweep — `useEffect(() => load(),
+  //      [job.id])` on mount, the sidebar's Refresh, and every Generate /
+  //      Apply / status change after it — so opening a page armed a grant
+  //      nobody asked for, and the reviewer's probe bought five uncapped
+  //      requests from five page opens on a ledger already 7 calls into a cap
+  //      of 1. A row the APP chose could buy itself exemption, because the
+  //      app had dressed itself as a person.
+  //
+  //      So the sweep no longer reaches those handlers. It has its own
+  //      channels (`documents:autoVerify`, `ai:autoTailor`) whose fallback
+  //      rows carry neither `manual` nor `present`, and it is the CHANNEL, not
+  //      a flag a caller passes about itself, that says whether a person is
+  //      waiting. The claim "these four are reached only by a button" is now
+  //      derived from the tree by review.enqueueCallSites.test.ts — the
+  //      renderer call sites of all six channels, with the enclosing function
+  //      checked for reachability from a mount effect, a timer or the
+  //      refresh listener — instead of asserted about `enqueue(` call sites
+  //      in `electron/`, which is a statement about a file rather than about
+  //      clicks. The processor, the backlog sweeps, the re-seeders and the
+  //      revival lanes can reach the flag through none of the five, so a row
+  //      the APP chose still cannot buy itself exemption.
   //   2. It cannot be inherited. That is structural, not conventional: the
   //      claim write spends the grant BEFORE the work runs, so every row
   //      this one fans out to — the review chain, the regeneration loop, the
@@ -534,11 +587,20 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
   //      and N presses spread across N passes buy N claims — which is what
   //      N presses of the direct Generate button already spend, against the
   //      same counted ledger.
-  //   4. A grant set AFTER this pass snapshotted the row is not clobbered.
-  //      The clear below is conditional on having actually consumed one,
-  //      because a pass holds a snapshot: the user can press Quick Apply
-  //      while a pass is working through a backlog, and that press must
-  //      still be answered.
+  //   4. A press that lands while this pass is mid-flight is the one this
+  //      claim honours and the one it spends. `item` is a snapshot row —
+  //      `updateAIQueueItem` REPLACES the element, so `item.userPresentAt` is
+  //      whatever the row held when the pass started — so the grant is
+  //      re-read from the store here. Read, `opts` and the clearing write
+  //      are then three adjacent SYNCHRONOUS statements with no `await`
+  //      between them, so nothing can arm a grant in the gap: the grant
+  //      consumed and the grant cleared are the same grant, always. The
+  //      previous version did not have that. It asked the SNAPSHOT whether
+  //      to clear and then cleared whatever was on the row, so a press that
+  //      arrived in the gap was destroyed by a claim that had already
+  //      authorised its work on an older press, and the press the user was
+  //      actually waiting on became capped work — parked on the budget for up
+  //      to 24h, disclosed only in the drawer.
   //   5. There is no expiry, deliberately. A grant waits for a claim however
   //      long the row is not claimed — behind a deep backlog, or through a
   //      provider cooldown, which is exactly the state the reviewer's probe
@@ -551,7 +613,15 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
   // own and is capped like any other. A refusal then parks without spending
   // an attempt or a revival, and the row runs the moment the budget is
   // back — which is what the user asked for and what the row is for.
-  const grant = item.userPresentAt
+  //
+  // A ROW GONE FROM THE STORE is also a `return`, before anything is claimed,
+  // for the reason the `updateAIQueueItem` false return inside the try gives.
+  // Reading it off the store is how the grant is read at all (point 4), so
+  // the existence check is free and it is asked FIRST, which is also what
+  // lets the clear below be keyed on the grant rather than on the snapshot.
+  const stored = getAIQueue().find((q) => q.id === item.id)
+  if (!stored) return
+  const grant = stored.userPresentAt
   const opts: AiCallOptions = { manual: grant !== undefined }
   try {
     // Inside the try: if this write throws there is nothing useful to
@@ -571,7 +641,7 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
     // undo. Every pass goes through this write, so a boost cannot
     // outlive the run that was meant to consume it.
     //
-// `parkedReason: undefined` spends the park the same way: the row is
+    // `parkedReason: undefined` spends the park the same way: the row is
     // being run again, so it is not parked on a spent budget any more, and
     // whatever happens next it should read as what it is — an ordinary
     // failure, an ordinary success — rather than as a provider budget that
@@ -596,14 +666,23 @@ async function processItem(item: AIQueueItem, epoch: number): Promise<void> {
     // is automated again from this line on, for the rest of this run and
     // every one after it.
     //
-    // Conditional, and it has to be. A pass works from a snapshot taken
-    // before it started, so a grant the user armed while this pass was
-    // working through a backlog is not the one `opts` was built from; an
-    // unconditional clear would delete it and leave the user's press with a
-    // capped row, which is the whole bug. `undefined` in a patch means
-    // "delete this key" (see `updateAIQueueItem`), so only a grant we really
-    // consumed is cleared, and a newer one is left for the next pass to
-    // honour.
+    // UNCONDITIONAL ON THE SNAPSHOT, and keyed on the grant we just read.
+    // `undefined` in a patch means "delete this key" (see
+    // `updateAIQueueItem`), so this deletes whatever `userPresentAt` the row
+    // holds — which is the grant `opts` was built from, because the read and
+    // this write are adjacent and synchronous and nothing can arm a grant
+    // between them. The previous version asked the WRONG question, and got
+    // the right answer for the wrong reason: it cleared only when the
+    // SNAPSHOT held a grant, and then cleared whatever was actually on the
+    // row. A press landing in that gap lost its grant to a claim that had
+    // already spent an older one and became capped work, parked on the budget
+    // for up to 24h. Conditioned on `grant` — the value from the row as it
+    // is NOW — the clear is identity-bearing: the grant consumed and the
+    // grant cleared are the same grant, always.
+    //
+    // The `grant === undefined` half is tidiness, not safety: it keeps a row
+    // that had no grant from acquiring the key with an `undefined` value it
+    // never had.
     if (!updateAIQueueItem(item.id, {
       status: 'processing',
       promotedAt: undefined,
@@ -1463,7 +1542,7 @@ function revivePatch(): Partial<AIQueueItem> {
  * returned list is the unchanged truth, and it is what the panel renders —
  * so the row keeps saying `Processing…`, which is correct, because it is.
  *
-* It also does not clear the stranded record: the row is no longer
+  * It also does not clear the stranded record: the row is no longer
   * stranded the moment it stops being `processing`, which is all
   * `isStranded` looks at, and the processor forgets the id again when it
   * claims the row.
@@ -1474,10 +1553,12 @@ function revivePatch(): Partial<AIQueueItem> {
   * user pressed it because the task did not happen, and the one thing that
   * button must not do is put the row back in line behind a full day's
   * budget. So this write carries `userPresentAt`, and the processor spends
-  * it at the row's next claim — one request the cap cannot turn away, after
-  * which the row is capped like anything else. Not more than one, because
-  * the claim clears it; not only for a row the app chose on its own, because
-  * a press of Retry is a gesture whatever the row's provenance is.
+  * it at the row's next claim — one CLAIM the cap cannot turn away, after
+  * which the row is capped like anything else. Not more than one claim,
+  * because the claim clears it; not only for a row the app chose on its own,
+  * because a press of Retry is a gesture whatever the row's provenance is.
+  * ("One claim", not "one request": what a claim then spends is the unit's
+  * own work — see the full product in `processItem`.)
   *
   * Which makes Retry the second instance of the shape `tailor:quickApply`
   * is the first, and the reason both are listed in `enqueue`'s inventory:
@@ -1622,12 +1703,14 @@ export function clearQueue(): { removed: number; queue: QueueItemView[] } {
  * every queue row goes through, rather than at the call sites, for two
  * reasons:
  *
- *  1. It cannot be bypassed. There are six automatic producers of
+ *  1. It cannot be bypassed. There are eight automatic producers of
  *     work today (the fit-landing trigger in fitScorer, the processor's
  *     own generation→review chaining, its review→regenerate loop and its
  *     tailor_job_docs→review fan-out in this file, the fit
- *     re-seeder in fitAutoScore, and the documents backlog sweep in
- *     docsAutoQueue) and more arrive with every feature
+ *     re-seeder in fitAutoScore, the documents backlog sweep in
+ *     docsAutoQueue, and the two fallback rows the job page's mount
+ *     sweep queues through `documents:autoVerify` and `ai:autoTailor`
+ *     in main.ts) and more arrive with every feature
  *     that queues work. A per-call-site check is a rule that only holds
  *     for the callers that remembered it. (The processor's fifth call
  *     site — handing a REFUSED lane of a `tailor_job_docs` row to the
@@ -1669,6 +1752,15 @@ export function clearQueue(): { removed: number; queue: QueueItemView[] } {
  * check, and aiQueue.autoQueue.test.ts pins both halves of every row of
  * that table.
  *
+ * AND THE FOUR HANDLERS ARE FOUR BUTTONS NOW, which they were not: two of
+ * them were also serving the job page's automatic sweep, so every page open
+ * produced a `manualQueued: true` row that no person had asked for — revived
+ * ungated, promoted, and exempt from `auto_queue_verify_*` / `auto_queue_cv`
+ * however the user had set them. The sweep's own channels
+ * (`documents:autoVerify`, `ai:autoTailor`) queue with NEITHER flag, so the
+ * provenance half of the misclassification is closed at the same time as the
+ * presence half, and "auto-queue this off" is finally true of a page load.
+ *
  * `present` — "and they are still waiting for it": a one-shot grant the
  * processor spends at the row's next claim so the cap cannot park the row a
  * gesture created. A much SHORTER list, because a grant is a per-request
@@ -1681,29 +1773,69 @@ export function clearQueue(): { removed: number; queue: QueueItemView[] } {
  *   main.ts  tailor:quickApply           → tailor_job_docs
  *   this file  retryQueueItem            → whatever row Retry was pressed on
  *
- * Note what is NOT on it: the processor's own follow-up chaining, the
- * backlog sweeps, the re-seeders, and the refused-lane handoff. The last one
- * is not an omission — a parent spends its grant before it can enqueue
- * anything, so there is nothing to inherit. And `retryQueueItem` is on it
- * while NOT being on the `manual` list above, which is the cleanest
- * statement of the whole distinction: a Retry press is presence on a row
- * that may be provenance-automatic, and it buys one request rather than a
- * row the machine then drives.
+ * The first FOUR rows are the four channels a BUTTON reaches, and the
+ * distinction is now carried by the channel rather than by a flag a caller
+ * passes about itself. The job page's automatic sweep used to reach two of
+ * them (`documents:verify` and `ai:tailor`, from `runLoad` on mount, on the
+ * sidebar's Refresh and after every Generate), so a page open with no button
+ * pressed armed a grant and bought an uncapped request; the sweep now has its
+ * own channels, `documents:autoVerify` and `ai:autoTailor`, whose fallback
+ * rows carry NEITHER flag:
+ *
+ *   main.ts  documents:autoVerify        → verify            (the mount sweep)
+ *   main.ts  ai:autoTailor               → generate_cv /     (its regeneration
+ *                                          generate_cover_letter  loop)
+ *
+ * Two channels need no automatic twin because no automatic producer of their
+ * type exists at all: `regenerate_section` (the regeneration loop that could
+ * have been one is the queue's own, bounded by AUTO_REGEN_MAX) and
+ * `tailor_job_docs` (its automatic producers are the fit-landing trigger and
+ * the documents backlog sweep, both of which queue without either flag).
+ *
+ * Note what is NOT on the `present` list: the processor's own follow-up
+ * chaining, the backlog sweeps, the re-seeders, the refused-lane handoff, and
+ * the two automatic sweep channels above. The handoff is not an omission —
+ * a parent spends its grant before it can enqueue anything, so there is
+ * nothing to inherit. And `retryQueueItem` is on it while NOT being on the
+ * `manual` list above, which is the cleanest statement of the whole
+ * distinction: a Retry press is presence on a row that may be
+ * provenance-automatic, and it buys one claim rather than a row the machine
+ * then drives.
  *
  * `review.enqueueCallSites.test.ts` derives BOTH lists from the source tree
- * and fails if either drifts, so neither is a reviewer's promise.
+ * and fails if either drifts, so neither is a reviewer's promise. The
+ * `present` half is derived from the RENDERER's call sites of those six
+ * channels — each one's enclosing function checked for reachability from a
+ * mount effect, a timer or the refresh listener — because that is the unit in
+ * which "a person is asking" is true or false. An earlier version of that
+ * test pinned the `enqueue(` call sites in `electron/`, which said nothing
+ * about who could reach them: two of the four were also on an automatic
+ * sweep, and a list of strings in `electron/` cannot tell you that.
  *
  * THAT INVENTORY IS NOT COMPLETE, and the gap is where a switch-off
  * leaks. `rg "enqueue\("` counts call sites, so it is blind to the
- * paths that queue work without calling `enqueue`. Four exist:
+ * paths that queue or resurrect work without calling `enqueue`. SEVEN exist:
  *
  *   runPass's revival of a `failed` row   (the 4h auto-revive cooldown)
  *   processItem's failure-path reschedule (the same cooldown, parked)
  *   reclaimInterruptedItems at startup   (a row stranded `processing`)
- *   fitAutoScore.runFitAutoScoreBacklog  (resurrects failed score_fit
- *                                         rows itself, by design)
+ *   fitAutoScore.runFitAutoScoreBacklog  (adds and resurrects score_fit rows
+ *                                         itself, by design, via
+ *                                         addAIQueueItem)
+ *   docsAutoQueue.runDocsAutoQueueBacklog (the same for documents, also via
+ *                                         addAIQueueItem)
+ *   fitScorer.maybeAutoEnqueueDocs       (enqueues, and also resurrects the
+ *                                         rows it plans)
+ *   retryQueueItem (the Queue panel's Retry)
  *
- * All four consult the same rule rather than re-deriving it, but the
+ * The count was four for a long time, and the three it missed were all
+ * `addAIQueueItem` calls that bypass `enqueue` altogether — which is also
+ * why "grep for `enqueue(`" was the wrong instruction to leave behind. None
+ * of the seven carries presence, which is what matters, and none needs to:
+ * every one is reachable only from a timer, a pass, a crash reclaim,
+ * `startup`, or a person pressing Retry.
+ *
+ * All of them consult the same rule rather than re-deriving it, but the
  * restart lanes ask a NARROWER question than `enqueue` does, via
  * `mayReviveUnattended`: a MANUAL row — one a person queued, recorded on
  * the row as `manualQueued` — keeps every restart behaviour it always had,
@@ -1711,13 +1843,13 @@ export function clearQueue(): { removed: number; queue: QueueItemView[] } {
  * an AUTOMATIC row consults the switch, and absent means automatic, which
  * is what keeps the leak closed for rows written before the field existed.
  *
- * A FIFTH path joins them, on the `present` list rather than the `manual`
- * one: `retryQueueItem`, the Queue panel's Retry button. It is the panel's
- * own deliberate answer to a gated automatic row — "the app will not spend
- * on its own, the user still can" — so it revives ungated whatever the
- * switches say, and it is also a person asking for the work to run NOW, so
- * it arms the grant. Auditing the gate means grepping for the revival, the
- * resurrection AND the retry; only the last of those carries presence.
+ * `retryQueueItem` is on the `present` list rather than the `manual` one. It
+ * is the panel's own deliberate answer to a gated automatic row — "the app
+ * will not spend on its own, the user still can" — so it revives ungated
+ * whatever the switches say, and it is also a person asking for the work to
+ * run NOW, so it arms the grant. Auditing the gate means grepping for the
+ * revival, the resurrection AND the retry; only the last of those carries
+ * presence.
  *
  * The first three above read no setting at all until this was fixed, so a
  * row already in the store when the user flipped a switch kept being woken

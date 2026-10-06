@@ -361,8 +361,45 @@ function registerIpc(): void {
    * next claim. The first is provenance and the second is presence, they
    * cannot be read as each other, and `aiQueue.enqueue`'s doc carries the
    * full list of which is which. See `AIQueueItem.userPresentAt`.
+   *
+   * AND "EVERY HANDLER BELOW THAT A PERSON TRIGGERS PASSES THIS" IS A CLAIM
+   * ABOUT THE CALL GRAPH, NOT ABOUT THE FLAG, so the channel is where it is
+   * enforced. Two of the four handlers above were ALSO reached by the job
+   * page's automatic verification sweep — `useEffect(() => load(), [job.id])`
+   * on mount, the sidebar's Refresh, and after every Generate / Apply /
+   * status change all re-run it — which then called the very channels the
+   * buttons call. So opening a page armed a presence grant nobody asked for,
+   * and the reviewer's probe bought five uncapped requests from five page
+   * opens on a ledger already 7 calls against a cap of 1. Nothing about
+   * `{ present: true }` was wrong; the caller was.
+   *
+   * So the automatic sweep no longer reaches a gesture handler. It has its
+   * OWN channels (`documents:autoVerify`, `ai:autoTailor`, below), which run
+   * `AUTOMATED` calls, and whose fallback rows carry neither `manual` nor
+   * `present` — they are the app's own work, so they are capped like it and
+   * gated by the `auto_queue_*` switches like it. Each pair shares ONE
+   * implementation of the direct call and one `byPress` argument; the queue
+   * row each handler creates is written in that handler, where the flags are
+   * a thing a reader (and an audit) can see. Which channel a renderer call
+   * site chose is therefore the whole claim, and
+   * `review.enqueueCallSites.test.ts` re-derives it from `src/`,
+   * transitively, so a sweep that reaches a gesture channel again fails there
+   * rather than in a user's spend.
    */
   const MANUAL: AiCallOptions = { manual: true }
+
+  /**
+   * The absence of `MANUAL`, which is not the same as nothing: it is the
+   * answer to "nobody is waiting for this", and it is the one that keeps the
+   * app's own spend on the app's own budget.
+   *
+   * An object rather than `undefined` so the call sites read as a decision.
+   * `verifyDocumentContent(jobId, documentId, docType)` with no options has
+   * always meant automated (see `AiCallOptions`) and still does; naming it
+   * says which of the two intents a handler is implementing at the point the
+   * argument is threaded in.
+   */
+  const AUTOMATED: AiCallOptions = {}
 
   ipcMain.handle('dashboard:stats', () => db.getDashboardStats())
 
@@ -548,37 +585,103 @@ function registerIpc(): void {
     db.deleteDocument(id)
     if (target?.job_id) db.recomputeJobStatusFromDocs(target.job_id)
   })
-  // The rate-limit branch below is also where a ProviderCooldownError
-  // lands, deliberately: both mean "the provider is throttling", and the
-  // queue is where throttled work belongs. A cooldown block cost no
-  // attempt and no request, so the row enqueued here parks itself on the
-  // provider's clock with its budget intact and resumes on its own
-  // (aiQueue.runPass + parkBlockedRow) rather than being charged a retry
-  // for something that never happened. What the user sees instead of
-  // this silent deferral is the Queue panel's "no provider available"
-  // state, computed from the same health query the queue parks on.
-  //
-  // `manual`: the user pressed Verify, so if this review is already
-  // queued it is revived (if it had failed) and moved to the top of its
-  // tier rather than being refused or duplicated.
-  ipcMain.handle('documents:verify', async (_e, jobId: number, documentId: number, docType: 'cv' | 'cover_letter'): Promise<VerificationResult | { queued: true }> => {
+  /**
+   * The DIRECT half of one review, shared by two channels whose fallback
+   * halves are not.
+   *
+   * The work is identical either way — the same prompt, the same document —
+   * and so is the classification of what happened to it. The only thing
+   * `byPress` decides here is whether the request may spend the user's
+   * daily budget, which is worth money: `documents:verify` is the Review
+   * button and `documents:autoVerify` is the job page's mount sweep, and
+   * until this was split the sweep reached the button's channel, so "a person
+   * is asking" was true of a page open with nobody pressing anything. Five
+   * page opens bought five uncapped requests on a ledger already 7 calls into
+   * a cap of 1.
+   *
+   * So the two intents are two CHANNELS rather than an argument a caller
+   * passes about itself, and the queue row each one creates on a throttle is
+   * written in its own handler — where the `manual` / `present` pair is a
+   * thing a reader can see, and where the audits that read these handlers
+   * (`review.enqueueCallSites.test.ts`, `rv2dupe.test.ts`) still see an
+   * `enqueue(` inside the channel it belongs to.
+   *
+   * WHAT COMES BACK AS `{ throttled: true }` is the rate-limit branch, which
+   * is also where a ProviderCooldownError lands, deliberately: both mean "the
+   * provider is throttling", and the queue is where throttled work belongs. A
+   * cooldown block cost no attempt and no request, so the row each handler
+   * enqueues parks itself on the provider's clock with its budget intact and
+   * resumes on its own (aiQueue.runPass + parkBlockedRow) rather than being
+   * charged a retry for something that never happened. What the user sees
+   * instead of this silent deferral is the Queue panel's "no provider
+   * available" state, computed from the same health query the queue parks on.
+   *
+   * WHY A CAP REFUSAL LANDS HERE TOO: `ProviderCapError` extends
+   * `RateLimitError`, so a spent budget on an AUTOMATIC review is queued
+   * rather than thrown at the page — which is right (the work is real, the
+   * row is free, it parks on the budget and runs when the budget is back).
+   */
+  async function reviewDocumentNow(
+    jobId: number,
+    documentId: number,
+    docType: 'cv' | 'cover_letter',
+    byPress: boolean
+  ): Promise<VerificationResult | { throttled: true }> {
     try {
-      // `manual`: the user pressed Verify — see `MANUAL` above.
-      const result = await withAiOperation(() => verifyDocumentContent(jobId, documentId, docType, MANUAL))
+      const result = await withAiOperation(() =>
+        verifyDocumentContent(jobId, documentId, docType, byPress ? MANUAL : AUTOMATED)
+      )
       db.recomputeJobStatusFromDocs(jobId)
       return result
     } catch (err) {
-      if (err instanceof RateLimitError) {
-        // `present` as well as `manual`: from here the queue is the ONLY
-        // thing that will answer this press, so the row it creates has to
-        // get an attempt the daily budget cannot refuse. The window is still
-        // showing the user a spinner on this document.
-        enqueue({ type: 'verify', jobId, documentId }, { manual: true, present: true })
-        return { queued: true }
-      }
+      if (err instanceof RateLimitError) return { throttled: true }
       throw err
     }
+  }
+  // The Review button (JobDetail's `handleReview`, the document's own
+  // "Review" action).
+  ipcMain.handle('documents:verify', async (_e, jobId: number, documentId: number, docType: 'cv' | 'cover_letter') => {
+    const out = await reviewDocumentNow(jobId, documentId, docType, true)
+    if (!('throttled' in out)) return out
+    // From here the queue is the ONLY thing that will answer this press, so
+    // the row has to carry the request the user is still waiting on.
+    // `manual`: an already-queued review is revived and moved to the top of
+    // its tier rather than being refused or duplicated. `present` as well:
+    // the window is still showing a spinner on this document, so this row
+    // must get an attempt the daily budget cannot refuse.
+    enqueue({ type: 'verify', jobId, documentId }, { manual: true, present: true })
+    return { queued: true }
   })
+  // The job page's automatic sweep (`runLoad` -> `ensureDocVerified`), which
+  // runs on mount, on the sidebar's Refresh, and after every Generate /
+  // Apply / status change. Neither flag: this review is the app's own, so it
+  // spends the app's budget and its row obeys `auto_queue_verify_cv` /
+  // `_cover_letter` — which is what those switches are for.
+  //
+  // `queued` is the enqueue's own answer rather than a constant, because
+  // `enqueue` returns `null` both for "already queued" and for "the switch
+  // refused it" and this handler has to be able to tell the user which
+  // happened. The sweep announces the rows it ADDED; it does not announce a
+  // row the user's own switch-off deleted.
+  ipcMain.handle('documents:autoVerify', async (_e, jobId: number, documentId: number, docType: 'cv' | 'cover_letter') => {
+    const out = await reviewDocumentNow(jobId, documentId, docType, false)
+    if (!('throttled' in out)) return out
+    return { queued: enqueue({ type: 'verify', jobId, documentId }) !== null }
+  })
+  // `manual`: the user pressed Regenerate, so if this is already queued it
+  // is revived and moved to the top of its tier rather than being refused or
+  // duplicated. `present`: nobody has answered this press yet, so its row
+  // must not wait on a budget.
+  //
+  // NO AUTOMATIC TWIN, unlike documents:verify and ai:tailor above, and the
+  // reason is that there is nothing to have one for: no automatic producer of
+  // `regenerate_section` exists anywhere in the tree. The regeneration loop
+  // that could plausibly have become one is the review -> regenerate ladder,
+  // and that is the QUEUE's (aiQueue's `verify` case, bounded by
+  // AUTO_REGEN_MAX), not the renderer's. So the two callers here —
+  // JobDetail's per-section Regenerate and DocumentsPage's — are both
+  // buttons, which is what makes this `present: true` true rather than
+  // merely plausible. Re-derived by review.enqueueCallSites.test.ts.
   ipcMain.handle('documents:regenerateSection', async (_e, documentId: number, sectionName: string, jobId: number, extraContext?: string) => {
     try {
       // `manual`: the user pressed Regenerate — see `MANUAL` above.
@@ -587,9 +690,6 @@ function registerIpc(): void {
       // ProviderCooldownError included, deliberately — see the note above
       // documents:verify. Nothing was spent, so this is a deferral of the
       // user's own request, not a second attempt.
-      // `manual`: an already-queued regeneration for this section is revived
-      // and promoted, not queued twice. `present`: nobody has answered this
-      // press yet, so its row must not wait on a budget.
       if (err instanceof RateLimitError) {
         enqueue({ type: 'regenerate_section', jobId, documentId, sectionName, extraContext }, { manual: true, present: true })
         return { queued: true }
@@ -763,28 +863,68 @@ function registerIpc(): void {
     return saved
   })
 
-  // `manual`: the user asked for this document, so a generation item that
-  // is already queued for it is revived and promoted to the top of its
-  // tier instead of being duplicated. A ProviderCooldownError takes this
-  // branch too (see the note above documents:verify): the document was not
-  // generated and nothing was spent, so the item enqueued here carries a
-  // full budget and waits on the provider's clock rather than the queue's.
-  ipcMain.handle('ai:tailor', async (_e, request: TailorRequest) => {
+  /**
+   * The DIRECT half of one tailoring, shared by two channels whose fallback
+   * halves are not — the same shape as `reviewDocumentNow` above and for the
+   * same reason. The job page's regeneration loop (`ensureDocVerified`, up to
+   * five rounds after a review scored under 70) reached `ai:tailor` from a
+   * mount sweep, so "the user pressed Generate" was true of a page nobody had
+   * pressed anything on, and every round of that loop armed a fresh grant.
+   *
+   * `byPress: true` — the Tailor / Generate button: the direct call skips the
+   * daily cap, and the handler below gives the queue row the pair of flags a
+   * person's outstanding request needs.
+   *
+   * `byPress: false` — the sweep: the direct call is automated, and the row
+   * obeys `auto_queue_cv` / `auto_queue_cover_letter` and waits for the app's
+   * budget like the rest of the app's work.
+   */
+  async function tailorDocumentNow(
+    request: TailorRequest,
+    byPress: boolean
+  ): Promise<TailorResult | { throttled: true }> {
     try {
       // Sanitizes before storing and before answering — see
       // `tailorAndSanitize` above, which is why that is a separate function
-      // rather than three lines inline here. `MANUAL` marks this as the
-      // user's own request, which the spend cap never refuses.
-      return await tailorAndSanitize(request, MANUAL)
+      // rather than three lines inline here.
+      return await tailorAndSanitize(request, byPress ? MANUAL : AUTOMATED)
     } catch (err) {
-      if (err instanceof RateLimitError) {
-        // `present` as well as `manual` — see the note above MANUAL. The
-        // button answered "queued", so from here the queue is the only thing
-        // that will produce the document, and the user is waiting on it.
-        enqueue({ type: request.document_type === 'cv' ? 'generate_cv' : 'generate_cover_letter', jobId: request.job_id }, { manual: true, present: true })
-        return { queued: true }
-      }
+      // A ProviderCooldownError takes this branch too (see the note above
+      // documents:verify): the document was not generated and nothing was
+      // spent, so the row enqueued below carries a full budget and waits on
+      // the provider's clock rather than the queue's.
+      if (err instanceof RateLimitError) return { throttled: true }
       throw err
+    }
+  }
+  // The Tailor / Generate button (JobDetail's `handleTailor`). `manual`: an
+  // already-queued generation item for this document is revived and promoted
+  // to the top of its tier instead of being duplicated. `present` as well as
+  // `manual` — see the note above MANUAL: the button answered "queued", so
+  // from here the queue is the only thing that will produce the document, and
+  // the user is waiting on it.
+  ipcMain.handle('ai:tailor', async (_e, request: TailorRequest) => {
+    const out = await tailorDocumentNow(request, true)
+    if (!('throttled' in out)) return out
+    enqueue(
+      { type: request.document_type === 'cv' ? 'generate_cv' : 'generate_cover_letter', jobId: request.job_id },
+      { manual: true, present: true }
+    )
+    return { queued: true }
+  })
+  // The job page's automatic regeneration loop, from the mount sweep. Neither
+  // flag, for the reasons above `documents:autoVerify`; and `queued` is the
+  // enqueue's own answer, because a row this handler did not add must not be
+  // announced as one it did.
+  ipcMain.handle('ai:autoTailor', async (_e, request: TailorRequest) => {
+    const out = await tailorDocumentNow(request, false)
+    if (!('throttled' in out)) return out
+    return {
+      queued:
+        enqueue({
+          type: request.document_type === 'cv' ? 'generate_cv' : 'generate_cover_letter',
+          jobId: request.job_id
+        }) !== null
     }
   })
 
@@ -806,6 +946,12 @@ function registerIpc(): void {
     // The renderer's optimistic spinner (JobsPage `onQuickApply`) waits on
     // `tailor_generated_at` / `tailor_last_error`, so a parked row is a
     // spinner with no explanation outside the drawer, for up to a day.
+    //
+    // And its one caller is a button: the job row's Quick Apply action, and
+    // nothing else in the tree. Unlike documents:verify and ai:tailor there
+    // was never a sweep reaching this channel — the automatic producers of
+    // documents are the fit-landing trigger and the documents backlog sweep,
+    // and both go through `enqueue` without either flag.
     enqueue({ type: 'tailor_job_docs', jobId }, { manual: true, present: true })
     return { queued: true }
   })

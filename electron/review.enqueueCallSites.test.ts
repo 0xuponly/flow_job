@@ -31,6 +31,17 @@ import { join, relative } from 'node:path'
 // pinning the flag at every call site in the tree, and it widens the
 // audit past `enqueue(` to every other path that can make the processor
 // pick work up — the two the `rg "enqueue\("` inventory misses.
+//
+// ONE MORE WIDENING, added after the next review (rv-qt-final, MAJOR 1).
+// Pinning `enqueue(` call sites in `electron/` is a statement about a FILE,
+// and it was being reported as a statement about CLICKS: two of the four
+// handlers it listed as "a person reaches" were also reached by the job
+// page's automatic verification sweep, so opening a page armed a presence
+// grant. No list of strings in `electron/` could have shown that. Part 4 is
+// therefore about the RENDERER's call sites of the six document channels, and
+// the property it checks is reachability — an automatic entry point may not
+// call a press channel — which is the unit in which "a person is asking" is
+// true or false at all.
 
 // ---------------------------------------------------------------------------
 // Part 1 — a source-level scan of every `enqueue(` call site.
@@ -188,17 +199,19 @@ const INVENTORY: Record<string, { line: number; manual: boolean; present?: boole
   // of the audit being that both columns are read off the tree rather than
   // promised in prose.
   'electron/main.ts': [
-    { line: 576, manual: true, present: true, why: 'documents:verify — the Verify button, queued when the direct call was throttled' },
-    { line: 594, manual: true, present: true, why: 'documents:regenerateSection — the Regenerate button, likewise' },
-    { line: 784, manual: true, present: true, why: 'ai:tailor — Tailor / Generate, likewise' },
-    { line: 809, manual: true, present: true, why: 'tailor:quickApply — Quick Apply, which has NO direct call at all' }
+    { line: 652, manual: true, present: true, why: 'documents:verify — the Review button, queued when the direct call was throttled' },
+    { line: 669, manual: false, why: 'documents:autoVerify — the job page\'s MOUNT SWEEP. The app\'s own review work: no provenance, no grant, and gated by auto_queue_verify_* like any other automatic review' },
+    { line: 694, manual: true, present: true, why: 'documents:regenerateSection — the Regenerate button, likewise' },
+    { line: 909, manual: true, present: true, why: 'ai:tailor — Tailor / Generate, likewise' },
+    { line: 924, manual: false, why: 'ai:autoTailor — the same sweep\'s regeneration loop. Automatic for both halves of the misclassification' },
+    { line: 955, manual: true, present: true, why: 'tailor:quickApply — Quick Apply, which has NO direct call at all' }
   ],
   'electron/aiQueue.ts': [
-    { line: 724, manual: false, why: 'processor: generation finished, chain the review' },
-    { line: 781, manual: false, why: 'processor: review failed, auto-regenerate the document' },
-    { line: 881, manual: false, why: 'processor: tailor_job_docs finished, review each new document' },
+    { line: 803, manual: false, why: 'processor: generation finished, chain the review' },
+    { line: 860, manual: false, why: 'processor: review failed, auto-regenerate the document' },
+    { line: 960, manual: false, why: 'processor: tailor_job_docs finished, review each new document' },
     {
-      line: 914,
+      line: 993,
       manual: true,
       why:
         "processor: a lane tailor_job_docs' provider REFUSED, so the missing " +
@@ -213,7 +226,7 @@ const INVENTORY: Record<string, { line: number; manual: boolean; present?: boole
         'it can enqueue anything, so there is nothing here to inherit.'
     },
     {
-      line: 916,
+      line: 995,
       manual: true,
       why: 'the same handoff for the cover-letter half'
     }
@@ -303,23 +316,28 @@ it('leaves the ungated type with no automatic producer at all', () => {
     // `userPresentAt` is what the spend cap reads through the processor, and
     // the processor spends it on the row's next claim. That makes it a
     // per-request exemption, and a per-request exemption reachable from a
-    // timer is how one click became 369 requests in 6h44m (2026-10-05). So
-    // the class of call site allowed to pass `present` is pinned to exactly
-    // the four `ipcMain` handlers a person reaches, and every automatic
-    // producer in the tree — the fit-landing trigger, both re-seeders, the
-    // documents backlog sweep, the processor's own follow-up chaining and
-    // its refused-lane handoff — is checked to be absent from it.
+    // timer — or, as it turned out, from opening a page — is how one click
+    // became 369 requests in 6h44m (2026-10-05).
     //
-    // The stronger statement, "a row the app chose can never buy itself
-    // exemption", is also structural rather than only policed here: `enqueue`
-    // derives the grant from `manual && present`, and `processItem` is the
-    // only reader and spends it in the claim write.
+    // WHAT THIS CANNOT SEE, and what Part 4 exists for. The assertion below
+    // is about `enqueue(` call sites in `electron/`, and the reviewer was
+    // right that reporting it as a statement about clicks is reporting a
+    // property of a FILE. Two of the four sites it named as "a person
+    // reaches" were also reached by the job page's automatic sweep, and no
+    // amount of pinning that list could have shown it: the list was correct
+    // and the claim drawn from it was false. So the grant is now also pinned
+    // at the unit where "a person is asking" is actually true or false —
+    // the RENDERER's call sites of the six channels — with the enclosing
+    // function checked for reachability from a mount effect, a timer or the
+    // refresh listener. Both halves are needed: this one keeps the automatic
+    // rows honest about provenance, that one keeps the press channels honest
+    // about who may call them.
     const granted = sites.filter((s) => s.present)
     expect(granted.map((s) => `${s.where}:${s.line}`).sort()).toEqual([
-      'electron/main.ts:576',
-      'electron/main.ts:594',
-      'electron/main.ts:784',
-      'electron/main.ts:809'
+      'electron/main.ts:652',
+      'electron/main.ts:694',
+      'electron/main.ts:909',
+      'electron/main.ts:955'
     ])
     for (const site of granted) {
       const entry = INVENTORY[site.where]?.find((e) => e.line === site.line)
@@ -341,6 +359,46 @@ it('leaves the ungated type with no automatic producer at all', () => {
     }
   })
 
+  it('leaves the automatic sweep with neither flag, so it is the app\'s own work', () => {
+    // The other half of the same fix, and the half that is about PROVENANCE
+    // rather than presence. `documents:autoVerify` and `ai:autoTailor` are the
+    // channels the job page's mount sweep reaches (mount, Refresh, after every
+    // Generate / Apply / status change). While they shared a channel with the
+    // buttons, every page open produced a `manualQueued: true` row — revived
+    // ungated, promoted, exempt from `auto_queue_verify_*` — for a review
+    // nobody asked for, which is what made `manual: true` mean "the user
+    // pressed Verify" untrue.
+    //
+    // Automatic rows are the rows the switches govern. If a sweep ever needs
+    // to be a press again, the answer is to find out what a person is
+    // actually asking for, not to hand the machine a grant.
+    //
+    // The two sites are named rather than pattern-matched out of the file,
+    // and the channels themselves are asserted to exist, so deleting one — or
+    // folding it back into the button's handler — fails here instead of
+    // quietly leaving a stale row in the list.
+    const mainSrc = readFileSync('electron/main.ts', 'utf8')
+    for (const channel of ['documents:autoVerify', 'ai:autoTailor']) {
+      expect(
+        mainSrc.includes(`ipcMain.handle('${channel}'`),
+        `${channel} must still be registered — the sweep needs a channel of its own`
+      ).toBe(true)
+    }
+    const sweepRows = ['electron/main.ts:669', 'electron/main.ts:924']
+    for (const at of sweepRows) {
+      const [where, line] = at.split(':')
+      const site = sites.find((s) => s.where === where && s.line === Number(line))
+      expect(site, `${at} is not an enqueue call site any more`).toBeTruthy()
+      expect(site!.manual, `${at} is the automatic sweep's fallback row and must not claim provenance`).toBe(false)
+      expect(site!.present, `${at} must not arm a grant`).toBe(false)
+    }
+    // ...and the whole of `main.ts` is accounted for: four gesture fallbacks
+    // (the four `present` sites above) plus exactly these two.
+    expect(
+      sites.filter((s) => s.where === 'electron/main.ts').map((s) => s.line).sort((a, b) => a - b)
+    ).toEqual([652, 669, 694, 909, 924, 955])
+  })
+
   it('never lets the refused-lane handoff inherit a grant', () => {
     // The one call site inside the processor allowed to carry a manual flag,
     // because it READS the parent's provenance rather than asserting it. It
@@ -355,6 +413,288 @@ it('leaves the ungated type with no automatic producer at all', () => {
     )
     expect(handoff.length).toBeGreaterThan(0)
     for (const site of handoff) expect(site.present).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Part 4 — WHO reaches the press channels.
+//
+// Part 1 audits `enqueue(` call sites, which is a statement about electron/.
+// It is NOT a statement about clicks, and the reviewer's MAJOR 1 is what that
+// cost: two of the four handlers it listed as "a person reaches" were also
+// reached by the job page's automatic verification sweep (`runLoad` on mount,
+// on the sidebar's Refresh, after every Generate), so opening a page armed a
+// presence grant and bought an uncapped request — five page opens, five
+// requests, on a ledger already 7 calls into a cap of 1.
+//
+// So the unit audited here is the RENDERER's call site of a channel, and the
+// question is not "does this call pass a flag" (that is Part 1) but "can a
+// person reach it". A flag argument cannot answer that; the call graph can,
+// so this part reads the call graph: every function reachable from a mount
+// effect, a layout effect, a timer, an event listener or a `useRef(...).current`
+// indirection is AUTOMATIC, transitively, and an automatic function may not
+// call a channel whose handler arms a grant.
+//
+// The inventory is pinned so a NEW call site has to be declared, but the
+// assertions that matter are the derived ones: they fail on a re-routed sweep
+// without anybody editing this file.
+// ---------------------------------------------------------------------------
+
+/** Channels whose handler arms a grant: a button, or nothing. */
+const PRESS_CHANNELS = [
+  'verifyDocument',
+  'tailorDocument',
+  'regenerateSection',
+  'tailorQuickApply'
+] as const
+
+/** Channels the job page's own sweep reaches: never a press. */
+const AUTOMATIC_CHANNELS = ['autoVerifyDocument', 'autoTailorDocument'] as const
+
+/** Which twin answers for which button, so the failure can name it. */
+const AUTOMATIC_TWIN: Record<string, string> = {
+  verifyDocument: 'autoVerifyDocument',
+  tailorDocument: 'autoTailorDocument',
+  regenerateSection: '(none — no automatic producer of this work exists)',
+  tailorQuickApply: '(none — Quick Apply has no direct call and no automatic twin)'
+}
+
+interface RendererCall {
+  where: string
+  line: number
+  method: string
+  /** The function the call sits in, or `<module>` for module-level code. */
+  inside: string
+}
+
+const ALL_RENDERER_CHANNELS = [...PRESS_CHANNELS, ...AUTOMATIC_CHANNELS]
+
+/** Call sites in `src/` of the six channels, with their enclosing function. */
+function rendererCalls(): RendererCall[] {
+  const out: RendererCall[] = []
+  for (const file of sourceFiles('src')) {
+    const lines = codeLines(readFileSync(file, 'utf8'))
+    const starts: number[] = []
+    let at = 0
+    for (const l of lines) {
+      starts.push(at)
+      at += l.length + 1
+    }
+    const stripped = lines.join('\n')
+    const lineOf = (index: number): number => {
+      let lo = 0
+      let hi = starts.length - 1
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1
+        if (starts[mid] <= index) lo = mid
+        else hi = mid - 1
+      }
+      return lo + 1
+    }
+    for (const m of stripped.matchAll(/\bapi\s*\.\s*(\w+)\s*\(/g)) {
+      if (!ALL_RENDERER_CHANNELS.includes(m[1] as never)) continue
+      out.push({
+        where: relative(process.cwd(), file),
+        line: lineOf(m.index),
+        method: m[1],
+        inside: enclosingFunction(lines, lineOf(m.index))
+      })
+    }
+  }
+  return out
+}
+
+/** The name of the innermost function declaration or arrow const above `line`. */
+function enclosingFunction(lines: string[], line: number): string {
+  for (let i = line - 1; i >= 0; i--) {
+    const m = lines[i].match(
+      /^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z0-9_]+)\s*\(/
+    )
+    if (m) return m[1]
+    // Only a const that is ASSIGNED A FUNCTION counts. `const v = await
+    // api.verifyDocument(...)` is a value, and treating it as the enclosing
+    // function named every call site after its own result variable.
+    const arrow = lines[i].match(
+      /^\s*(?:const|let)\s+([A-Za-z0-9_]+)\s*=\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z0-9_]+\s*=>)/
+    )
+    if (arrow) return arrow[1]
+  }
+  return '<module>'
+}
+
+/** The arguments of a call whose `(` is at `open`, matching nesting. */
+function body(src: string, open: number): string {
+  return balanced(src, open)
+}
+
+/** The statements inside a block whose `{` is at `open`, matching nesting. */
+function blockBody(src: string, open: number): string {
+  let depth = 0
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === '{') depth++
+    else if (src[i] === '}') {
+      depth--
+      if (depth === 0) return src.slice(open + 1, i)
+    }
+  }
+  return ''
+}
+
+/** Every identifier called inside `text`, member calls included. */
+function callees(text: string): string[] {
+  const names: string[] = []
+  for (const m of text.matchAll(/(?<![\w$.'])([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+    names.push(m[1])
+  }
+  // `a.b(` — the receiver counts as reached too, since that is how a ref
+  // indirection (`loadRef.current()`) or a callback prop gets there.
+  for (const m of text.matchAll(/(?<![\w$.'])([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+    names.push(m[1], m[2])
+  }
+  return names
+}
+
+/**
+ * Every local function in one renderer file that an AUTOMATIC entry point can
+ * reach, transitively.
+ *
+ * Roots are the ways this codebase runs something without a person asking:
+ * `useEffect`, `useLayoutEffect`, `setInterval`, `setTimeout`,
+ * `addEventListener`. Then their callees, then theirs, to a fixpoint — which
+ * is what catches `useEffect(() => load(), [job.id])` reaching `runLoad`
+ * reaching `ensureDocVerified`. An `onClick` prop is NOT a root: that is the
+ * gesture path, and refusing to reason about it would refuse to reason about
+ * the buttons at all.
+ *
+ * `useRef(load)` + `.current()` is the one indirection the callee scan cannot
+ * see through, so the alias is resolved explicitly: anything a `current` can
+ * be, becomes automatic once `current` is.
+ */
+function automaticFunctions(where: string): Set<string> {
+  const lines = codeLines(readFileSync(where, 'utf8'))
+  const stripped = lines.join('\n')
+  const auto = new Set<string>()
+  const bodies = new Map<string, string>()
+  // Bodies of the file's own functions, by name, so the closure can walk them.
+  const decl = /^[ \t]*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z0-9_]+)\s*\(/gm
+  for (const m of stripped.matchAll(decl)) {
+    const brace = stripped.indexOf('{', m.index + m[0].length - 1)
+    if (brace === -1) continue
+    bodies.set(m[1], blockBody(stripped, brace))
+  }
+  const ROOTS = /(?:useEffect|useLayoutEffect|setInterval|setTimeout|addEventListener)\s*\(/g
+  for (const m of stripped.matchAll(ROOTS)) {
+    for (const name of callees(body(stripped, m.index + m[0].length - 1))) auto.add(name)
+  }
+  // `const f = (…) => { … }` and `const f = async (…) => { … }` count too.
+  for (const m of stripped.matchAll(/^[ \t]*(?:const|let)\s+([A-Za-z0-9_]+)\s*=\s*(?:async\s*)?\(/gm)) {
+    const arrow = stripped.indexOf('=>', m.index + m[0].length - 1)
+    const brace = arrow === -1 ? -1 : stripped.indexOf('{', arrow)
+    if (brace !== -1) bodies.set(m[1], blockBody(stripped, brace))
+  }
+  // Fixpoint: an automatic function's callees are automatic too.
+  for (let pass = 0; pass < 8; pass++) {
+    const before = auto.size
+    for (const name of [...auto]) {
+      for (const callee of callees(bodies.get(name) ?? '')) auto.add(callee)
+    }
+    // A ref: `const x = useRef(f)` means `x.current` calls `f`.
+    if (auto.has('current')) {
+      for (const m of stripped.matchAll(/useRef\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)/g)) auto.add(m[1])
+    }
+    if (auto.size === before) break
+  }
+  return auto
+}
+
+/**
+ * The renderer call sites, pinned. New lines and new files fail here until
+ * somebody says which one a person pressed; the derived reachability checks
+ * below are what stop that answer from being a lie.
+ */
+const RENDERER_INVENTORY: Record<string, { method: string; inside: string; why: string }[]> = {
+  'src/pages/JobDetail.tsx': [
+    { method: 'autoVerifyDocument', inside: 'ensureDocVerified', why: 'the mount sweep\'s review of one unreviewed document' },
+    { method: 'autoTailorDocument', inside: 'ensureDocVerified', why: 'the sweep\'s regeneration loop, after a review scored under 70' },
+    { method: 'autoVerifyDocument', inside: 'ensureDocVerified', why: 'the sweep\'s re-review of the document it just rebuilt' },
+    { method: 'tailorDocument', inside: 'handleTailor', why: 'the Tailor / Generate button' },
+    { method: 'verifyDocument', inside: 'handleReview', why: 'the Review button' },
+    { method: 'regenerateSection', inside: 'handleRegenSection', why: 'the per-section Regenerate button' }
+  ],
+  'src/pages/DocumentsPage.tsx': [
+    { method: 'regenerateSection', inside: 'handleRegenSection', why: 'the Documents tab\'s Regenerate button' }
+  ],
+  'src/pages/JobsPage.tsx': [
+    { method: 'tailorQuickApply', inside: 'onQuickApply', why: 'the job row\'s Quick Apply action' }
+  ]
+}
+
+describe('the press channels are only reachable by a press', () => {
+  const calls = rendererCalls()
+
+  it('finds exactly the renderer call sites the inventory claims', () => {
+    // Guards the scanner itself, as the first block in this file does.
+    //
+    // Keyed on (file, method, enclosing function) and NOT on line numbers,
+    // which is a deliberate difference from the `enqueue(` inventory above:
+    // that table is in `electron/`, where a line number moves when a
+    // comment above it grows, and this file is one of the few places where
+    // that friction buys something. Here the thing being pinned is a
+    // CLASSIFICATION — which function a channel is called from, and therefore
+    // whether a person can reach it — and a line number says nothing a
+    // reviewer can check. A new call site, a moved one, or a renamed handler
+    // still fails until somebody says which one a person pressed.
+    expect(
+      calls.map((c) => `${c.where} ${c.method} ${c.inside}`).sort()
+    ).toEqual(
+      Object.entries(RENDERER_INVENTORY)
+        .flatMap(([where, entries]) => entries.map((e) => `${where} ${e.method} ${e.inside}`))
+        .sort()
+    )
+  })
+
+  it('never lets an automatic entry point reach a press channel', () => {
+    // THE ASSERTION THAT MAKES `present: true` TRUE RATHER THAN PLAUSIBLE.
+    //
+    // Automatic means "reachable from a mount effect, a timer, a listener or
+    // a ref, without a person asking" — the job page's sweep is exactly that
+    // (`useEffect(() => { load() }, [job.id])`), and so is the sidebar's
+    // Refresh (`app:refresh` -> `loadRef.current()` -> `load`). A call site in
+    // one of those functions is not a person's request however it is written,
+    // and the reviewer's probe is what that bought.
+    for (const call of calls) {
+      if (!PRESS_CHANNELS.includes(call.method as never)) continue
+      const auto = automaticFunctions(call.where)
+      expect(
+        auto.has(call.inside),
+        `${call.where}:${call.line} calls \`api.${call.method}\` from \`${call.inside}\`, which is ` +
+          'reachable without a person pressing anything — so this is a sweep, not a request. Its automatic ' +
+          `twin is \`${AUTOMATIC_TWIN[call.method]}\`; if this really is a press, it belongs in a function ` +
+          'only a click reaches.'
+      ).toBe(false)
+    }
+  })
+
+  it('has the automatic sweep on the automatic channels', () => {
+    // ...and the other direction, so the fix is not "delete the sweep". The
+    // app reviewing its own unreviewed documents on mount is product
+    // behaviour, and it is still allowed to ask — through a channel whose
+    // handler cannot arm a grant.
+    const swept = calls.filter((c) => automaticFunctions(c.where).has(c.inside))
+    expect(
+      [...new Set(swept.map((c) => c.method))].sort(),
+      'an automatic function must reach only the automatic channels'
+    ).toEqual([...AUTOMATIC_CHANNELS].sort())
+  })
+
+  it('reports the automatic half as the app\'s own work, not a press', () => {
+    // The behavioural half of the same claim lives in
+    // queuePresenceGrant.test.ts (a drained budget, the sweep's own channels,
+    // and no grant anywhere). This is the cheap end: both channels exist and
+    // both are reachable from the renderer, so neither twin can rot into
+    // nothing while the audit above still passes.
+    expect(calls.filter((c) => AUTOMATIC_CHANNELS.includes(c.method as never)).length).toBeGreaterThan(0)
+    expect(calls.filter((c) => PRESS_CHANNELS.includes(c.method as never)).length).toBeGreaterThan(0)
   })
 })
 
@@ -748,18 +1088,24 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
     // reviewer trusts instead of counting — which is exactly how the two
     // ungated revival lanes stayed invisible.
     //
-    // What the tree actually has: six automatic `enqueue` call sites
-    // (the four manual ones are in main.ts and pinned above). The
-    // scan-time auto-tailor in jobSearch.ts was the seventh and is
-    // retired, so it is absent from the list and from the comment.
+    // What the tree actually has: EIGHT automatic `enqueue` call sites — six
+    // producers that queue on their own account, plus the two fallback rows
+    // the job page's mount sweep queues through `documents:autoVerify` and
+    // `ai:autoTailor`, which is what that sweep's rows are: the app's own
+    // work, arriving on a page load rather than on a press. The four manual
+    // ones are in main.ts and pinned above. The scan-time auto-tailor in
+    // jobSearch.ts was a ninth and is retired, so it is absent from the list
+    // and from the comment.
     const automatic = callSites().filter((c) => !c.manual)
     expect(automatic.map((c) => `${c.where}:${c.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:724',
-      'electron/aiQueue.ts:781',
-      'electron/aiQueue.ts:881',
+      'electron/aiQueue.ts:803',
+      'electron/aiQueue.ts:860',
+      'electron/aiQueue.ts:960',
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
-      'electron/fitScorer.ts:136'
+      'electron/fitScorer.ts:136',
+      'electron/main.ts:669',
+      'electron/main.ts:924'
     ])
 
     const src = readFileSync('electron/aiQueue.ts', 'utf8')
@@ -773,8 +1119,8 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
       new RegExp(`There are ${WORDS[automatic.length]} automatic producers`)
     )
     // Every producer it names, including the fan-out this comment used
-    // to omit (aiQueue.ts:881 — a different producer from the
-    // generation → review chaining at :724, which fires for a directly
+    // to omit (aiQueue.ts:960 — a different producer from the
+    // generation → review chaining at :803, which fires for a directly
     // queued generate_*). Both line numbers are the INVENTORY's, and the
     // two assertions above are what makes saying so here honest: a stale
     // number in this comment would be the same rot the case exists to
@@ -786,6 +1132,11 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
     expect(claim).toMatch(/fit\s*re-seeder in fitAutoScore/)
     // The sixth: the producer that took the retired one's post-scan work.
     expect(claim).toMatch(/documents backlog sweep in docsAutoQueue/)
+    // The seventh and eighth: the mount sweep's two fallback rows, which
+    // arrived with the automatic channels. Without these the comment could
+    // claim a count the tree does not have, which is the same rot.
+    expect(claim).toMatch(/documents:autoVerify/)
+    expect(claim).toMatch(/ai:autoTailor/)
     // ...and the retirement is pinned in the other direction too, because
     // a comment that keeps naming a producer the tree no longer has is
     // the same rot this case was written to catch. Neither this file nor

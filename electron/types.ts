@@ -661,18 +661,31 @@ export interface AIQueueItem {
    * SO IT IS A GRANT, NOT A STATE, and that difference is the whole design.
    * `processItem` spends it in the SAME write that claims the row, so:
    *
-   *   - one grant buys exactly one claim, hence at most one `callAI` the
-   *     cap cannot refuse. After that claim the row is automated again for
-   *     good, whatever happens to it next — a cap refusal, an ordinary
-   *     failure, a cooldown, the auto-revival ladder, a restart, three more
-   *     days in the panel.
-   *   - only a click arms it. It is written from `enqueue`'s `present`
-   *     option (which the four `ipcMain` entry points pass) and by
-   *     `retryQueueItem` (the Queue panel's Retry). The processor, the
-   *     backlog sweeps, the re-seeders and the revival lanes can reach it
-   *     through none of them, so a row the APP chose can never buy itself
-   *     exemption. `review.enqueueCallSites.test.ts` pins that inventory
-   *     against the source tree.
+   *   - one grant buys exactly ONE CLAIM. What that claim spends is the
+   *     unit's own work, which is NOT one provider request: `tailorDocument`
+   *     makes two `callAI`s (keywords, then the document), a
+   *     `tailor_job_docs` claim runs that for BOTH documents, a `verify`
+   *     claim wraps its `callAI` in a bounded parse-retry ladder, and each
+   *     call walks the user's model rotation. The bound is therefore the
+   *     product (lanes x calls per lane x models x the lane's own ladder),
+   *     which is the same product the button's own direct call already
+   *     spends — `MANUAL` lifts the cap for that rotation too. Measured:
+   *     1-3 requests per grant on a single healthy model. See the full
+   *     statement in `aiQueue.processItem`, and the numbers asserted in
+   *     queuePresenceGrant.test.ts rather than promised here.
+   *   - after that claim the row is automated again for good, whatever
+   *     happens to it next — a cap refusal, an ordinary failure, a cooldown,
+   *     the auto-revival ladder, a restart, three more days in the panel.
+   *   - only a PRESS arms it. It is written from `enqueue`'s `present`
+   *     option (which the four `ipcMain` handlers a button reaches pass) and
+   *     by `retryQueueItem` (the Queue panel's Retry). Those handlers are
+   *     reached only by buttons: the job page's automatic sweep has its own
+   *     channels (`documents:autoVerify`, `ai:autoTailor`), whose rows
+   *     carry neither flag. The processor, the backlog sweeps, the
+   *     re-seeders and the revival lanes can reach it through none of the
+   *     five, so a row the APP chose can never buy itself exemption.
+   *     `review.enqueueCallSites.test.ts` re-derives that from the
+   *     renderer's call sites rather than trusting this list.
    *   - it cannot be inherited, and this is structural rather than a
    *     convention: a parent spends its grant in its claim write BEFORE it
    *     can enqueue anything, so every row it fans out to is born without

@@ -730,11 +730,27 @@ describe('F2: exactly one sanitization per generation, on every lane', () => {
     // ...and that declaration is not a store path: `ai.ts` stores only via
     // `createDocument`, which the caller's `setDocumentContent` then
     // sanitizes over. If a raw store ever reappears here this fails.
-    // And the renderer's two calls go through the `ai:tailor` channel, so
-    // they are covered by the handler rather than being a fourth store path.
-    expect(grep('api\\.tailorDocument\\(', 'src').map((l) => l.split(':').slice(0, 2).join(':'))).toEqual([
-      'src/pages/JobDetail.tsx:517',
-      'src/pages/JobDetail.tsx:561'
+    // And the renderer's calls go through a channel, so they are covered by
+    // the handler rather than being a fourth store path. There are TWO of
+    // them per intent: the Tailor / Generate button, and the job page's
+    // automatic sweep, which reaches `ai:autoTailor` rather than `ai:tailor`
+    // because a page load is not a press. Both handlers run the same
+    // `tailorDocumentNow(request, byPress ? MANUAL : AUTOMATED)` and then
+    // `tailorAndSanitize`, so the sanitization count is one either way.
+    //
+    // One call each, asserted WITHOUT a line number, for the reason the rest
+    // of this block does it: a pinned line here breaks every time the file
+    // above it grows, and that has nothing to do with sanitization. Which
+    // call site is the button's and which is the sweep's is the question
+    // review.enqueueCallSites.test.ts answers, by reachability rather than by
+    // arithmetic.
+    const srcTailor = grep('api\\.tailorDocument\\(', 'src')
+    const srcAutoTailor = grep('api\\.autoTailorDocument\\(', 'src')
+    expect(srcTailor.map((l) => l.split(':')[0]), 'the button channel, called once').toEqual([
+      'src/pages/JobDetail.tsx'
+    ])
+    expect(srcAutoTailor.map((l) => l.split(':')[0]), 'the sweep channel, called once').toEqual([
+      'src/pages/JobDetail.tsx'
     ])
     const { readFileSync } = await import('node:fs')
     expect(readFileSync('src/api.ts', 'utf8')).toMatch(

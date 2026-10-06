@@ -48,6 +48,11 @@ vi.mock('../api', () => {
       tailorDocument: noopAsync,
       regenerateSection: noopAsync,
       verifyDocument: noopAsync,
+      // The automatic twins of the three above. A job page's mount sweep
+      // asks for its work through these rather than through the buttons'
+      // channels; the stub is the same no-op either way.
+      autoTailorDocument: noopAsync,
+      autoVerifyDocument: noopAsync,
       exportDocumentPdf: noopAsync,
       markApplied: noopAsync,
       updateJob: noopAsync,

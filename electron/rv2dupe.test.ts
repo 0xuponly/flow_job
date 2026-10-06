@@ -1235,20 +1235,22 @@ describe('5. the five previously-fixed defects are still fixed', () => {
     // independent cross-check that says so — `review.enqueueCallSites.test.ts`
     // carries the same inventory with a `present` column beside `manual`.
     expect(rows.filter((r) => r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:914',
-      'electron/aiQueue.ts:916',
-      'electron/main.ts:576',
-      'electron/main.ts:594',
-      'electron/main.ts:784',
-      'electron/main.ts:809'
+      'electron/aiQueue.ts:993',
+      'electron/aiQueue.ts:995',
+      'electron/main.ts:652',
+      'electron/main.ts:694',
+      'electron/main.ts:909',
+      'electron/main.ts:955'
     ])
     expect(rows.filter((r) => !r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:724',
-      'electron/aiQueue.ts:781',
-      'electron/aiQueue.ts:881',
+      'electron/aiQueue.ts:803',
+      'electron/aiQueue.ts:860',
+      'electron/aiQueue.ts:960',
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
-      'electron/fitScorer.ts:136'
+      'electron/fitScorer.ts:136',
+      'electron/main.ts:669',
+      'electron/main.ts:924'
     ])
 
     // Polarity, checked against the source rather than the table: each
