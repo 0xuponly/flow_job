@@ -66,7 +66,7 @@ const BLOCKED_HEADLINE = 'No AI provider is available right now, so the queue is
  * The banner copy, or null when there is nothing to say.
  *
  * THE COUNT IS THE ONE THE STATE MEASURED, never the queue length, and
- * that is the whole point of this function's second clause.
+ * that is the whole point of the second argument.
  *
  * `queuedRows` is how many rows the panel is showing. It is a different
  * number from the one this banner is about — "how many are stuck" — and
