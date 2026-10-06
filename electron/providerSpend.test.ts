@@ -99,7 +99,8 @@ import {
   reloadStore,
   updateSettings
 } from './database'
-import { providerKey } from './ai'
+import { describeProviderCap, providerBudget, providerKey, type ProviderBudget } from './ai'
+import { providerSpendCountLine, providerSpendFreeLine, type ProviderSpend } from '../src/providerSpend'
 
 // Importing the main process module is what runs `registerIpc()`, so the
 // handler this file drives is the one the renderer would reach.
@@ -114,10 +115,24 @@ const KEY_A = 'sk-or-key-aaaaaaaaaaaaaaaa'
 const KEY_B = 'sk-zen-key-bbbbbbbbbbbbbbb'
 
 /** One IPC call, through the handler `main.ts` actually registered. */
-function readSpend(): Record<string, unknown>[] {
+function readSpend(): ProviderSpend[] {
   const handler = handlers.get('ai:providerSpend')
   if (!handler) throw new Error('no handler registered for ai:providerSpend')
-  return handler({}) as Record<string, unknown>[]
+  return handler({}) as ProviderSpend[]
+}
+
+/**
+ * The same ledger seen from the other side: the budget the cap itself reads,
+ * for the assertions that compare this payload against it. Both are real
+ * reads of the same store, never a fixture standing in for either.
+ */
+function readBudget(baseUrl = OPENROUTER, apiKey = KEY_A, now = Date.now()): ProviderBudget {
+  return providerBudget(bucketOf(baseUrl, apiKey), now)
+}
+
+/** The moment inside `Budget frees at <here>.`, which is the part to compare. */
+function namedMoment(sentence: string): string | undefined {
+  return sentence.match(/Budget frees at (.*)\. Automated work is paused/)?.[1]
 }
 
 function wipe(): void {
@@ -255,6 +270,7 @@ describe('the AI provider budget the Settings page reads', () => {
     const t0 = new Date(2026, 9, 5, 12, 0, 0).getTime()
     vi.setSystemTime(t0)
 
+    expect(listApiModels()).toEqual([])
     expect(readSpend()).toEqual([])
   })
 
@@ -373,9 +389,227 @@ describe('the payload carries nothing the user should not read', () => {
 
   it('keeps the model list it reads and the ledger it counts in step', () => {
     // Guards the fixture itself: a store whose models did not land would make
-    // every "no row" assertion above pass for the wrong reason.
+    // every "no row" assertion above pass for the wrong reason. It asserts
+    // nothing about the handler, so on its own it would pass with or without
+    // the fix — it is here to keep the other assertions honest, not to prove
+    // one.
     const id = addModel(OPENROUTER, KEY_A, 'or')
     expect(listApiModels().map((m) => m.id)).toContain(id)
+    expect(readSpend()).toHaveLength(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 3. WHICH PROVIDERS GET A ROW, INCLUDING BOTH SIDES AT ONCE.
+// ---------------------------------------------------------------------------
+
+describe('the row list is the union of what is configured and what has been spent', () => {
+  it('lists a configured provider and an unconfigured one with recorded spend together', () => {
+    // The two halves of the decision in one store, which is the case neither
+    // half alone covers: a provider the user still has configured and has
+    // never spent through, beside one they deleted yesterday and spent 629
+    // requests on. A list built from the model list alone would lose the
+    // second; a list built from the ledger alone would lose the first.
+    const t0 = new Date(2026, 9, 5, 12, 0, 0).getTime()
+    vi.setSystemTime(t0)
+    const gone = bucketOf(ZEN, KEY_B)
+    for (let i = 0; i < 629; i++) recordProviderCall(gone, i >= 50, t0 + i * 1000)
+    addModel(OPENROUTER, KEY_A, 'or')
+
+    const rows = readSpend()
+    expect(rows.map((r) => [r.label, r.used])).toEqual([
+      // Configured providers come first, in the user's own order.
+      ['openrouter.ai', 0],
+      // Then the ledger-only ones, and their money is still reported.
+      ['opencode.ai', 629]
+    ])
+  })
+
+  it('lists neither a provider that was never configured nor one whose spend has aged out', () => {
+    // The same union, from the other side: neither source invents a row. A
+    // row here would be a claim about a provider with no configuration and no
+    // record, which is the fabricated data this page must not show.
+    const t0 = new Date(2026, 9, 5, 12, 0, 0).getTime()
+    vi.setSystemTime(t0)
+    const id = addModel(ZEN, KEY_B, 'zen')
+    for (let i = 0; i < 5; i++) recordProviderCall(bucketOf(ZEN, KEY_B), true, t0 + i * 1000)
+
+    expect(readSpend()).toHaveLength(1)
+
+    deleteApiModel(id)
+    // Still in the window, so still a real provider with real spend...
+    expect(readSpend()).toHaveLength(1)
+    // ...and gone from the window a day later, so gone.
+    vi.setSystemTime(t0 + 25 * HOUR)
+    expect(readSpend()).toEqual([])
+  })
+
+  it('gives two keys on one host two rows rather than merging them', () => {
+    // Two credentials against the same endpoint are two budgets by design
+    // (`providerKey`), so they are two rows — even though both rows carry the
+    // same label, because the host is the same. Merging them would report one
+    // count against a per-credential cap, which could read as "over" while
+    // each key is under, and "under" while the pair together is over.
+    const t0 = new Date(2026, 9, 5, 12, 0, 0).getTime()
+    vi.setSystemTime(t0)
+    const keyC = 'sk-or-key-cccccccccccccccc'
+    for (let i = 0; i < 4; i++) recordProviderCall(bucketOf(OPENROUTER, KEY_A), true, t0 + i * 1000)
+    for (let i = 0; i < 2; i++) recordProviderCall(bucketOf(OPENROUTER, keyC), true, t0 + i * 1000)
+    addModel(OPENROUTER, KEY_A, 'or')
+    addModel(OPENROUTER, keyC, 'or2')
+
+    const rows = readSpend()
+    expect(rows.map((r) => r.used)).toEqual([4, 2])
+    expect(new Set(rows.map((r) => r.label))).toEqual(new Set(['openrouter.ai']))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 4. THE NUMBERS ARE THE APP'S OWN, NOT A SECOND OPINION ABOUT THEM.
+// ---------------------------------------------------------------------------
+
+describe('the payload is the budget the cap reads, field for field', () => {
+  it('agrees with providerBudget on every value it carries', () => {
+    // The point of building this from `providerBudget` rather than from the
+    // ledger directly is that there is ONE reader of the window, so the
+    // number the user is shown and the number the cap enforces cannot come
+    // apart. Asserted field by field, on a ledger that is over its cap,
+    // because a budget under it agrees on the easy fields.
+    const t0 = new Date(2026, 9, 5, 12, 0, 0).getTime()
+    vi.setSystemTime(t0)
+    ledgerOf629(t0)
+    addModel(OPENROUTER, KEY_A, 'or')
+
+    const budget = readBudget(OPENROUTER, KEY_A, t0)
+    expect(budget.used).toBeGreaterThanOrEqual(budget.cap)
+    expect(readSpend()[0]).toEqual({
+      label: 'openrouter.ai',
+      used: budget.used,
+      automated: budget.automated,
+      manual: budget.manual,
+      cap: budget.cap,
+      freeAt: budget.freeAt,
+      clockSkewed: budget.clockSkewed
+    })
+  })
+
+  it('carries the free time the queue itself waits for, not a second derivation', () => {
+    // `nextProviderCapFreeAt` is what the processor parks a row until, and it
+    // reads `providerBudget.freeAt`. If this payload recomputed the moment —
+    // the old "oldest call plus a window" formula, ~24h early on this ledger —
+    // the Settings page would send a user back to a provider that is still
+    // refusing them.
+    const t0 = new Date(2026, 9, 5, 12, 0, 0).getTime()
+    vi.setSystemTime(t0)
+    ledgerOf629(t0)
+    addModel(OPENROUTER, KEY_A, 'or')
+
+    const stamps = Array.from({ length: 629 }, (_, i) => t0 + i * 1000)
+    const oldestCallPlusAWindow = stamps[0] + DAY
+    expect(readSpend()[0].freeAt).toBe(stamps[629 - 50] + DAY)
+    expect(readSpend()[0].freeAt).not.toBe(oldestCallPlusAWindow)
+    // And at that instant the provider really does have room, which is the
+    // property the old formula broke.
+    expect(readBudget(OPENROUTER, KEY_A, readSpend()[0].freeAt!).used).toBe(49)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 5. THE WORDS ARE THE SENTENCES THE APP ALREADY USES.
+//    `clockTime` and the cap wording are not exported from ai.ts, so this is
+//    the only place the renderer's copy and the main process's can be compared
+//    against the real thing.
+// ---------------------------------------------------------------------------
+
+describe('the settings copy is the cap message, not a second way of saying it', () => {
+  it('says the count exactly as describeProviderCap already says it', () => {
+    const t0 = new Date(2026, 9, 5, 12, 0, 0).getTime()
+    vi.setSystemTime(t0)
+    ledgerOf629(t0)
+    addModel(OPENROUTER, KEY_A, 'or')
+
+    const row = readSpend()[0]
+    const budget = readBudget(OPENROUTER, KEY_A, t0)
+    const said = describeProviderCap(budget, t0)
+
+    // Containment is the drift guard: change one wording and this fails.
+    expect(said).toContain(providerSpendCountLine(row))
+    // ...and equality pins it to the whole clause rather than some shorter
+    // substring that happens to occur inside it.
+    expect(providerSpendCountLine(row)).toBe(
+      said.slice(said.indexOf(`${budget.used} calls`), said.indexOf('. Budget frees at'))
+    )
+  })
+
+  it('names the same moment describeProviderCap names, day and year included', () => {
+    // The moment is the one field a user acts on, and the defect this whole
+    // area is about was rendering it as a bare time that read as already
+    // past. Three shapes: another day, another YEAR, and minutes away — the
+    // one case that deliberately carries no date.
+    const cases = [
+      { now: new Date(2026, 9, 5, 12, 0, 0).getTime(), offset: 8 * HOUR },
+      { now: new Date(2026, 11, 31, 22, 0, 0).getTime(), offset: 5 * HOUR },
+      { now: new Date(2026, 9, 5, 12, 0, 0).getTime(), offset: 20 * 60_000 }
+    ]
+
+    for (const { now, offset } of cases) {
+      vi.setSystemTime(now)
+      wipe()
+      updateSettings({ base_cv: 'MASTER CV', provider_call_cap: 50 })
+      // Exactly at the cap, so the moment the budget frees is a window after
+      // the FIRST call — placed so that it lands `offset` from `now`, which is
+      // what makes each case the shape it claims to be.
+      const firstCall = now + offset - DAY
+      for (let i = 0; i < 50; i++) recordProviderCall(bucketOf(OPENROUTER, KEY_A), false, firstCall + i * 1000)
+      addModel(OPENROUTER, KEY_A, 'or')
+
+      const row = readSpend()[0]
+      const budget = readBudget(OPENROUTER, KEY_A, now)
+      expect(budget.freeAt).toBe(now + offset)
+
+      const mine = providerSpendFreeLine(row, now)
+      const theirs = describeProviderCap(budget, now)
+      // Identity of the moment itself — the renderer's copy of `clockTime`
+      // and ai.ts's own, on a real budget.
+      expect(mine).toBe(`Budget frees at ${namedMoment(theirs)}.`)
+      expect(theirs).toContain(mine)
+    }
+  })
+
+  it('says "available now" and the stale-wait sentence in the app\'s own words', () => {
+    const t0 = new Date(2026, 9, 5, 12, 0, 0).getTime()
+    vi.setSystemTime(t0)
+    addModel(OPENROUTER, KEY_A, 'or')
+
+    // Under the cap: there is no wait, so there is no timestamp — the same
+    // branch the cap message takes, in the same words.
+    const idle = readSpend()[0]
+    expect(providerSpendFreeLine(idle, t0)).toBe('Budget is available now.')
+    expect(describeProviderCap(readBudget(OPENROUTER, KEY_A, t0), t0)).toContain('Budget is available now.')
+
+    // Capped, then read a moment after it frees: the branch that must not
+    // name a time. This page's line stops one clause short of the queue's,
+    // because "re-checked every pass" is the queue's cadence and not this
+    // screen's — the shared words are the ones that must not drift.
+    wipe()
+    updateSettings({ base_cv: 'MASTER CV', provider_call_cap: 50 })
+    for (let i = 0; i < 50; i++) recordProviderCall(bucketOf(OPENROUTER, KEY_A), false, t0 + i * 60_000)
+    addModel(OPENROUTER, KEY_A, 'or')
+    const budget = readBudget(OPENROUTER, KEY_A, t0)
+    const stale = readSpend()[0]
+
+    const mine = providerSpendFreeLine(stale, budget.freeAt!)
+    const theirs = describeProviderCap(budget, budget.freeAt!)
+    // The clause that says a wait is unknown is the same words in both. The
+    // settings copy stops there: "it is re-checked every pass" is the queue
+    // parking and re-parking a row, not a cadence this screen has.
+    const shared = 'The window is still rolling, so the exact wait is not known yet'
+    expect(mine).toBe(`${shared}.`)
+    expect(theirs).toContain(shared)
+    expect(theirs).not.toMatch(/Budget frees at/)
+    // The count is still in both: dropping the time is not dropping the fact.
+    expect(providerSpendCountLine(stale)).toContain(`${budget.used} calls in the last 24h`)
+    expect(theirs).toContain(providerSpendCountLine(stale))
   })
 })
 

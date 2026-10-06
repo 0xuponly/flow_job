@@ -327,6 +327,22 @@ describe('the input and the numbers beside it cannot disagree', () => {
     await waitFor(() => expect(capInput).toHaveValue(50))
     expect(screen.getByTestId('provider-spend-count')).toHaveTextContent('629 calls in the last 24h against a cap of 50')
   })
+
+  it('re-reads the ledger on a refresh instead of keeping a copy that has gone stale', async () => {
+    // Nothing on this page ticks. The free time is a moment, not a countdown,
+    // so the only way it can stay honest is to be re-read — which is why the
+    // tab reads on open, on refresh, and after a cap write, and holds a
+    // `now` from the read rather than one taken at render time.
+    vi.mocked(api.providerSpend).mockResolvedValue([row({ used: 629, freeAt: null })])
+    await openAutoQueueTab()
+    expect(await screen.findByText(/629 calls in the last 24h/)).toBeInTheDocument()
+
+    vi.mocked(api.providerSpend).mockResolvedValue([row({ used: 631, freeAt: null })])
+    window.dispatchEvent(new Event('app:refresh'))
+
+    expect(await screen.findByText(/631 calls in the last 24h/)).toBeInTheDocument()
+    expect(screen.queryByText(/629 calls in the last 24h/)).toBeNull()
+  })
 })
 
 describe('the section keeps diagnostics out of the UI', () => {
@@ -344,5 +360,24 @@ describe('the section keeps diagnostics out of the UI', () => {
     const panel = (section.parentElement as HTMLElement).textContent ?? ''
     expect(panel).toMatch(/629 calls in the last 24h against a cap of 50/)
     expect(panel).not.toMatch(/api_key|provider_call_cap|provider_spend|#|deepseek|sk-/i)
+  })
+
+  it('gives each provider row no control, because the section reports and does not decide', async () => {
+    // The project's rule is that automation never makes a user-review
+    // decision. A spend row that could be clicked, ranked or filtered is the
+    // first step towards a page that tells the user which provider to use —
+    // which is their call to make, with the numbers this section now shows
+    // them. So a row is text, and only text.
+    vi.mocked(api.providerSpend).mockResolvedValue([
+      row({ used: 629, freeAt: Date.now() + HOUR }),
+      row({ label: 'opencode.ai', used: 0, freeAt: null })
+    ])
+    await openAutoQueueTab()
+
+    const rows = await screen.findAllByTestId('provider-spend-row')
+    expect(rows).toHaveLength(2)
+    for (const row of rows) {
+      expect(row.querySelector('button, input, select, a')).toBeNull()
+    }
   })
 })
