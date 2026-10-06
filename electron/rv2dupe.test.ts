@@ -1222,11 +1222,11 @@ describe('5. the five previously-fixed defects are still fixed', () => {
       })
     }
 
-    // Four manual sites in main.ts, all inside an IPC handler whose channel
-    // is a user action; TWO more in the processor, and those two do not
-    // assert the flag — they read it off the row they are finishing, which
-    // is checked below rather than assumed; six automatic sites, none of
-    // them — the scan-time auto-tailor that was the seventh is retired.
+    // Manual sites in the queue processor and in main.ts's IPC handlers; the
+    // processor's do not assert the flag — they read it off the row they are
+    // finishing, which is checked below rather than assumed; six automatic
+    // sites, none of them — the scan-time auto-tailor that was the seventh is
+    // retired.
     //
     // The line numbers moved when the cap's manual exemption was re-grounded
     // on PRESENCE rather than provenance: both files' comments above these
@@ -1234,18 +1234,23 @@ describe('5. the five previously-fixed defects are still fixed', () => {
     // call site was added, removed or reclassified, and this list is the
     // independent cross-check that says so — `review.enqueueCallSites.test.ts`
     // carries the same inventory with a `present` column beside `manual`.
+    //
+    // They moved again (+42) when the Queue banner's count was re-derived
+    // from the shared waiting predicate: the import and the documented
+    // `pausedCapRows` sit above every one of these sites. Same cross-check,
+    // same answer — no call site added, removed or reclassified.
     expect(rows.filter((r) => r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:993',
-      'electron/aiQueue.ts:995',
+      'electron/aiQueue.ts:1035',
+      'electron/aiQueue.ts:1037',
       'electron/main.ts:653',
       'electron/main.ts:695',
       'electron/main.ts:910',
       'electron/main.ts:956'
     ])
     expect(rows.filter((r) => !r.manual).map((r) => `${r.where}:${r.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:803',
-      'electron/aiQueue.ts:860',
-      'electron/aiQueue.ts:960',
+      'electron/aiQueue.ts:1002',
+      'electron/aiQueue.ts:845',
+      'electron/aiQueue.ts:902',
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:136',

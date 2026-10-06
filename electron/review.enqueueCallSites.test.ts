@@ -207,11 +207,11 @@ const INVENTORY: Record<string, { line: number; manual: boolean; present?: boole
     { line: 956, manual: true, present: true, why: 'tailor:quickApply — Quick Apply, which has NO direct call at all' }
   ],
   'electron/aiQueue.ts': [
-    { line: 803, manual: false, why: 'processor: generation finished, chain the review' },
-    { line: 860, manual: false, why: 'processor: review failed, auto-regenerate the document' },
-    { line: 960, manual: false, why: 'processor: tailor_job_docs finished, review each new document' },
+    { line: 845, manual: false, why: 'processor: generation finished, chain the review' },
+    { line: 902, manual: false, why: 'processor: review failed, auto-regenerate the document' },
+    { line: 1002, manual: false, why: 'processor: tailor_job_docs finished, review each new document' },
     {
-      line: 993,
+      line: 1035,
       manual: true,
       why:
         "processor: a lane tailor_job_docs' provider REFUSED, so the missing " +
@@ -226,7 +226,7 @@ const INVENTORY: Record<string, { line: number; manual: boolean; present?: boole
         'it can enqueue anything, so there is nothing here to inherit.'
     },
     {
-      line: 995,
+      line: 1037,
       manual: true,
       why: 'the same handoff for the cover-letter half'
     }
@@ -1098,9 +1098,9 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
     // and from the comment.
     const automatic = callSites().filter((c) => !c.manual)
     expect(automatic.map((c) => `${c.where}:${c.line}`).sort()).toEqual([
-      'electron/aiQueue.ts:803',
-      'electron/aiQueue.ts:860',
-      'electron/aiQueue.ts:960',
+      'electron/aiQueue.ts:1002',
+      'electron/aiQueue.ts:845',
+      'electron/aiQueue.ts:902',
       'electron/docsAutoQueue.ts:253',
       'electron/fitAutoScore.ts:191',
       'electron/fitScorer.ts:136',
@@ -1119,8 +1119,8 @@ it('agrees with the tree, producer for producer and fan-out included', () => {
       new RegExp(`There are ${WORDS[automatic.length]} automatic producers`)
     )
     // Every producer it names, including the fan-out this comment used
-    // to omit (aiQueue.ts:960 — a different producer from the
-    // generation → review chaining at :803, which fires for a directly
+    // to omit (aiQueue.ts:1002 — a different producer from the
+    // generation → review chaining at :845, which fires for a directly
     // queued generate_*). Both line numbers are the INVENTORY's, and the
     // two assertions above are what makes saying so here honest: a stale
     // number in this comment would be the same rot the case exists to

@@ -242,7 +242,16 @@ export default function QueuePanel({ items, busyId, blocked, onRetry, onRemove }
   // state: "the app cannot reach a provider" is true whether or not
   // anything happens to be queued, and a user about to press Generate is
   // exactly who needs to be told.
-  const blockedLines = blockedBannerLines(blocked, items.length)
+  //
+  // The panel's own list is passed ONLY as the "is it empty" flag, which is
+  // the one question about the queue this banner asks. It is not the
+  // banner's count: the number of tasks the provider is holding comes from
+  // the blocked state, which is measured in the main process from the rows
+  // it has actually parked and shares one predicate with the per-row
+  // labels below, so the number and the rows cannot disagree. This panel
+  // rendered "241 queued tasks are waiting" over a 241-row queue for hours
+  // while the true waiting count moved between 1 and 176.
+  const blockedLines = blockedBannerLines(blocked, items.length === 0)
 
   if (items.length === 0) {
     return (
