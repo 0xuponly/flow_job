@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { ApiModelConfig, Settings } from '../types'
+import { providerSpendLines, type ProviderSpend } from '../providerSpend'
 import { notify } from '../components/Notifications'
 import { LocationPicker } from '../components/LocationPicker'
 import { parseLocationPicks } from '../utils'
@@ -136,6 +137,48 @@ export default function SettingsPage() {
   // Falls back to the documented default when a store predates the key, which
   // is the same value the main process normalises it to.
   const [providerCallCap, setProviderCallCap] = useState(50)
+  // What the AI providers have ACTUALLY spent in the rolling 24h window, one
+  // row per provider, read from the same ledger the cap is measured against.
+  //
+  // This tab's cap input is the number the user SET, and for six hours and
+  // forty-four minutes on 2026-10-05 it was also the only number shown — 629
+  // requests issued against a cap of 50, rendered as "50", with the 629
+  // nowhere in the UI. So the spend sits directly under the input it is being
+  // compared against.
+  //
+  // `providerSpendNow` is the clock reading the ledger was read at, held so
+  // the free time is judged against the same `now` that produced it rather
+  // than a second reading taken at render time — the defect that let
+  // `describeProviderCap` render a moment that had already passed. It is
+  // refreshed on every read of the tab, which is also why this copy is never
+  // persisted: unlike a queue row's `lastError`, nothing here outlives its
+  // load.
+  const [providerSpend, setProviderSpend] = useState<ProviderSpend[]>([])
+  const [providerSpendState, setProviderSpendState] = useState<'loading' | 'loaded' | 'failed'>('loading')
+  const [providerSpendNow, setProviderSpendNow] = useState(() => Date.now())
+
+  /**
+   * Read the provider spend for this tab.
+   *
+   * A read that failed renders NO numbers and says it failed. `0` against the
+   * cap would be a claim — "this provider has spent nothing in the last 24
+   * hours" — that nothing here knows, and it is indistinguishable on screen
+   * from the truth. A bridge without this method (an older preload, or a test
+   * mock that predates it) throws on the call and lands in the same branch,
+   * which is the right answer for the same reason.
+   */
+  async function loadProviderSpend(showLoading: boolean) {
+    if (showLoading) setProviderSpendState('loading')
+    const readAt = Date.now()
+    try {
+      setProviderSpend(await api.providerSpend())
+      setProviderSpendNow(readAt)
+      setProviderSpendState('loaded')
+    } catch {
+      setProviderSpend([])
+      setProviderSpendState('failed')
+    }
+  }
 
   // Lazy-load the boards list the first time the user opens the
   // Boards tab. Cheaper than loading on every Settings mount, and
@@ -246,8 +289,19 @@ export default function SettingsPage() {
    * and silently discard every unsaved batch edit the user has made on
    * another tab. So the response is merged for the ONE key that was written,
    * and a failure rolls back that key alone.
+   *
+   * Returns whether the store took the write. The call cap needs it: that
+   * input holds its own state (`providerCallCap`, so a half-typed value is not
+   * written on every keystroke), and nothing rolled THAT back when the write
+   * failed — the page went on showing a cap the store never accepted, which
+   * is the same "shows what was asked for rather than what is stored"
+   * failure the merge below exists to prevent, one field over.
    */
-  async function saveAutoQueueValue<K extends keyof Settings>(key: K, value: Settings[K], errorPrefix: string) {
+  async function saveAutoQueueValue<K extends keyof Settings>(
+    key: K,
+    value: Settings[K],
+    errorPrefix: string
+  ): Promise<boolean> {
     setAutoQueueSaving(true)
     const previous = settings
     setSettings((prev) => (prev ? { ...prev, [key]: value } : prev))
@@ -262,6 +316,7 @@ export default function SettingsPage() {
       // like it worked. The response stays authoritative for the one key it
       // just wrote.
       setSettings((prev) => (prev ? { ...prev, [key]: updated[key] } : updated))
+      return true
     } catch (err) {
       reportFailure({
         source: 'app',
@@ -277,6 +332,7 @@ export default function SettingsPage() {
       // the updater rather than outside it, so it cannot come from a stale
       // closure.
       setSettings((prev) => (prev ? { ...prev, [key]: previous?.[key] } : previous))
+      return false
     } finally {
       setAutoQueueSaving(false)
     }
@@ -535,6 +591,19 @@ export default function SettingsPage() {
   useEffect(() => {
     loadSettings()
   }, [])
+
+  // The provider spend is read when this tab is opened and again on a
+  // sidebar refresh — the same shape as the Boards tab above. Lazy because
+  // nothing else on the page needs it, and re-read rather than cached because
+  // it is a moving ledger: a copy of it that outlived its load would be the
+  // "budget frees at 02:04 a.m." bug, already past, with nothing to say so.
+  useEffect(() => {
+    if (tab !== 'autoqueue') return
+    void loadProviderSpend(true)
+    const onRefresh = () => { void loadProviderSpend(false) }
+    window.addEventListener('app:refresh', onRefresh)
+    return () => window.removeEventListener('app:refresh', onRefresh)
+  }, [tab])
 
   // Sidebar refresh button
   useEffect(() => {
@@ -896,12 +965,73 @@ export default function SettingsPage() {
                   onChange={(e) => {
                     const n = parseInt(e.target.value, 10)
                     if (!Number.isNaN(n) && n >= 1 && n <= 5000) {
+                      const previous = providerCallCap
                       setProviderCallCap(n)
                       void saveAutoQueueValue('provider_call_cap', n, 'Failed to save the AI provider budget: ')
+                        .then((saved) => {
+                          // Put the input back when the store refused the
+                          // value, so it never claims a cap the app is not
+                          // enforcing — this input holds its own state, and
+                          // nothing else rolls it back.
+                          if (!saved) setProviderCallCap(previous)
+                          // Re-read either way, because the rows below compare
+                          // the spend against the cap the app is ENFORCING.
+                          // Leaving yesterday's cap on screen beside a new
+                          // input is the same disagreement this section
+                          // exists to end.
+                          return loadProviderSpend(false)
+                        })
                     }
                   }}
                 />
                 <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>requests per 24 hours</span>
+              </div>
+
+              {/* THE SPEND, NEXT TO THE CAP. Three states on purpose: a read
+                  in flight, a read that failed, and a ledger with nothing in
+                  it all say different things, because "0 of 50" is a claim
+                  about the third and a lie about the other two. */}
+              <div style={{ marginTop: 8 }}>
+                {providerSpendState === 'loading' && (
+                  <p data-testid="provider-spend-loading" style={{ fontSize: 11, color: 'var(--text-muted)', margin: 0 }}>
+                    Reading what the AI providers have spent in the last 24 hours…
+                  </p>
+                )}
+                {providerSpendState === 'failed' && (
+                  <p data-testid="provider-spend-failed" style={{ fontSize: 11, color: 'var(--text-muted)', margin: 0 }}>
+                    Could not read what the AI providers have spent in the last 24 hours, so no
+                    usage is shown here.
+                  </p>
+                )}
+                {providerSpendState === 'loaded' && providerSpend.length === 0 && (
+                  <p data-testid="provider-spend-empty" style={{ fontSize: 11, color: 'var(--text-muted)', margin: 0 }}>
+                    No AI provider is configured yet, so there is no spend to show.
+                  </p>
+                )}
+                {providerSpendState === 'loaded' &&
+                  providerSpend.map((row, i) => {
+                    const [count, free, skew] = providerSpendLines(row, providerSpendNow)
+                    return (
+                      <div
+                        key={`${row.label}-${i}`}
+                        data-testid="provider-spend-row"
+                        style={{ marginBottom: 8 }}
+                      >
+                        <div style={{ fontSize: 12 }}>{row.label}</div>
+                        <div data-testid="provider-spend-count" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                          {count}
+                        </div>
+                        <div data-testid="provider-spend-free" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                          {free}
+                        </div>
+                        {skew && (
+                          <div data-testid="provider-spend-skew" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                            {skew}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
               </div>
               <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
                 A provider's budget covers every model sharing one API key with it, not each model
