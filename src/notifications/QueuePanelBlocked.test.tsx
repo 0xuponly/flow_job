@@ -11,13 +11,28 @@
  * rate limits` into a user-facing banner is the failure mode.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import QueuePanel from './QueuePanel'
 import type { QueueItemView } from '../types'
-import type { AIQueueBlockedState } from '../queueBlocked'
+import { AUTO_REVIVE_MAX } from '../types'
+import type { AIQueueBlockedState, ProviderHeldRow } from '../queueBlocked'
 import { BLOCKED_ROW_STATUS, blockedBannerLines, queueRowStatusText } from '../queueBlocked'
 
-function item(overrides: Partial<QueueItemView> = {}): QueueItemView {
+/**
+ * A row as the panel is handed it, including the fields that say a provider
+ * is holding it.
+ *
+ * Typed as the intersection rather than as `QueueItemView` because the
+ * renderer's mirror in src/types.ts does not declare `blockedSince` yet — see
+ * `ProviderHeldRow`, which is the declaration of that gap. Widening here
+ * keeps the fixtures honest about what they are setting.
+ */
+type HeldView = QueueItemView & ProviderHeldRow
+
+/** When the parks in these fixtures happened. A literal, so nothing reads a clock. */
+const PARKED_AT = 1_700_000_000_000
+
+function item(overrides: Partial<HeldView> = {}): HeldView {
   return {
     id: 1,
     type: 'verify',
@@ -32,6 +47,26 @@ function item(overrides: Partial<QueueItemView> = {}): QueueItemView {
   }
 }
 
+/**
+ * A row the queue parked on the provider clock, as `parkBlockedRow` leaves
+ * it: `pending`, no attempt spent, a future wake, and its own record of the
+ * park. What `attempts: 0` buys is the collision this file is about — with
+ * nothing spent and no revival, this row renders `Pending` from
+ * `queueItemStatusText` unless something else says otherwise.
+ */
+function parked(overrides: Partial<HeldView> = {}): HeldView {
+  return item({
+    status: 'pending',
+    attempts: 0,
+    nextRetryAt: PARKED_AT + 600_000,
+    blockedSince: PARKED_AT,
+    ...overrides
+  })
+}
+
+/** The provider's own words about a spent daily budget, as the row carries them. */
+const CAP_ERROR = 'Anthropic daily call cap reached (100/100 used). Resets 2026-10-06T09:00:00Z.'
+
 function blocked(overrides: Partial<AIQueueBlockedState> = {}): AIQueueBlockedState {
   return {
     blocked: true,
@@ -41,6 +76,20 @@ function blocked(overrides: Partial<AIQueueBlockedState> = {}): AIQueueBlockedSt
     blockedRowIds: [1],
     ...overrides
   }
+}
+
+/**
+ * The app-wide state at an instant when nothing is blocked: the flag clear
+ * and, as `aiQueueBlockedState` builds it, an empty list of parked ids. This
+ * is the state a panel holds for the whole of a lapsing cooldown, and it is
+ * the one the row-level rule exists for.
+ */
+const NOT_BLOCKED_NOW: AIQueueBlockedState = {
+  blocked: false,
+  providerFreeAt: null,
+  retryAt: null,
+  waitingRows: 0,
+  blockedRowIds: []
 }
 
 function renderPanel(rows: QueueItemView[], state: AIQueueBlockedState | null = null) {
@@ -218,6 +267,120 @@ describe('a blocked row reads differently from a queued one', () => {
     expect(queueRowStatusText({ id: 2 }, null, () => 'Pending')).toBe('Pending')
     expect(queueRowStatusText({ id: 2 }, blocked({ blocked: false }), () => 'Pending')).toBe('Pending')
   })
+
+  it('still trusts the shipped list for a row that carries no mark of its own', () => {
+    // The same two assertions as above, deliberately: the app-wide list is
+    // kept as the second source rather than replaced, because it is the only
+    // answer available to a caller holding a row with no `blockedSince` of
+    // its own. No teeth against the previous version — this is a guard on
+    // coverage that the row-level rule might have cost, not a claim about it.
+    const state = blocked({ blockedRowIds: [2], waitingRows: 1 })
+    expect(queueRowStatusText({ id: 2, status: 'pending' }, state, () => 'Pending')).toBe(BLOCKED_ROW_STATUS)
+    expect(queueRowStatusText({ id: 1, status: 'pending' }, state, () => 'Pending')).toBe('Pending')
+  })
+})
+
+/**
+ * The label belongs to the row, not to the instant.
+ *
+ * `aiQueueBlockedState` fills `blockedRowIds` only while every eligible model
+ * happens to be cooling; a lapsing cooldown clears that flag while the park
+ * stays on the row. Keying the label on the flag meant the row went back to
+ * `Pending` — the word a row waiting its turn behind other work renders — for
+ * as long as any model in the pool was reachable, which is most of a long
+ * outage's quiet stretches.
+ */
+describe('a row parked on the provider clock keeps its label after the app-wide flag clears', () => {
+  const row = { id: 2, status: 'pending' as const, blockedSince: PARKED_AT }
+
+  it('reads the mark off the row while the app is blocked', () => {
+    expect(queueRowStatusText(row, blocked({ blockedRowIds: [2], waitingRows: 1 }), () => 'Pending'))
+      .toBe(BLOCKED_ROW_STATUS)
+  })
+
+  it('still reads it once nothing is blocked any more', () => {
+    // The lapse: the flag has cleared and the main process's list is empty,
+    // because it is rebuilt from the flag on every call. The row has not
+    // been claimed — nothing clears the mark but a claim — so it is still
+    // waiting on the provider clock, and saying "Pending" here is the defect
+    // this describe exists to pin.
+    expect(queueRowStatusText(row, NOT_BLOCKED_NOW, () => 'Pending')).toBe(BLOCKED_ROW_STATUS)
+  })
+
+  it('reads it before any state has arrived at all', () => {
+    // A panel that has not fetched `aiQueue:blocked` yet — the prop is
+    // optional precisely so that a caller renders what it rendered before —
+    // holds a list of rows that already know which ones are parked.
+    expect(queueRowStatusText(row, null, () => 'Pending')).toBe(BLOCKED_ROW_STATUS)
+  })
+
+  it('leaves a row that is only waiting its turn alone', () => {
+    // The control, and the reason the rule cannot be "mark anything that is
+    // not first in line": an unmarked `pending` row with nothing spent on it
+    // is a row in a queue, and it must keep reading like one.
+    expect(queueRowStatusText({ id: 1, status: 'pending' }, NOT_BLOCKED_NOW, () => 'Pending')).toBe('Pending')
+    expect(queueRowStatusText({ id: 1, status: 'pending', blockedSince: undefined }, NOT_BLOCKED_NOW, () => 'Pending'))
+      .toBe('Pending')
+  })
+
+  it('never calls a row the app is working on a row it cannot work on', () => {
+    // Not reachable from the store — the claim writes `status: 'processing'`
+    // and clears `blockedSince` in one patch — so the fixture is synthetic on
+    // purpose. It is here because the rule reads the mark before the
+    // fallback does, and a running row must be the one thing that can talk
+    // itself out of a stale mark. The app-wide list is no guard against this:
+    // it would have said "waiting for a provider" about this row too.
+    const running = { id: 2, status: 'processing' as const, blockedSince: PARKED_AT }
+    expect(queueRowStatusText(running, blocked({ blockedRowIds: [2], waitingRows: 1 }), () => 'Processing…'))
+      .toBe('Processing…')
+    expect(queueRowStatusText(running, NOT_BLOCKED_NOW, () => 'Processing…')).toBe('Processing…')
+  })
+})
+
+/**
+ * Two refusals, two labels, and the row that has both.
+ *
+ * `parkOnProviderCap` writes `parkedReason` and no `blockedSince`;
+ * `parkBlockedRow` writes `blockedSince` and leaves `parkedReason` alone; the
+ * claim clears both in one patch. So a cap row that comes due while every
+ * model is cooling carries both marks, and which label it got depended on
+ * which field the renderer checked first — the same row alternating between
+ * "Paused — provider at its call cap" and "Waiting for an AI provider" from
+ * pass to pass. Over the 6h44m window measured on 2026-10-05, 49 of the 51
+ * rows the cap refused were also in the cooldown-park log, so this is the
+ * normal case.
+ */
+describe('a spent call cap is not a provider that is unavailable', () => {
+  /** What `queueItemStatusText` says for a cap row, given the cap wording. */
+  const capText = (): string => 'Paused — provider at its call cap, checks again in 10m'
+  const capRow = { id: 2, status: 'pending' as const, parkedReason: 'provider_cap' as const, blockedSince: PARKED_AT }
+
+  it('keeps the cap wording when a cooldown park is sitting on top of it', () => {
+    expect(queueRowStatusText(capRow, blocked({ blockedRowIds: [2], waitingRows: 1 }), capText)).toBe(capText())
+  })
+
+  it('does not change label as the app-wide flag moves underneath it', () => {
+    // Both halves of the alternation, in one row: named while the app is
+    // blocked, named again once nothing is. A label that depends on the flag
+    // is a label describing the last error the app happened to hit.
+    expect(queueRowStatusText(capRow, blocked({ blockedRowIds: [2], waitingRows: 1 }), capText)).toBe(capText())
+    expect(queueRowStatusText(capRow, NOT_BLOCKED_NOW, capText)).toBe(capText())
+  })
+
+  it('keeps the cap wording for a row parked on nothing but the cap', () => {
+    // The control: a cap park on its own never rendered as a cooldown, and
+    // must not start doing so.
+    const onlyCap = { id: 2, status: 'pending' as const, parkedReason: 'provider_cap' as const }
+    expect(queueRowStatusText(onlyCap, blocked({ blockedRowIds: [], waitingRows: 0 }), capText)).toBe(capText())
+    expect(queueRowStatusText(onlyCap, NOT_BLOCKED_NOW, capText)).toBe(capText())
+  })
+
+  it('still marks a cooldown park that has no cap on it', () => {
+    const cooling = { id: 2, status: 'pending' as const, blockedSince: PARKED_AT }
+    expect(queueRowStatusText(cooling, NOT_BLOCKED_NOW, () => 'Pending')).toBe(BLOCKED_ROW_STATUS)
+    expect(queueRowStatusText(cooling, blocked({ blockedRowIds: [2], waitingRows: 1 }), () => 'Pending'))
+      .toBe(BLOCKED_ROW_STATUS)
+  })
 })
 
 describe('QueuePanel with a blocked app', () => {
@@ -325,5 +488,94 @@ describe('QueuePanel with a blocked app', () => {
     renderPanel([item({ id: 1 })], null)
     expect(screen.queryByTestId('queue-provider-blocked')).toBeNull()
     expect(screen.getByTestId('queue-task-status')).toHaveTextContent('Pending')
+  })
+
+  /**
+   * The three states the panel exists to keep apart, in one render.
+   *
+   * Asserted as an exact ordered list rather than as "the labels are
+   * different", because the failure mode was not a missing label: it was the
+   * same label on two of them. Nothing here goes through the app-wide list
+   * for the parked rows — the state says nothing is blocked, which is what a
+   * panel holds through a lapsing cooldown.
+   */
+  it('tells a queued row, a cooled row and a capped row apart in one panel', () => {
+    renderPanel(
+      [
+        item({ id: 1 }),
+        parked({ id: 2 }),
+        parked({ id: 3, parkedReason: 'provider_cap', lastError: CAP_ERROR })
+      ],
+      NOT_BLOCKED_NOW
+    )
+
+    expect(screen.getAllByTestId('queue-task-status').map((el) => el.textContent)).toEqual([
+      'Pending',
+      BLOCKED_ROW_STATUS,
+      'Paused — provider at its call cap, checks again in 10m'
+    ])
+  })
+
+  it('keeps a capped row\'s wording and its own message together', () => {
+    // The mismatch this closes: the label said the app was waiting for a
+    // provider to become available while the line directly under it said the
+    // provider's daily budget was spent. Both are real, so the row has to
+    // pick the one that will still be true after the next re-probe.
+    renderPanel(
+      [parked({ id: 1, parkedReason: 'provider_cap', lastError: CAP_ERROR })],
+      blocked({ waitingRows: 1, blockedRowIds: [1] })
+    )
+
+    const status = screen.getByTestId('queue-task-status')
+    expect(status).toHaveTextContent('Paused — provider at its call cap')
+    expect(status).not.toHaveTextContent(BLOCKED_ROW_STATUS)
+    expect(screen.getByText(CAP_ERROR)).toBeInTheDocument()
+  })
+
+  it('does not call a capped row a cooled one when the cooldown is the app-wide news', () => {
+    // The banner is the app-wide fact and the row is the row's; the same
+    // refusal can be true of both without either of them borrowing the
+    // other's label.
+    renderPanel(
+      [item({ id: 1 }), parked({ id: 2, parkedReason: 'provider_cap', lastError: CAP_ERROR })],
+      blocked({ waitingRows: 1, blockedRowIds: [2] })
+    )
+
+    expect(screen.getAllByTestId('queue-task-status').map((el) => el.textContent)).toEqual([
+      'Pending',
+      'Paused — provider at its call cap, checks again in 10m'
+    ])
+  })
+
+  /**
+   * A row's past outranks a list of ids.
+   *
+   * Both fixtures are synthetic — `aiQueueBlockedState` filters on
+   * `status: 'pending'`, so it never names a running or a failed row — and
+   * they are here because that filter is the main process's business and not
+   * this panel's guarantee. The panel holds a row's own status in hand, and
+   * a row that is being worked on, that failed, or that a crash left
+   * mid-task each have to keep the wording that says so: the first is the
+   * only thing that pairs with a Retry button, and the second is the only
+   * thing that says the task needs the user.
+   */
+  it('gives a row that is running, or that failed, its own wording back', () => {
+    renderPanel(
+      [
+        item({ id: 1, status: 'processing', attempts: 1, stranded: true }),
+        item({ id: 2, status: 'failed', attempts: 5, autoRevives: AUTO_REVIVE_MAX })
+      ],
+      blocked({ waitingRows: 2, blockedRowIds: [1, 2] })
+    )
+
+    expect(screen.getAllByTestId('queue-task-status').map((el) => el.textContent)).toEqual([
+      'Stopped — the app closed before this finished',
+      `Failed (5 attempts) — needs attention`
+    ])
+    // The stranded row's Retry button is still there: the block did not
+    // swallow the one control that row has. (The failed row's is the
+    // panel's standing contract, so this asks about the crashed row's.)
+    const [crashed] = screen.getAllByTestId('queue-task')
+    expect(within(crashed).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   })
 })
