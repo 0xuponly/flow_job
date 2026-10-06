@@ -87,7 +87,7 @@ function doc(over: Partial<Record<string, unknown>> = {}) {
 const TWO_UNREVIEWED = [doc(), doc({ id: 10, type: 'cover_letter', title: 'CL', content: 'CL' })]
 
 function installApi(overrides: Record<string, unknown>): void {
-  ;(window as unknown as { api: unknown }).api = {
+  const api: Record<string, unknown> = {
     getOrCreateApplication: vi.fn(async () => ({ id: 1, job_id: 1, cv_document_id: 9, cover_letter_document_id: 10 })),
     listDocuments: vi.fn(async () => []),
     // The notification center. Every failure path writes a record here,
@@ -106,6 +106,22 @@ function installApi(overrides: Record<string, unknown>): void {
     listBlacklistedCompanies: vi.fn(async () => []),
     ...overrides
   }
+  // One intent, two channels. The job page's automatic sweep (mount,
+  // Refresh, after a Generate) asks for the same work as its buttons but
+  // through `autoVerifyDocument` / `autoTailorDocument`, because a sweep is
+  // not a person and must not spend the user's budget or arm their
+  // grant. Sharing one stub across both keeps every case below saying what
+  // it was written to say — this file is about how a toast reads, not about
+  // which channel asked — and a case that needs them to differ passes the
+  // automatic twin itself. The split is pinned where it matters, in
+  // electron/review.enqueueCallSites.test.ts.
+  for (const [button, automatic] of [
+    ['verifyDocument', 'autoVerifyDocument'],
+    ['tailorDocument', 'autoTailorDocument']
+  ] as const) {
+    if (!(automatic in overrides)) api[automatic] = api[button]
+  }
+  ;(window as unknown as { api: unknown }).api = api
 }
 
 function renderDetail(strict = false) {

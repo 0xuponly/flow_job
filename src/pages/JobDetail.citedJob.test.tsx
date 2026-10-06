@@ -61,7 +61,7 @@ function doc(over: Partial<Record<string, unknown>> = {}) {
 }
 
 function installApi(overrides: Record<string, unknown>): void {
-  ;(window as unknown as { api: unknown }).api = {
+  const api: Record<string, unknown> = {
     getOrCreateApplication: vi.fn(async () => ({ id: 1, job_id: 1 })),
     listDocuments: vi.fn(async () => []),
     getJob: vi.fn(async () => ALPHA),
@@ -76,6 +76,21 @@ function installApi(overrides: Record<string, unknown>): void {
     notificationsList: vi.fn(async () => ({ rows: [] })),
     ...overrides
   }
+  // The sweep on this page and the page's buttons do the same work through
+  // two channels: `autoVerifyDocument` / `autoTailorDocument` for the
+  // automatic sweep (mount, Refresh, after a Generate), and
+  // `verifyDocument` / `tailorDocument` for the buttons. Every case in this
+  // file is about WHICH JOB a record cites, so a stub that answers for one
+  // answers for the other — and a case that wants them to differ can pass
+  // the automatic twin explicitly, which is what the guard above allows.
+  // The split itself is pinned in electron/review.enqueueCallSites.test.ts.
+  for (const [button, automatic] of [
+    ['verifyDocument', 'autoVerifyDocument'],
+    ['tailorDocument', 'autoTailorDocument']
+  ] as const) {
+    if (!(automatic in overrides)) api[automatic] = api[button]
+  }
+  ;(window as unknown as { api: unknown }).api = api
 }
 
 /** The job citation on every record written so far. */

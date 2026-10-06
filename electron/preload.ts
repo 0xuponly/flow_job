@@ -73,6 +73,16 @@ export interface Api {
   deleteApiModel: (id: string) => Promise<ApiModelConfig[]>
   tailorDocument: (request: TailorRequest) => Promise<TailorResult | { queued: true }>
   verifyDocument: (jobId: number, documentId: number, docType: 'cv' | 'cover_letter') => Promise<VerificationResult | { queued: true }>
+  // The AUTOMATIC twins of the two channels above, and the split is the
+  // point rather than the duplication: `verifyDocument` / `tailorDocument`
+  // are reached only from a button, so they may spend the user's daily
+  // budget and their queue rows may carry a grant; these two are reached
+  // only from the job page's mount sweep, so they spend the app's budget
+  // and their rows obey the `auto_queue_*` switches. `queued` is a boolean
+  // here because an automatic row can be refused by its switch, in which
+  // case nothing was added to the queue and the caller must not say it was.
+  autoVerifyDocument: (jobId: number, documentId: number, docType: 'cv' | 'cover_letter') => Promise<VerificationResult | { queued: boolean }>
+  autoTailorDocument: (request: TailorRequest) => Promise<TailorResult | { queued: boolean }>
   regenerateSection: (documentId: number, sectionName: string, jobId: number, extraContext?: string) => Promise<string | { queued: true }>
   queueList: () => Promise<Job[]>
   queueMarkSubmitted: (jobId: number, submittedAt?: number) => Promise<void>
@@ -233,7 +243,9 @@ const api: Api = {
   addApiModel: (model) => ipcRenderer.invoke('models:add', model),
   deleteApiModel: (id) => ipcRenderer.invoke('models:delete', id),
   tailorDocument: (request) => ipcRenderer.invoke('ai:tailor', request),
+  autoTailorDocument: (request) => ipcRenderer.invoke('ai:autoTailor', request),
   verifyDocument: (jobId, documentId, docType) => ipcRenderer.invoke('documents:verify', jobId, documentId, docType),
+  autoVerifyDocument: (jobId, documentId, docType) => ipcRenderer.invoke('documents:autoVerify', jobId, documentId, docType),
   regenerateSection: (documentId, sectionName, jobId, extraContext) =>
     ipcRenderer.invoke('documents:regenerateSection', documentId, sectionName, jobId, extraContext),
   queueList: () => ipcRenderer.invoke('queue:list'),

@@ -77,6 +77,15 @@ export interface Api {
   deleteApiModel: (id: string) => Promise<ApiModelConfig[]>
   tailorDocument: (request: TailorRequest) => Promise<TailorResult | { queued: true }>
   verifyDocument: (jobId: number, documentId: number, docType: 'cv' | 'cover_letter') => Promise<VerificationResult | { queued: true }>
+  // The automatic twins of the two above. A button reaches `tailorDocument`
+  // / `verifyDocument`; the job page's mount sweep reaches these, so they
+  // spend the app's budget rather than the user's and their rows obey the
+  // `auto_queue_*` switches. `queued` is a boolean here rather than the
+  // literal `true` because an automatic row can be refused by its switch —
+  // in which case nothing was queued, and the caller must not report that
+  // it was. See electron/main.ts `reviewDocument`.
+  autoTailorDocument: (request: TailorRequest) => Promise<TailorResult | { queued: boolean }>
+  autoVerifyDocument: (jobId: number, documentId: number, docType: 'cv' | 'cover_letter') => Promise<VerificationResult | { queued: boolean }>
   regenerateSection: (documentId: number, sectionName: string, jobId: number, extraContext?: string) => Promise<string | { queued: true }>
   queueList: () => Promise<Job[]>
   queueMarkSubmitted: (jobId: number, submittedAt?: number) => Promise<void>

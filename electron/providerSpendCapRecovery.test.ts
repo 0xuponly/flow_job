@@ -293,6 +293,77 @@ describe('an automatic score_fit row at the cap is parked, like every other lane
 // terminally `failed` — 22.07h into the window, with the budget still capped.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 6. THE ORIGIN a row CARRIES is not an origin the cap reads.
+//
+// A `manualQueued` row is one a person asked for ONCE — and the app then
+// finishes it unattended, on a poll timer, for as long as it lives. That is
+// the right design for finishing the work. It is the wrong design for the
+// spend exemption, because `manualQueued` was being read as "a person is
+// asking for this now", and nothing in the processor ever is: measured on
+// 2026-10-05, one click's worth of rows drove 369 requests over 6h44m in 37
+// bursts of 10 on a 629s cycle — this file's re-park ceiling plus the poll
+// interval — while the automatic ledger sat pinned at exactly the cap and
+// every automatic row was refused 8,061 times.
+//
+// So the row keeps its provenance (it is still revived unattended, still
+// ungated by the auto-queue switches, still promoted) and the PROCESSOR
+// reports what it is: the app's own request.
+// ---------------------------------------------------------------------------
+
+describe('a manual-origin row cannot spend past the cap unattended', () => {
+  it('a day of passes moves the ledger by nothing at all', async () => {
+    const t0 = new Date(2026, 2, 10, 9, 0, 0).getTime()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(t0)
+
+    updateSettings({ provider_call_cap: 1 })
+    addModels(OPENROUTER, KEY_A, 2)
+    const { jobId, documentId } = jobWithCv()
+
+    // Spend the budget on the first pass, so this row meets a full one.
+    stubTransport({ status: 200 })
+    await callAI('sys', 'drain').catch(() => undefined)
+    resetModelHealth()
+    expect(providerBudget(bucketOf(OPENROUTER, KEY_A)).used).toBe(1)
+
+    addAIQueueItem({ type: 'verify', jobId, documentId, manualQueued: true })
+    const onTheWire = (): number => calls
+
+    // 200 passes over 24h, jumping to each row's own nextRetryAt so no pass
+    // is a no-op. This is the shape of the measured window.
+    for (let i = 0; i < 200; i++) {
+      const row = getAIQueue().find((q) => q.jobId === jobId)
+      if (!row || row.status === 'failed') break
+      vi.setSystemTime(Math.max(Date.now(), row.nextRetryAt))
+      await processQueue()
+    }
+
+    // The whole point: 200 chances, zero requests. Before, a manual-origin
+    // row took every one of them.
+    expect(onTheWire()).toBe(1)
+    expect(providerBudget(bucketOf(OPENROUTER, KEY_A)).used).toBe(1)
+
+    // And it is parked on the cap for the cap's reason, still owed, still
+    // free: no attempt and no revival out of a day of refusals.
+    const row = getAIQueue().find((q) => q.jobId === jobId)
+    expect(row?.status).toBe('pending')
+    expect(row?.lastError).toMatch(/call cap/i)
+    expect(row?.parkedReason).toBe('provider_cap')
+    expect(row?.attempts).toBe(0)
+    expect(row?.autoRevives).toBeUndefined()
+
+    // The provenance is untouched by any of that. It is what lets the app
+    // finish this work unattended later, past the auto-queue switches and
+    // past a restart, so losing it would lose the user's document.
+    expect(row?.manualQueued).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 7. A RATE LIMIT CLEARS IN A MINUTE. A CAP CLEARS IN UP TO 24 HOURS.
+// ---------------------------------------------------------------------------
+
 describe('a capped row stays parked for the whole 24h window', () => {
   it('the row is still pending for the whole 24h window', async () => {
     const t0 = new Date(2026, 2, 10, 9, 0, 0).getTime()

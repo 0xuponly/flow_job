@@ -527,7 +527,16 @@ export interface ProviderBudget {
   automated: number
   manual: number
   cap: number
-  /** When the oldest in-window call ages out — null while under the cap. */
+  /**
+   * When this provider's budget frees: the instant its in-window spend
+   * drops BELOW the cap. Null while there is still room.
+   *
+   * Not "when the oldest call ages out". Those differ by the depth of the
+   * overage, and the difference is the whole defect this number is read for:
+   * one call ageing out moves `used` by one, so a ledger sitting at 629
+   * against a cap of 50 is still at 628 — still capped — at the moment the
+   * old formula named. See `windowFreesAt`.
+   */
   freeAt: number | null
   /**
    * A recorded call is dated more than a whole window AHEAD of now, so the
@@ -581,6 +590,38 @@ function providerCalls(key: string, now: number): { calls: { at: number; manual:
   return { calls, clockSkewed: calls.some((c) => c.at > horizon) }
 }
 
+/**
+ * The instant `used` drops back below `cap` as the window slides.
+ *
+ * The window ages out OLDEST FIRST and one call at a time: call `i` leaves
+ * the window the moment `now` reaches `ats[i] + PROVIDER_SPEND_WINDOW_MS`,
+ * because `providerCalls` keeps exactly the stamps strictly newer than
+ * `now - PROVIDER_SPEND_WINDOW_MS`. So at that instant the calls still in
+ * the window are the ones after `i`, and there is room again once
+ * `calls.length - 1 - i < cap` — the first such `i` being
+ * `calls.length - cap`. That is this function's whole arithmetic, and it is
+ * why the answer is NOT the oldest call's timestamp except in the exact-fit
+ * case: at `used = 629, cap = 50` the oldest call ageing out changes nothing
+ * anybody can act on, and naming that instant as the moment the budget frees
+ * told the user to come back 20 hours early for a provider that would still
+ * refuse them. Measured on 2026-10-05: a 6h44m window held a ledger at 629
+ * against a cap of 50 and named one instant for 2,315 refusals.
+ *
+ * Null while `calls.length < cap`, which is the honest reading and the one
+ * that lets the message say "available now" rather than naming a time for a
+ * wait that does not exist.
+ *
+ * Ascending sort of the stamps rather than `Math.min(...)`: this is a
+ * spread over every recorded call for the provider, and a spread that large
+ * is a stack overflow, i.e. the one provider whose budget most needs naming.
+ */
+function windowFreesAt(calls: { at: number }[], cap: number): number | null {
+  if (!(cap >= 1) || calls.length < cap) return null
+  const ats = calls.map((c) => c.at).sort((a, b) => a - b)
+  // `cap >= 1` and `calls.length >= cap` bound this index into the array.
+  return ats[calls.length - cap] + PROVIDER_SPEND_WINDOW_MS
+}
+
 export function providerBudget(key: string, now = Date.now()): ProviderBudget {
   const { calls, clockSkewed } = providerCalls(key, now)
   let automated = 0
@@ -596,9 +637,7 @@ export function providerBudget(key: string, now = Date.now()): ProviderBudget {
     automated,
     manual,
     cap: resolveProviderCap(),
-    // The oldest call in the window is the one that frees first: the budget
-    // is available again one full window after it was spent.
-    freeAt: calls.length === 0 ? null : Math.min(...calls.map((c) => c.at)) + PROVIDER_SPEND_WINDOW_MS,
+    freeAt: windowFreesAt(calls, resolveProviderCap()),
     clockSkewed
   }
 }
@@ -660,8 +699,69 @@ export function nextProviderCapFreeAt(now = Date.now()): number | null {
   return soonest
 }
 
-function clockTime(at: number): string {
-  return new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+function startOfLocalDay(at: number): number {
+  const d = new Date(at)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+/**
+ * A wall-clock time a reader cannot misplace in time.
+ *
+ * The bare `HH:MM` this used to render was the defect, not the fix. A cap
+ * frees on a rolling 24h window, so the instant it frees is routinely
+ * tomorrow's — and a bare time of day cannot say which day it is. Measured
+ * on 2026-10-05: a ledger whose budget freed at 02:04 the NEXT morning was
+ * rendered as "Budget frees at 02:04 a.m." 713 times over 2h37m, and the
+ * only "02:04 a.m." a reader has on 2026-10-05 is one that has already
+ * passed — between 3.4 and 9.7 hours before each copy, for 100% of the
+ * window, never corrected. The value was in the future every single time;
+ * the sentence put it in the past.
+ *
+* So the DAY IS ALWAYS NAMED, and it is always the calendar date rather than
+ * a relative word. "Today" and "tomorrow" were tried and are wrong by the same
+ * reasoning that motivated the change: this string is persisted as a queue
+ * row's `lastError` and re-rendered on every poll of the Queue panel, so a
+ * copy outlives the moment it describes. "06:09 a.m. tomorrow" read back the
+ * day after tomorrow is 24 hours in the past, with nothing in it to say so —
+ * only an explicit date survives being read back at all, because a date that
+ * has gone by is plainly a date that has gone by. Only a time minutes away
+ * skips the date, and that is not a stale-copy case: it is about to happen
+ * either way, so the words cannot be out of date.
+ *
+ * `now` is a PARAMETER, and it has to be. This used to read `Date.now()`
+ * internally while the freshness test in `describeProviderCap` was made
+ * against the `now` it was handed — two clocks, so a caller passing a stale
+ * `now` got a sentence that had already passed its own guard: with the wall
+ * clock an hour past `freeAt` and a stale `now` in hand, it rendered a bare
+ * past time, which is the exact defect above. One clock reading now decides
+ * both "is this still in the future" and "which day is it", so the two cannot
+ * disagree. (Unreachable from today's call sites, where the only `now` read
+ * far from its use is microseconds away — and the doc comment on
+ * `describeProviderCap` claims an invariant, and a claim the code does not
+ * hold for the next caller is not one.)
+ *
+ * The year is named whenever it is not the reader's own, because "7 Oct" is
+ * ambiguous across a year boundary and this is the one function whose whole
+ * job is not being ambiguous.
+ *
+ * Local midnight, not a fixed 24h span: across a DST change two local
+ * midnidays are 23 or 25 hours apart, and `Math.round` over that is still
+ * exactly the whole number of calendar days it is counting.
+ */
+function clockTime(at: number, now: number): string {
+  const when = new Date(at)
+  const time = when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const days = Math.round(
+    (startOfLocalDay(at) - startOfLocalDay(now)) / PROVIDER_SPEND_WINDOW_MS
+  )
+  if (days <= 0 && at - now < 60 * 60 * 1000) {
+    // Only a time minutes away is unambiguous without naming the day.
+    return time
+  }
+  const date = when.toLocaleDateString([], { day: 'numeric', month: 'short' })
+  const year = when.getFullYear() === new Date(now).getFullYear() ? '' : ` ${when.getFullYear()}`
+  return `${time} on ${date}${year}`
 }
 
 /**
@@ -671,16 +771,60 @@ function clockTime(at: number): string {
  * legible rather than blending into one number), and WHEN it frees up — and
  * that the user's own actions are untouched, because the alternative
  * reading of this message is "the app is broken".
+ *
+ * `now` is passed in rather than read here so the freshness test is made
+ * against the same clock reading that produced `budget.freeAt`. Three cases,
+ * and the third is the one that matters most:
+ *
+ * - No `freeAt` means the spend is already under the cap, so there is no
+ *   wait to describe: "available now", never a timestamp for a wait that
+ *   does not exist. The old wording here was "shortly", which described
+ *   nothing.
+ * - `freeAt` in the future is the normal case and is rendered by
+ *   `clockTime`, which cannot drop the day.
+ * - `freeAt` at or before `now` is a budget and a clock that disagree.
+ *   `windowFreesAt` is an identity — for any `now`, the provider is over its
+ *   cap exactly when `freeAt > now` — so a consistent ledger cannot reach
+ *   this. What CAN reach it is a budget read through one `now` and
+ *   formatted through another, which is what the pre-filter below does: it
+ *   reads each budget at the top of `callAI` and formats it further down.
+ *   The window between those two reads is short and the answer at stake is
+ *   only ever "within milliseconds of freeing", so this is a guard rather
+ *   than a path. The rule it exists to keep is the one that does not care
+ *   how the state arose: this message must never claim a moment that has
+ *   gone by, so it names no time at all rather than repeating the stale
+ *   one. The queue does not go quiet on this — it re-reads the ledger on
+ *   every pass and re-parks with a fresh time.
+ *
+ * Exported for the one test that needs to reach that guard directly; it is
+ * a pure function of its arguments and nothing in production calls it.
  */
-function describeProviderCap(budget: ProviderBudget): string {
-  const spend = budget.manual > 0
+export function describeProviderCap(budget: ProviderBudget, now: number = Date.now()): string {
+  // THE TOTAL IS WHAT MEETS THE CAP, AND THE SPLIT IS A PARENTHESIS.
+  //
+  // The old wording ran "… — 50 automated, 579 manual of 50 in the last 24h",
+  // which reads as 579 manual calls against a cap of 50. Both numbers are
+  // true and the sentence arranged them so a reader could not tell which was
+  // which: reproduced verbatim on a real 629-call ledger, 629 requests
+  // described as sitting under a single "of 50". So the total is the thing
+  // compared with the cap, and the split — which is the part worth keeping
+  // legible, because it is what tells a user whether the app or their own
+  // clicking did the spending — hangs off it as a parenthetical rather than
+  // standing between the two.
+  const split = budget.manual > 0
     ? `${budget.automated} automated, ${budget.manual} manual`
     : `${budget.automated} automated`
-  const frees = budget.freeAt === null ? 'shortly' : clockTime(budget.freeAt)
+  let frees: string
+  if (budget.freeAt === null) {
+    frees = 'Budget is available now.'
+  } else if (budget.freeAt <= now) {
+    frees = 'The window is still rolling, so the exact wait is not known yet — it is re-checked every pass.'
+  } else {
+    frees = `Budget frees at ${clockTime(budget.freeAt, now)}.`
+  }
   return (
-    `${budget.label} is at its call cap — ${spend} of ${budget.cap} in the last 24h. ` +
-    `Budget frees at ${frees}. Automated work is paused; Generate, Regenerate, Verify and ` +
-    `Tailor still run.`
+    `${budget.label} is at its call cap — ${budget.used} calls in the last 24h against a cap of ${budget.cap} ` +
+    `(${split}). ${frees} Automated work is paused; Generate, Regenerate, Verify and Tailor still run.`
   )
 }
 
@@ -985,12 +1129,16 @@ async function tryModels(
     // -----------------------------------------------------------------
     const provider = providerKey(model)
     if (!manual) {
-      const over = providerOverCap(provider)
+      // One clock reading for both the refusal and the sentence about it, so
+      // the time this message names is judged against the same `now` that
+      // computed it rather than a later one that can disagree.
+      const capNow = Date.now()
+      const over = providerOverCap(provider, capNow)
       if (over) {
         noteProviderCap(over)
         capRefusals.push(over)
         capErrorIndexes.add(errors.length)
-        errors.push(`${model.name}: ${describeProviderCap(over)}`)
+        errors.push(`${model.name}: ${describeProviderCap(over, capNow)}`)
         // No cooldown is written to modelHealth here on purpose. That map is
         // shared with manual work — it is what `availableModels()` filters
         // on — so cooling a model down for a reason that applies only to
@@ -1160,7 +1308,7 @@ async function tryModels(
     for (const budget of capRefusals) {
       if (seen.has(budget.key)) continue
       seen.add(budget.key)
-      lines.push(describeProviderCap(budget))
+      lines.push(describeProviderCap(budget, Date.now()))
     }
     const rest = errors.filter((_, i) => !capErrorIndexes.has(i)).join(' | ')
     // "ran out mid-rotation", not "no provider has budget": the rotation may
@@ -1339,7 +1487,7 @@ export async function callAI(
     for (const budget of capped) {
       if (seen.has(budget.key)) continue
       seen.add(budget.key)
-      lines.push(describeProviderCap(budget))
+      lines.push(describeProviderCap(budget, Date.now()))
     }
     throw new ProviderCapError(`No AI provider has budget left — ${lines.join(' ')}`)
   }
