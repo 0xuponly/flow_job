@@ -25,10 +25,10 @@
  * it, so nothing here reads a clock to decide what it expects.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import SettingsPage from './SettingsPage'
 import { api } from '../api'
-import type { ProviderSpend } from '../providerSpend'
+import { PROVIDER_SPEND_POLL_MS, type ProviderSpend } from '../providerSpend'
 
 const HOUR = 60 * 60 * 1000
 const DAY = 24 * HOUR
@@ -329,10 +329,11 @@ describe('the input and the numbers beside it cannot disagree', () => {
   })
 
   it('re-reads the ledger on a refresh instead of keeping a copy that has gone stale', async () => {
-    // Nothing on this page ticks. The free time is a moment, not a countdown,
-    // so the only way it can stay honest is to be re-read — which is why the
-    // tab reads on open, on refresh, and after a cap write, and holds a
-    // `now` from the read rather than one taken at render time.
+    // The sidebar refresh button is a user-initiated read, and it is not the
+    // only one any more: the tab also polls (`PROVIDER_SPEND_POLL_MS`) and
+    // re-reads after a cap write. What all three have in common is that the
+    // copy is re-read rather than kept, and that the free time is judged
+    // against a clock rather than carried across a render.
     vi.mocked(api.providerSpend).mockResolvedValue([row({ used: 629, freeAt: null })])
     await openAutoQueueTab()
     expect(await screen.findByText(/629 calls in the last 24h/)).toBeInTheDocument()
@@ -379,5 +380,276 @@ describe('the section keeps diagnostics out of the UI', () => {
     for (const row of rows) {
       expect(row.querySelector('button, input, select, a')).toBeNull()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// FRESHNESS. Every test above could have been written against a page that
+// reads the ledger once and shows it forever, because a page that does that
+// still passes all of them: the mock is asked once, and every assertion is
+// about what the answer was rendered as.
+//
+// These are the tests that hold the panel to the ledger it is watching. The
+// background queue spends continuously and this panel is open precisely
+// because someone wants to watch that happen, so a snapshot is not a slow
+// version of the answer — it is a different one, and across the 24h boundary
+// the same sentence turns from out of date into false.
+//
+// The clock is moved with `vi.setSystemTime` and `advanceTimersByTimeAsync`
+// rather than by sleeping, and the reads are counted rather than waited on,
+// so a failure here is about the cadence and not about how loaded the machine
+// running the suite is.
+// ---------------------------------------------------------------------------
+
+/** The marker for a moment, formatted the way the page formats it. */
+function namedMoment(at: number): string {
+  const when = new Date(at)
+  const time = when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const date = when.toLocaleDateString([], { day: 'numeric', month: 'short' })
+  return `${time} on ${date}`
+}
+
+describe('an open panel keeps up with the ledger it is watching', () => {
+  beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }))
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.setSystemTime(new Date())
+  })
+
+  it('shows spend that happened after the tab was loaded, on the poll and with no click', async () => {
+    // The reproduction from the review, driven by the clock rather than by a
+    // busy sweep: the tab opens at 09:00 against a ledger holding four calls,
+    // and the queue then spends the rest of the window. Nothing tells this
+    // page that happened — no event, no store change, no user action — so a
+    // page that only reads on open, on a cap write and on the refresh button
+    // renders "4 calls in the last 24h against a cap of 50" for the rest of
+    // the day while the ledger is at 200.
+    const openedAt = new Date(2026, 9, 6, 9, 0, 0).getTime()
+    vi.setSystemTime(openedAt)
+    vi.mocked(api.providerSpend).mockResolvedValue([row({ used: 4, automated: 4, freeAt: null })])
+    await openAutoQueueTab()
+    expect(await screen.findByText(/4 calls in the last 24h/)).toBeInTheDocument()
+    const readsOnOpen = vi.mocked(api.providerSpend).mock.calls.length
+
+    // The queue spends. Nothing else in the app says so.
+    vi.mocked(api.providerSpend).mockResolvedValue([row({ used: 200, automated: 200, freeAt: null })])
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(PROVIDER_SPEND_POLL_MS) })
+
+    expect(await screen.findByText(/200 calls in the last 24h/)).toBeInTheDocument()
+    // The old number is gone, not merely covered: a page that kept the first
+    // read and added the second would be showing two contradictory ledgers.
+    expect(screen.queryByText(/4 calls in the last 24h/)).toBeNull()
+    // One read per tick, at the cadence the Queue panel uses — so this costs
+    // the ledger one round-trip every ten seconds and not one per render.
+    expect(vi.mocked(api.providerSpend).mock.calls.length).toBe(readsOnOpen + 1)
+  })
+
+  it('stops polling once the tab is closed, and picks the ledger back up when it is reopened', async () => {
+    // A Settings page sitting on Profile must not be reading a ledger, and a
+    // tab the user has walked away from must not keep a timer running behind
+    // them.
+    const openedAt = new Date(2026, 9, 6, 9, 0, 0).getTime()
+    vi.setSystemTime(openedAt)
+    vi.mocked(api.providerSpend).mockResolvedValue([row({ used: 4, freeAt: null })])
+    await openAutoQueueTab()
+    await screen.findByText(/4 calls in the last 24h/)
+    const readsOnOpen = vi.mocked(api.providerSpend).mock.calls.length
+
+    fireEvent.click(screen.getByRole('button', { name: /^Scan$/i }))
+    await screen.findByLabelText(/Skip listings matching less than/i)
+    await act(async () => { await vi.advanceTimersByTimeAsync(5 * PROVIDER_SPEND_POLL_MS) })
+    expect(vi.mocked(api.providerSpend).mock.calls.length).toBe(readsOnOpen)
+
+    // Reopened, the ledger is re-read from scratch — the rows are not a cache
+    // that survives the tab, and the as-of marker starts again at this read.
+    vi.mocked(api.providerSpend).mockResolvedValue([row({ used: 9, freeAt: null })])
+    fireEvent.click(screen.getByRole('button', { name: /^Auto-queue$/i }))
+    expect(await screen.findByText(/9 calls in the last 24h/)).toBeInTheDocument()
+    expect(vi.mocked(api.providerSpend).mock.calls.length).toBe(readsOnOpen + 1)
+  })
+
+  it('discards a read that a newer one has overtaken, rather than letting it repaint old numbers', async () => {
+    // Two reads in flight at once — a slow poll and a cap write, say — can
+    // resolve in the other order to the order they started. The one that
+    // started first is describing a ledger that has already moved on, and
+    // letting it land last would make the refresh itself the lie: fresh
+    // numbers, then the old ones back, with the as-of marker naming whichever
+    // read won.
+    const openedAt = new Date(2026, 9, 6, 9, 0, 0).getTime()
+    vi.setSystemTime(openedAt)
+    const releases: ((rows: ProviderSpend[]) => void)[] = []
+    vi.mocked(api.providerSpend).mockImplementation(
+      () => new Promise<ProviderSpend[]>((resolve) => { releases.push(resolve) })
+    )
+    const capInput = await openAutoQueueTab()
+    await act(async () => { releases.shift()?.([row({ used: 4, freeAt: null })]) })
+    expect(await screen.findByText(/4 calls in the last 24h/)).toBeInTheDocument()
+
+    // A cap write starts a second read, which is issued five minutes later and
+    // resolves first; the original read is still outstanding and resolves last.
+    vi.setSystemTime(openedAt + 5 * 60_000)
+    await act(async () => { await vi.advanceTimersByTimeAsync(PROVIDER_SPEND_POLL_MS) })
+    fireEvent.change(capInput, { target: { value: '200' } })
+    await act(async () => { releases[releases.length - 1]?.([row({ used: 120, cap: 200, freeAt: null })]) })
+    expect(await screen.findByText(/120 calls in the last 24h against a cap of 200/)).toBeInTheDocument()
+
+    // The overtaken read resolves now, with the ledger as it was five minutes
+    // ago. It must not reach the screen, and it must not drag the marker back
+    // with it.
+    await act(async () => { releases.shift()?.([row({ used: 4, cap: 200, freeAt: null })]) })
+    expect(screen.queryByText(/4 calls in the last 24h/)).toBeNull()
+    expect(screen.getByTestId('provider-spend-count')).toHaveTextContent('120 calls in the last 24h')
+    expect(screen.getByTestId('provider-spend-asof')).toHaveTextContent(namedMoment(openedAt + 5 * 60_000))
+  })
+
+  it('says when the numbers were read, and does not move that moment with the clock', async () => {
+    // The marker is the moment of the READ. Rendering it from the render's own
+    // clock would be a fresh-looking timestamp bolted to a number that is not
+    // fresh — the same defect class this whole area exists to end, so the
+    // read here is held open across five minutes of fake clock and only then
+    // released. The row renders at 09:05; the number was measured at 09:00,
+    // and the marker has to say 09:00.
+    const readAt = new Date(2026, 9, 6, 9, 0, 0).getTime()
+    vi.setSystemTime(readAt)
+    let release: ((rows: ProviderSpend[]) => void) | null = null
+    vi.mocked(api.providerSpend).mockImplementation(
+      () => new Promise<ProviderSpend[]>((resolve) => { release = () => resolve([row({ used: 7, freeAt: null })]) })
+    )
+    await openAutoQueueTab()
+
+    // The clock moves without the tab hearing about it: `setSystemTime` is not
+    // a timer, so no poll fires and no read is issued.
+    vi.setSystemTime(readAt + 5 * 60_000)
+    await act(async () => { (release as (rows: ProviderSpend[]) => void)([]) })
+
+    expect(await screen.findByText(/7 calls in the last 24h/)).toBeInTheDocument()
+    expect(screen.getByTestId('provider-spend-asof')).toHaveTextContent(`As of ${namedMoment(readAt)}.`)
+    expect(screen.getByTestId('provider-spend-asof').textContent).not.toContain(namedMoment(readAt + 5 * 60_000))
+  })
+
+  it('moves the marker on every read, and shows none at all until one has succeeded', async () => {
+    const readAt = new Date(2026, 9, 6, 9, 0, 0).getTime()
+    vi.setSystemTime(readAt)
+    vi.mocked(api.providerSpend).mockResolvedValue([row({ used: 4, freeAt: null })])
+    await openAutoQueueTab()
+
+    const asOf = await screen.findByTestId('provider-spend-asof')
+    expect(asOf).toHaveTextContent(`As of ${namedMoment(readAt)}.`)
+
+    // A second read, five minutes later: the marker follows it, because it
+    // describes the read and not the wall.
+    vi.setSystemTime(readAt + 5 * 60_000)
+    vi.mocked(api.providerSpend).mockResolvedValue([row({ used: 5, freeAt: null })])
+    await act(async () => {
+      window.dispatchEvent(new Event('app:refresh'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(await screen.findByText(/5 calls in the last 24h/)).toBeInTheDocument()
+    expect(screen.getByTestId('provider-spend-asof')).toHaveTextContent(`As of ${namedMoment(readAt + 5 * 60_000)}.`)
+
+    // A read that fails takes its rows AND its marker with it. A timestamp
+    // with no numbers under it is a freshness claim about nothing, and the
+    // number it was attached to is gone.
+    vi.mocked(api.providerSpend).mockRejectedValue(new Error('ledger unreadable'))
+    await act(async () => {
+      window.dispatchEvent(new Event('app:refresh'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(await screen.findByTestId('provider-spend-failed')).toBeInTheDocument()
+    expect(screen.queryByTestId('provider-spend-asof')).toBeNull()
+    expect(screen.queryByTestId('provider-spend-row')).toBeNull()
+
+    // ...and a read that works again brings both back.
+    vi.mocked(api.providerSpend).mockResolvedValue([row({ used: 6, freeAt: null })])
+    await act(async () => {
+      window.dispatchEvent(new Event('app:refresh'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(await screen.findByText(/6 calls in the last 24h/)).toBeInTheDocument()
+    expect(screen.getByTestId('provider-spend-asof')).toBeInTheDocument()
+  })
+})
+
+describe('the sentence about the wait is never one the app has already overtaken', () => {
+  beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }))
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.setSystemTime(new Date())
+  })
+
+  it('stops naming a moment once the window has passed it, and says the budget is available once it has', async () => {
+    // The case that makes the refresh a correctness fix rather than a nicety.
+    // A row read at 23:50 names a budget that frees at 01:20 on the 7th; at
+    // 01:30 that sentence is not out of date, it is FALSE — the provider has
+    // room again and the app is not refusing anything. Two things have to hold
+    // across that boundary, and the second is the one that needs the live
+    // clock rather than the read's:
+    //
+    //   * the poll re-reads, so the number and the "available now" come back
+    //     on their own, with no click;
+    //   * between ticks, a render that still holds the old row refuses to name
+    //     the moment that has gone by, rather than repeating it.
+    const readAt = new Date(2026, 9, 6, 23, 50, 0).getTime()
+    const freeAt = new Date(2026, 9, 7, 1, 20, 0).getTime()
+    vi.setSystemTime(readAt)
+    const capped = [row({ used: 629, automated: 629, freeAt })]
+    vi.mocked(api.providerSpend).mockResolvedValue(capped)
+    await openAutoQueueTab()
+
+    const said = await screen.findByTestId('provider-spend-free')
+    expect(said.textContent).toMatch(/Budget frees at \d{1,2}[:.]\d{2}/)
+    expect(said).toHaveTextContent(new Date(freeAt).toLocaleDateString([], { day: 'numeric', month: 'short' }))
+    // ...and while the wait is still ahead, the row says it is at the cap, so
+    // the number and the warning are describing one state.
+    expect(screen.getByTestId('provider-spend-capped')).toHaveTextContent(/at its cap/i)
+
+    // Half an hour past the moment, with the ledger NOT yet aged out — the
+    // window between the two reads. The old row is still on screen and it must
+    // not describe a wait that has ended.
+    vi.setSystemTime(freeAt + 30 * 60_000)
+    await act(async () => { await vi.advanceTimersByTimeAsync(PROVIDER_SPEND_POLL_MS) })
+    expect(screen.getByTestId('provider-spend-free').textContent).not.toMatch(/Budget frees at/)
+    expect(screen.getByTestId('provider-spend-free')).toHaveTextContent(/not known yet/i)
+    expect(screen.queryByTestId('provider-spend-capped')).toBeNull()
+
+    // The window rolls on and the ledger reports the truth: room again, and a
+    // sentence that says so.
+    vi.mocked(api.providerSpend).mockResolvedValue([row({ used: 12, automated: 12, freeAt: null })])
+    await act(async () => { await vi.advanceTimersByTimeAsync(PROVIDER_SPEND_POLL_MS) })
+    expect(await screen.findByText(/12 calls in the last 24h/)).toBeInTheDocument()
+    expect(screen.getByTestId('provider-spend-free')).toHaveTextContent('Budget is available now.')
+    expect(screen.queryByTestId('provider-spend-capped')).toBeNull()
+    // The marker names the DAY it read on, so a panel left open across
+    // midnight cannot leave a reader guessing which one it is looking at.
+    expect(screen.getByTestId('provider-spend-asof')).toHaveTextContent(
+      new Date().toLocaleDateString([], { day: 'numeric', month: 'short' })
+    )
+  })
+
+  it('cannot show a warning the number beside it contradicts, when the cap moves', async () => {
+    // The input is the cap the user set and the row is measured against the
+    // cap the app is enforcing; those are two different numbers whenever a
+    // write is in flight or a read has not landed yet. Raising the cap past
+    // the spend must take the capped line with it in the same render that
+    // takes the old cap out of the count — not one poll later, and not never.
+    const openedAt = new Date(2026, 9, 6, 9, 0, 0).getTime()
+    vi.setSystemTime(openedAt)
+    vi.mocked(api.providerSpend).mockResolvedValue([
+      row({ used: 100, automated: 100, cap: 50, freeAt: openedAt + 6 * HOUR })
+    ])
+    const capInput = await openAutoQueueTab()
+    await screen.findByText(/100 calls in the last 24h against a cap of 50/)
+    expect(screen.getByTestId('provider-spend-capped')).toBeInTheDocument()
+
+    vi.mocked(api.updateSettings).mockResolvedValue({ ...baseSettings, provider_call_cap: 200 } as never)
+    vi.mocked(api.providerSpend).mockResolvedValue([
+      row({ used: 100, automated: 100, cap: 200, freeAt: null })
+    ])
+    fireEvent.change(capInput, { target: { value: '200' } })
+
+    expect(await screen.findByText(/100 calls in the last 24h against a cap of 200/)).toBeInTheDocument()
+    expect(screen.queryByTestId('provider-spend-capped')).toBeNull()
+    expect(screen.queryByText(/against a cap of 50/)).toBeNull()
   })
 })

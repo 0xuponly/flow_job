@@ -21,6 +21,15 @@
  * everywhere in this file, never read internally, so a test can hand in a
  * stale one and a stale one is exactly what the last test does.
  *
+ * The second half of the file is the freshness contract: the as-of marker,
+ * which describes WHEN a number was measured and must therefore name a day
+ * even when the moment is minutes away, and the capped line, which is the one
+ * clause `describeProviderCap` gets to say for free and a per-row surface has
+ * to earn with a condition. Both are asserted on the condition rather than on
+ * the presence, because both failure directions are lies: a capped provider
+ * rendered like any other is a warning that never comes, and an uncapped one
+ * told it is capped is the queue's own defect in new words.
+ *
  * These are pure functions: no clock, no store, no DOM. The wording is
  * asserted for IDENTITY against `describeProviderCap` in
  * `electron/providerSpend.test.ts`, which imports the real ai.ts; pinning the
@@ -28,6 +37,8 @@
  */
 import { describe, it, expect } from 'vitest'
 import {
+  providerSpendAsOf,
+  providerSpendCappedLine,
   providerSpendCountLine,
   providerSpendFreeLine,
   providerSpendLines,
@@ -175,15 +186,128 @@ describe('a ledger the app cannot trust is qualified, not hidden', () => {
     expect(providerSpendSkewLine()).not.toMatch(/\d{4}-\d{2}|\/|provider_spend/i)
   })
 
-  it('keeps the count next to the warning, because hiding it hides the anomaly', () => {
+  it('leads with the correction, because the two lines under it describe a cap that is not applied', () => {
+    // `providerOverCap` returns null for a skewed ledger, so nothing is being
+    // enforced. The count line still names a cap and the free line still
+    // describes a wait, and a reader who took only those two would conclude
+    // the app is holding these numbers to a bound. The correction was last on
+    // this row and now leads it — a row that re-asserts itself every ten
+    // seconds cannot carry its correction at the bottom.
     const now = noonOnFifthOctober()
     const lines = providerSpendLines(row({ used: 4, clockSkewed: true }), now)
-    expect(lines[0]).toMatch(/4 calls in the last 24h/)
-    expect(lines[1]).toBe('Budget is available now.')
-    expect(lines[2]).toBe(providerSpendSkewLine())
+    expect(lines.map((l) => l.id)).toEqual(['skew', 'count', 'free'])
+    expect(lines[0].text).toBe(providerSpendSkewLine())
+    // The count is still there — hiding it would hide the anomaly rather than
+    // fix it — and it is still the number, not a replacement for one.
+    expect(lines[1].text).toMatch(/4 calls in the last 24h/)
+  })
+
+  it('names no free moment on a skewed ledger, whose freeAt is arithmetic over untrusted stamps', () => {
+    // A stamp dated 30 days in the future makes the window's free time land in
+    // the PAST, which is a broken clock and not a rolling window. So a skewed
+    // row must not print a time in either direction, and the sentence it
+    // prints instead says the real reason: there is no wait, because there is
+    // no cap being applied.
+    const now = noonOnFifthOctober()
+    const skewed = row({ used: 4, clockSkewed: true, freeAt: now + 6 * HOUR })
+    const said = providerSpendFreeLine(skewed, now)
+    expect(said).not.toMatch(/Budget frees at/)
+    expect(said).not.toMatch(/\d{1,2}[:.]\d{2}/)
+    expect(said).toMatch(/not being applied/i)
+    // ...and it does not claim the budget is simply available either, which
+    // would be a second thing this ledger cannot support.
+    expect(said).not.toMatch(/available now/)
+    // A skewed row is never described as capped either, for the same reason:
+    // the app is refusing nothing, so there is no refusal to announce.
+    expect(providerSpendLines(skewed, now).map((l) => l.id)).not.toContain('capped')
   })
 
   it('adds no third line for a ledger that is not skewed', () => {
     expect(providerSpendLines(row(), noonOnFifthOctober())).toHaveLength(2)
+  })
+})
+
+describe('a provider at its cap says so, and only that provider does', () => {
+  it('says nothing extra while there is still room', () => {
+    // The clause is `describeProviderCap`'s "is at its call cap", and that
+    // sentence is only ever rendered for a capped provider. Carrying it into
+    // a per-row surface unconditionally would tell a user with 3 calls out of
+    // 50 that their provider is at its cap — the same defect in new words.
+    const now = noonOnFifthOctober()
+    const lines = providerSpendLines(row({ used: 3, freeAt: null }), now)
+    expect(lines.map((l) => l.id)).toEqual(['count', 'free'])
+  })
+
+  it('adds the capped line between the count and the free time when the wait is still ahead', () => {
+    const now = noonOnFifthOctober()
+    const lines = providerSpendLines(row({ used: 629, freeAt: now + 6 * HOUR }), now)
+    expect(lines.map((l) => l.id)).toEqual(['count', 'capped', 'free'])
+    // Order is the argument: "this one is at its limit" is read before the
+    // moment the limit lifts, and the count above it is the number.
+    expect(lines[1].text).toMatch(/at its cap/i)
+    expect(lines[2].text).toMatch(/Budget frees at/)
+  })
+
+  it('drops the line the moment the wait has elapsed, on the same clock the free line uses', () => {
+    // Both lines read the ledger's own `freeAt` and the SAME `now`, so they
+    // cannot contradict each other: there is no state in which the row claims
+    // the app is refusing this provider while naming no moment to stop it.
+    // The direction is the safe one — the claim goes when the refusal may have
+    // ended, never lingers after it.
+    const now = noonOnFifthOctober()
+    const row_ = row({ used: 629, freeAt: now + 20 * 60_000 })
+    expect(providerSpendLines(row_, now).map((l) => l.id)).toContain('capped')
+    const after = now + 20 * 60_000 + 1
+    expect(providerSpendLines(row_, after).map((l) => l.id)).toEqual(['count', 'free'])
+    expect(providerSpendLines(row_, after)[1].text).not.toMatch(/at its cap/i)
+  })
+
+  it('tells the user their own actions still run, so a capped row does not read as a broken app', () => {
+    // `callAI` refuses the cap for automated work only and never for a manual
+    // one, so this is the same reassurance `describeProviderCap` gives and it
+    // is true of this row.
+    expect(providerSpendCappedLine()).toMatch(/ask for directly still runs/i)
+    // ...and it claims no internals: no setting key, no store field, no id.
+    expect(providerSpendCappedLine()).not.toMatch(/provider_call_cap|provider_spend|manual|automated/i)
+  })
+})
+
+describe('the as-of marker names the read, and cannot be mistaken for now', () => {
+  it('names the moment of the read, with the day, however long ago it was', () => {
+    // The day is not optional here, whatever `clockTime` does for a moment
+    // minutes away: an as-of marker describes something already past, so the
+    // exemption that exists for "about to happen" can never apply to it, and a
+    // bare "09:12" from three hours ago is a time a reader has no way to place.
+    const now = new Date(2026, 9, 5, 20, 0, 0).getTime()
+    const readAt = new Date(2026, 9, 5, 9, 12, 0).getTime()
+    const said = providerSpendAsOf(readAt, now)
+    expect(said).toMatch(/^As of \d{1,2}[:.]\d{2}.* on /)
+    expect(said).toContain(new Date(readAt).toLocaleDateString([], { day: 'numeric', month: 'short' }))
+    // The marker says when the numbers were READ. It must never render the
+    // current time instead, which is how a stale number gets a fresh-looking
+    // timestamp bolted to it.
+    expect(said).not.toContain(new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
+  })
+
+  it('names the year when the read falls in another one, judged against now', () => {
+    // The marker takes `now` for the year comparison and for nothing else. A
+    // panel left open across midnight on 31 December reading a number taken
+    // the night before has to be able to say which year that was: "as of
+    // 23:04 on 31 Dec" is ambiguous the moment the reader's clock ticks over,
+    // and a marker that is ambiguous about its own age is not a marker.
+    const now = new Date(2027, 0, 1, 0, 30, 0).getTime()
+    const readAt = new Date(2026, 11, 31, 23, 4, 0).getTime()
+    expect(providerSpendAsOf(readAt, now)).toContain('2026')
+  })
+
+  it('never says how long ago in words, because the words rot the moment they are read', () => {
+    // A relative word would need the marker to be re-rendered continuously to
+    // stay true, and the one thing a relative word cannot do here is survive
+    // the reader looking away. An explicit date that has gone by is plainly a
+    // date that has gone by — the rule `clockTime` already works by.
+    const now = noonOnFifthOctober()
+    const said = providerSpendAsOf(now - 3 * HOUR, now)
+    expect(said).not.toMatch(/\b(minutes?|hours?|days?|ago|just now|recently)\b/i)
+    expect(said).not.toMatch(/\b(today|tomorrow|yesterday)\b/i)
   })
 })
